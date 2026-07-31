@@ -1,0 +1,41 @@
+version: 1
+runtime:
+  role: all
+storage:
+  adapter: sqlite
+  url: ./data/argus.db
+sources:
+  x:
+    enabled: true
+    endpoint: http://localhost:8787/api
+  telegram:
+    enabled: true
+    adapter: public-web
+  web:
+    enabled: true
+    searchEndpoint: http://localhost:8080
+watches:
+  - id: markets
+    enabled: true
+    schedule: "*/5 * * * *"
+    inputs:
+      x:
+        accounts: [solana]
+        queries: ["$SOL"]
+      telegram:
+        channels: [solana_announcements]
+      web:
+        urls: [https://example.com/news]
+        feeds: [https://example.com/rss.xml]
+        queries: [Solana news]
+    classify:
+      keywords: [SOL, exploit]
+intelligence:
+  enabled: true
+  provider: openrouter
+  apiKey: ${OPENROUTER_API_KEY}
+  model: openai/gpt-4.1-mini
+  processors:
+    - id: daily-summary
+      kind: summary
+      schedule: "0 9 * * *"

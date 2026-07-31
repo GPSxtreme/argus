@@ -1,0 +1,50 @@
+version: 1
+
+runtime:
+  role: all
+
+storage:
+  adapter: sqlite
+  url: ./data/argus.db
+
+sources:
+  x:
+    enabled: false
+    endpoint: http://localhost:8787/api
+  telegram:
+    enabled: true
+    adapter: public-web
+  web:
+    enabled: true
+    searchEndpoint: http://localhost:8080
+    browserFallback: false
+
+watches:
+  - id: ecosystem-news
+    enabled: true
+    schedule: "*/10 * * * *"
+    inputs:
+      x:
+        accounts: [openai]
+        queries: ["open source AI"]
+      telegram:
+        channels: [telegram]
+      web:
+        urls: [https://openai.com/news/]
+        feeds: []
+        queries: ["open source AI infrastructure"]
+    classify:
+      keywords: [release, security, research]
+    retentionDays: 90
+
+intelligence:
+  enabled: false
+  provider: openrouter
+  apiKey: ${OPENROUTER_API_KEY}
+  model: openai/gpt-4.1-mini
+  processors: []
+
+api:
+  host: 0.0.0.0
+  port: 8788
+  token: ${ARGUS_API_TOKEN}

@@ -1,0 +1,16 @@
+{
+  "name": "@argus/config",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@argus/contracts": "workspace:*",
+    "yaml": "^2.8.0",
+    "zod": "^4.0.0"
+  }
+}
