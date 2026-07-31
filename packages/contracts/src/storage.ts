@@ -37,6 +37,7 @@ export interface StorageRepository {
   upsertRecord(
     record: RecordEnvelope,
   ): Promise<{ record: RecordEnvelope; revision?: RecordRevision; created: boolean }>;
+  listRevisions(recordId: string): Promise<Page<RecordRevision>>;
   queryRecords(input: QueryRecordsInput): Promise<Page<RecordEnvelope>>;
   getCheckpoint<T>(targetId: string): Promise<T | undefined>;
   setCheckpoint<T>(targetId: string, checkpoint: T): Promise<void>;
