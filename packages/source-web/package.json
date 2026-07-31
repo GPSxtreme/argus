@@ -1,0 +1,20 @@
+{
+  "name": "@argus/source-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@argus/contracts": "workspace:*",
+    "@mozilla/readability": "^0.6.0",
+    "fast-xml-parser": "^5.2.0",
+    "jsdom": "^26.1.0"
+  },
+  "devDependencies": {
+    "@types/jsdom": "^21.1.0"
+  }
+}
