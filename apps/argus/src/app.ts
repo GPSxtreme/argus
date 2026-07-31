@@ -3,6 +3,7 @@ import type { ArgusConfig } from "@argus/config";
 import type { StorageRepository } from "@argus/contracts";
 import { OpenRouterClient } from "@argus/intelligence";
 import { QueryService } from "@argus/query";
+import { enqueueWatchNow } from "@argus/scheduler";
 import { Hono } from "hono";
 
 export interface CreateAppInput {
@@ -40,6 +41,11 @@ export const createApp = ({ config, repository }: CreateAppInput): Hono => {
     const since = context.req.query("since");
     const until = context.req.query("until");
     const cursor = context.req.query("cursor");
+    const requestedLimit = context.req.query("limit");
+    const limit = Number(requestedLimit ?? 50);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
+      return context.json({ error: "limit must be an integer from 1 to 200" }, 400);
+    }
     const result = await query.search({
       ...(text ? { text } : {}),
       ...(sources?.length
@@ -54,20 +60,34 @@ export const createApp = ({ config, repository }: CreateAppInput): Hono => {
       ...(since ? { since } : {}),
       ...(until ? { until } : {}),
       ...(cursor ? { cursor } : {}),
-      limit: Number(context.req.query("limit") ?? 50),
+      limit,
     });
     return context.json(result);
   });
 
   app.get("/v1/artifacts", async (context) => {
+    const limit = Number(context.req.query("limit") ?? 50);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
+      return context.json({ error: "limit must be an integer from 1 to 200" }, 400);
+    }
     return context.json(
       await repository.queryArtifacts({
         ...(context.req.query("kind")
           ? { kind: context.req.query("kind") as string }
           : {}),
-        limit: Number(context.req.query("limit") ?? 50),
+        limit,
       }),
     );
+  });
+
+  app.post("/v1/watches/:watchId/ingest", async (context) => {
+    const watch = config.watches.find(
+      (candidate) =>
+        candidate.id === context.req.param("watchId") && candidate.enabled,
+    );
+    if (!watch) return context.json({ error: "watch not found" }, 404);
+    const queued = await enqueueWatchNow(watch, repository);
+    return context.json({ queued, watchId: watch.id }, 202);
   });
 
   app.post("/v1/summaries", async (context) => {

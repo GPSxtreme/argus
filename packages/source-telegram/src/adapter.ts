@@ -11,7 +11,7 @@ export interface TelegramTargetConfig {
 }
 
 export class TelegramAdapter
-  implements SourceAdapter<TelegramTargetConfig, { before?: string }>
+  implements SourceAdapter<TelegramTargetConfig, { lastId?: string }>
 {
   readonly kind = "telegram" as const;
   readonly capabilities = {
@@ -19,6 +19,11 @@ export class TelegramAdapter
     backfill: true,
     realtime: false,
   };
+
+  constructor(
+    private readonly client: Pick<TelegramPublicClient, "channel"> =
+      new TelegramPublicClient(),
+  ) {}
 
   async validate(config: TelegramTargetConfig): Promise<ValidationResult> {
     const valid = /^[A-Za-z0-9_]+$/u.test(config.channel);
@@ -29,12 +34,13 @@ export class TelegramAdapter
   }
 
   async *pull(
-    input: PullInput<TelegramTargetConfig, { before?: string }>,
+    input: PullInput<TelegramTargetConfig, { lastId?: string }>,
   ): AsyncIterable<SourceItem> {
-    for (const item of await new TelegramPublicClient().channel(
-      input.config.channel,
-      input.checkpoint?.before,
-    )) {
+    const items = await this.client.channel(input.config.channel);
+    const checkpointIndex = input.checkpoint?.lastId
+      ? items.findIndex((item) => item.externalId === input.checkpoint?.lastId)
+      : -1;
+    for (const item of items.slice(checkpointIndex + 1)) {
       yield item;
     }
   }

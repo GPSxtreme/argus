@@ -65,7 +65,14 @@ export const runTarget = async (
     keywords: target.keywords,
     items: sourceItems(),
     checkpoint: {
-      ...(items[0] ? { lastId: items[0].externalId } : checkpoint),
+      ...(items[0]
+        ? {
+            lastId:
+              target.source === "telegram"
+                ? items.at(-1)!.externalId
+                : items[0].externalId,
+          }
+        : checkpoint),
       observedAt: new Date().toISOString(),
     },
     repository,

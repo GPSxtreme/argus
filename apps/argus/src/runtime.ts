@@ -12,6 +12,25 @@ import { findTarget, runTarget } from "./worker.js";
 
 const logger = pino({ name: "argus" });
 
+export const resolveRuntimeRole = (
+  config: ArgusConfig,
+  requestedRole?: string,
+): ArgusConfig => {
+  if (!requestedRole) return config;
+  if (
+    !["all", "api", "scheduler", "worker", "processor"].includes(requestedRole)
+  ) {
+    throw new Error(`Invalid ARGUS_ROLE: ${requestedRole}`);
+  }
+  if (config.storage.adapter === "sqlite" && requestedRole !== "all") {
+    throw new Error("SQLite requires runtime.role to be 'all'");
+  }
+  return {
+    ...config,
+    runtime: { role: requestedRole as ArgusConfig["runtime"]["role"] },
+  };
+};
+
 const processJobs = async (
   config: ArgusConfig,
   repository: StorageRepository,
@@ -51,21 +70,7 @@ export interface RuntimeHandle {
 
 export const startRuntime = async (configPath: string): Promise<RuntimeHandle> => {
   const loaded = await loadConfig(configPath);
-  const requestedRole = process.env.ARGUS_ROLE;
-  if (
-    requestedRole &&
-    !["all", "api", "scheduler", "worker", "processor"].includes(requestedRole)
-  ) {
-    throw new Error(`Invalid ARGUS_ROLE: ${requestedRole}`);
-  }
-  const config: ArgusConfig = requestedRole
-    ? {
-        ...loaded,
-        runtime: {
-          role: requestedRole as ArgusConfig["runtime"]["role"],
-        },
-      }
-    : loaded;
+  const config = resolveRuntimeRole(loaded, process.env.ARGUS_ROLE);
   const repository = await openRepository(config);
   await reconcileConfig(repository.repository, config);
   const timers: NodeJS.Timeout[] = [];

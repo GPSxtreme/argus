@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { RecordEnvelope } from "@argus/contracts";
 import {
@@ -7,6 +10,7 @@ import {
 } from "../src/index.js";
 
 const repositories: SqliteRepository[] = [];
+const temporaryDirectories: string[] = [];
 
 const record = (hash: string, text = "Solana release"): RecordEnvelope => ({
   id: "x:target-1:post-9",
@@ -30,9 +34,22 @@ const createRepo = async (): Promise<SqliteRepository> => {
 
 afterEach(() => {
   for (const repo of repositories.splice(0)) repo.close();
+  for (const directory of temporaryDirectories.splice(0)) {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 describe("SQLite repository", () => {
+  it("creates a missing database parent directory", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "argus-sqlite-"));
+    temporaryDirectories.push(directory);
+    const repo = await createSqliteRepository({
+      filename: join(directory, "nested", "argus.db"),
+    });
+    repositories.push(repo);
+    await expect(repo.queryRecords({})).resolves.toMatchObject({ items: [] });
+  });
+
   it("deduplicates records and preserves revisions when content changes", async () => {
     const repo = await createRepo();
     const first = await repo.upsertRecord(record("a"));

@@ -45,6 +45,13 @@ curl -H "Authorization: Bearer $ARGUS_API_TOKEN" \
   "http://localhost:8788/v1/records?q=security&source=telegram"
 ```
 
+Trigger every target in a configured watch immediately:
+
+```bash
+curl -X POST -H "Authorization: Bearer $ARGUS_API_TOKEN" \
+  http://localhost:8788/v1/watches/ecosystem-news/ingest
+```
+
 Create a sourced summary when intelligence is enabled:
 
 ```bash
@@ -54,6 +61,9 @@ curl -X POST \
   -d '{"query":"security release","limit":30}' \
   http://localhost:8788/v1/summaries
 ```
+
+Scheduled and on-demand summaries are stored separately and available from
+`GET /v1/artifacts?kind=summary`.
 
 ## Configuration
 

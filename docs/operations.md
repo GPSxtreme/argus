@@ -70,6 +70,10 @@ Record query parameters:
 - `limit`: 1–200
 - `cursor`: opaque cursor returned by the prior page
 
+`POST /v1/watches/:watchId/ingest` queues an immediate run of every target in a
+watch. `GET /v1/artifacts` returns stored intelligence outputs without mixing
+them into canonical source records.
+
 ## Updating configuration
 
 Validate and apply before restarting:

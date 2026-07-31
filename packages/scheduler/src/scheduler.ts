@@ -53,6 +53,31 @@ export const expandWatchTargets = (watch: Watch): ScheduledTarget[] => [
 export const targetsFromConfig = (config: ArgusConfig): ScheduledTarget[] =>
   config.watches.filter((watch) => watch.enabled).flatMap(expandWatchTargets);
 
+export const enqueueWatchNow = async (
+  watch: Watch,
+  repository: StorageRepository,
+  now = new Date(),
+): Promise<number> => {
+  let queued = 0;
+  const runAt = now.toISOString();
+  for (const scheduled of expandWatchTargets(watch)) {
+    const job: Job = {
+      id: contentHash({
+        targetId: scheduled.id,
+        runAt,
+        trigger: "manual",
+      }).slice(0, 32),
+      targetId: scheduled.id,
+      source: scheduled.source,
+      status: "queued",
+      attempt: 0,
+      runAt,
+    };
+    if (await repository.enqueueJob(job)) queued += 1;
+  }
+  return queued;
+};
+
 export const enqueueDueTargets = async (
   config: ArgusConfig,
   repository: StorageRepository,

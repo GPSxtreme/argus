@@ -48,4 +48,42 @@ describe("Argus API", () => {
     expect(response.status).toBe(200);
     expect((await response.json()).items[0].url).toBe("https://example.com/1");
   });
+
+  it("queues an immediate ingestion trigger for a configured watch", async () => {
+    const repository = await createSqliteRepository({ filename: ":memory:" });
+    repositories.push(repository);
+    const triggerConfig = validateConfig({
+      version: 1,
+      storage: { adapter: "sqlite", url: ":memory:" },
+      sources: { telegram: { enabled: true } },
+      watches: [
+        {
+          id: "releases",
+          schedule: "0 * * * *",
+          inputs: { telegram: { channels: ["argus"] } },
+        },
+      ],
+      api: { token: "secret" },
+    });
+    const response = await createApp({
+      config: triggerConfig,
+      repository,
+    }).request("/v1/watches/releases/ingest", {
+      method: "POST",
+      headers: { authorization: "Bearer secret" },
+    });
+    expect(response.status).toBe(202);
+    expect((await response.json()).queued).toBe(1);
+    expect(await repository.claimJobs("test", 10, 30_000)).toHaveLength(1);
+  });
+
+  it("rejects a malformed record limit", async () => {
+    const repository = await createSqliteRepository({ filename: ":memory:" });
+    repositories.push(repository);
+    const response = await createApp({ config, repository }).request(
+      "/v1/records?limit=not-a-number",
+      { headers: { authorization: "Bearer secret" } },
+    );
+    expect(response.status).toBe(400);
+  });
 });
