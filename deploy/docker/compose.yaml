@@ -1,0 +1,38 @@
+services:
+  argus:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../../.env
+    environment:
+      ARGUS_CONFIG: /app/argus.config.yaml
+      ARGUS_ROLE: all
+    ports:
+      - "8788:8788"
+    volumes:
+      - ../../argus.config.yaml:/app/argus.config.yaml:ro
+      - argus-data:/app/data
+
+  searxng:
+    image: searxng/searxng:latest
+    restart: unless-stopped
+    profiles: ["search"]
+    ports:
+      - "8080:8080"
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    profiles: ["postgres"]
+    environment:
+      POSTGRES_DB: argus
+      POSTGRES_USER: argus
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-argus-local}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+volumes:
+  argus-data:
+  postgres-data:

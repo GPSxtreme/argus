@@ -12,12 +12,16 @@
     "node": ">=24"
   },
   "scripts": {
+    "argus": "tsx apps/cli/src/main.ts",
     "build": "turbo build",
+    "dev": "tsx apps/argus/src/main.ts",
+    "start": "tsx apps/argus/src/main.ts",
     "test": "vitest run",
     "typecheck": "turbo typecheck"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "tsx": "^4.20.0",
     "turbo": "^2.5.0",
     "typescript": "^6.0.0",
     "vitest": "^3.2.0"

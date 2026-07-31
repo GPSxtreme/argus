@@ -1,0 +1,7 @@
+[build]
+dockerfilePath = "deploy/docker/Dockerfile"
+
+[deploy]
+healthcheckPath = "/health"
+restartPolicyType = "ON_FAILURE"
+startCommand = "ARGUS_ROLE=api pnpm start"

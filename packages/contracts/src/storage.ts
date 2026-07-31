@@ -39,6 +39,11 @@ export interface AppliedConfig {
   appliedAt: string;
 }
 
+export interface QueryArtifactsInput {
+  kind?: string;
+  limit?: number;
+}
+
 export interface Job {
   id: string;
   targetId: string;
@@ -65,6 +70,7 @@ export interface StorageRepository {
   completeJob(id: string): Promise<void>;
   failJob(id: string, error: string, retryAt?: string): Promise<void>;
   saveArtifact(artifact: DerivedArtifact): Promise<void>;
+  queryArtifacts(input: QueryArtifactsInput): Promise<Page<DerivedArtifact>>;
   getAppliedConfig(): Promise<AppliedConfig | undefined>;
   applyConfig(snapshot: AppliedConfig): Promise<void>;
 }

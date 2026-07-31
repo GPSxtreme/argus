@@ -92,4 +92,22 @@ describe("SQLite repository", () => {
     expect(result).toEqual({ inserted: 1, revised: 0, duplicates: 0 });
     expect(await repo.getCheckpoint("target-1")).toEqual({ latestId: "post-9" });
   });
+
+  it("stores and lists derived artifacts separately from source records", async () => {
+    const repo = await createRepo();
+    await repo.saveArtifact({
+      id: "summary-1",
+      recordIds: ["x:target-1:post-9"],
+      kind: "summary",
+      content: "A sourced summary",
+      provider: "openrouter",
+      model: "model",
+      provenance: { sources: [1] },
+      createdAt: "2026-07-31T01:00:00.000Z",
+    });
+    expect((await repo.queryArtifacts({ kind: "summary" })).items[0]).toMatchObject({
+      id: "summary-1",
+      content: "A sourced summary",
+    });
+  });
 });

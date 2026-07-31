@@ -8,6 +8,7 @@ import type {
   Job,
   Page,
   QueryRecordsInput,
+  QueryArtifactsInput,
   RecordEnvelope,
   RecordRevision,
   StorageRepository,
@@ -214,6 +215,15 @@ export class SqliteRepository implements StorageRepository {
       );
       parameters.push(...input.targetIds);
     }
+    if (input.watchIds?.length) {
+      conditions.push(
+        `EXISTS (
+          SELECT 1 FROM json_each(records.watch_ids_json)
+          WHERE value IN (${input.watchIds.map(() => "?").join(",")})
+        )`,
+      );
+      parameters.push(...input.watchIds);
+    }
     if (input.text) {
       conditions.push("(title LIKE ? OR text LIKE ?)");
       parameters.push(`%${input.text}%`, `%${input.text}%`);
@@ -348,6 +358,34 @@ export class SqliteRepository implements StorageRepository {
         JSON.stringify(artifact.provenance),
         artifact.createdAt,
       );
+  }
+
+  async queryArtifacts(
+    input: QueryArtifactsInput,
+  ): Promise<Page<DerivedArtifact>> {
+    const rows = this.database
+      .prepare(
+        `SELECT * FROM artifacts ${input.kind ? "WHERE kind = ?" : ""}
+         ORDER BY created_at DESC, id LIMIT ?`,
+      )
+      .all(...(input.kind ? [input.kind] : []), input.limit ?? 50) as Array<
+      Record<string, unknown>
+    >;
+    return {
+      items: rows.map((row) => ({
+        id: row.id as string,
+        recordIds: JSON.parse(row.record_ids_json as string) as string[],
+        kind: row.kind as string,
+        content: row.content as string,
+        ...(row.provider ? { provider: row.provider as string } : {}),
+        ...(row.model ? { model: row.model as string } : {}),
+        provenance: JSON.parse(row.provenance_json as string) as Record<
+          string,
+          unknown
+        >,
+        createdAt: row.created_at as string,
+      })),
+    };
   }
 
   async getAppliedConfig(): Promise<AppliedConfig | undefined> {

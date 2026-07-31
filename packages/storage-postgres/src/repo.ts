@@ -8,6 +8,7 @@ import type {
   Job,
   Page,
   QueryRecordsInput,
+  QueryArtifactsInput,
   RecordEnvelope,
   RecordRevision,
   StorageRepository,
@@ -242,6 +243,8 @@ export class PostgresRepository implements StorageRepository {
     if (input.sources?.length) clauses.push(`source = ANY(${bind(input.sources)})`);
     if (input.targetIds?.length)
       clauses.push(`target_id = ANY(${bind(input.targetIds)})`);
+    if (input.watchIds?.length)
+      clauses.push(`watch_ids_json ?| ${bind(input.watchIds)}::text[]`);
     if (input.text)
       clauses.push(
         `search_document @@ websearch_to_tsquery('simple', ${bind(input.text)})`,
@@ -368,6 +371,28 @@ export class PostgresRepository implements StorageRepository {
         artifact.createdAt,
       ],
     );
+  }
+
+  async queryArtifacts(
+    input: QueryArtifactsInput,
+  ): Promise<Page<DerivedArtifact>> {
+    const result = await this.pool.query<Row>(
+      `SELECT * FROM artifacts ${input.kind ? "WHERE kind=$1" : ""}
+       ORDER BY created_at DESC,id LIMIT $${input.kind ? 2 : 1}`,
+      [...(input.kind ? [input.kind] : []), input.limit ?? 50],
+    );
+    return {
+      items: result.rows.map((row) => ({
+        id: row.id as string,
+        recordIds: json<string[]>(row.record_ids_json),
+        kind: row.kind as string,
+        content: row.content as string,
+        ...(row.provider == null ? {} : { provider: row.provider as string }),
+        ...(row.model == null ? {} : { model: row.model as string }),
+        provenance: json<Record<string, unknown>>(row.provenance_json),
+        createdAt: iso(row.created_at),
+      })),
+    };
   }
 
   async getAppliedConfig(): Promise<AppliedConfig | undefined> {
