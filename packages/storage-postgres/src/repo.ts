@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import type {
+  AppliedConfig,
   DerivedArtifact,
+  IngestionCommit,
+  IngestionCommitResult,
   Job,
   Page,
   QueryRecordsInput,
@@ -145,6 +148,90 @@ export class PostgresRepository implements StorageRepository {
     return { items: result.rows.map(mapRevision) };
   }
 
+  async commitIngestion(
+    input: IngestionCommit,
+  ): Promise<IngestionCommitResult> {
+    const client = await this.pool.connect();
+    const result: IngestionCommitResult = {
+      inserted: 0,
+      revised: 0,
+      duplicates: 0,
+    };
+    try {
+      await client.query("BEGIN");
+      for (const record of input.records) {
+        const current = (
+          await client.query<Row>(
+            "SELECT content_hash FROM records WHERE id=$1 FOR UPDATE",
+            [record.id],
+          )
+        ).rows[0];
+        if (current?.content_hash === record.contentHash) {
+          result.duplicates += 1;
+          continue;
+        }
+        await client.query(
+          `INSERT INTO records (
+            id,source,target_id,external_id,url,title,text,author,published_at,
+            raw_json,metadata_json,watch_ids_json,content_hash,ingested_at
+          ) VALUES (
+            $1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,$12::jsonb,$13,$14
+          ) ON CONFLICT(id) DO UPDATE SET
+            url=excluded.url,title=excluded.title,text=excluded.text,
+            author=excluded.author,published_at=excluded.published_at,
+            raw_json=excluded.raw_json,metadata_json=excluded.metadata_json,
+            watch_ids_json=excluded.watch_ids_json,
+            content_hash=excluded.content_hash,ingested_at=excluded.ingested_at`,
+          [
+            record.id,
+            record.source,
+            record.targetId,
+            record.externalId,
+            record.url,
+            record.title ?? null,
+            record.text,
+            record.author ?? null,
+            record.publishedAt ?? null,
+            JSON.stringify(record.raw),
+            record.metadata === undefined ? null : JSON.stringify(record.metadata),
+            JSON.stringify(record.watchIds),
+            record.contentHash,
+            record.ingestedAt,
+          ],
+        );
+        await client.query(
+          `INSERT INTO revisions
+           (id,record_id,content_hash,title,text,raw_json,created_at)
+           VALUES($1,$2,$3,$4,$5,$6::jsonb,$7) ON CONFLICT DO NOTHING`,
+          [
+            randomUUID(),
+            record.id,
+            record.contentHash,
+            record.title ?? null,
+            record.text,
+            JSON.stringify(record.raw),
+            record.ingestedAt,
+          ],
+        );
+        if (current) result.revised += 1;
+        else result.inserted += 1;
+      }
+      await client.query(
+        `INSERT INTO checkpoints(target_id,value_json,updated_at)
+         VALUES($1,$2::jsonb,now()) ON CONFLICT(target_id) DO UPDATE SET
+         value_json=excluded.value_json,updated_at=excluded.updated_at`,
+        [input.targetId, JSON.stringify(input.checkpoint)],
+      );
+      await client.query("COMMIT");
+      return result;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   async queryRecords(input: QueryRecordsInput): Promise<Page<RecordEnvelope>> {
     const clauses: string[] = [];
     const values: unknown[] = [];
@@ -280,6 +367,30 @@ export class PostgresRepository implements StorageRepository {
         JSON.stringify(artifact.provenance),
         artifact.createdAt,
       ],
+    );
+  }
+
+  async getAppliedConfig(): Promise<AppliedConfig | undefined> {
+    const result = await this.pool.query<Row>(
+      "SELECT config_json,content_hash,applied_at FROM applied_config WHERE id=1",
+    );
+    const row = result.rows[0];
+    return row
+      ? {
+          config: json(row.config_json),
+          contentHash: row.content_hash as string,
+          appliedAt: iso(row.applied_at),
+        }
+      : undefined;
+  }
+
+  async applyConfig(snapshot: AppliedConfig): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO applied_config(id,config_json,content_hash,applied_at)
+       VALUES(1,$1::jsonb,$2,$3) ON CONFLICT(id) DO UPDATE SET
+       config_json=excluded.config_json,content_hash=excluded.content_hash,
+       applied_at=excluded.applied_at`,
+      [JSON.stringify(snapshot.config), snapshot.contentHash, snapshot.appliedAt],
     );
   }
 }

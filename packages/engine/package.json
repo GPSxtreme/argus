@@ -1,5 +1,5 @@
 {
-  "name": "@argus/config",
+  "name": "@argus/engine",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -9,9 +9,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@argus/contracts": "workspace:*",
-    "yaml": "^2.8.0",
-    "zod": "^4.0.0"
+    "@argus/contracts": "workspace:*"
   },
   "devDependencies": {
     "@argus/storage-sqlite": "workspace:*"

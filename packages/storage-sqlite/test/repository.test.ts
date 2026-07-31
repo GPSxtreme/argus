@@ -80,4 +80,16 @@ describe("SQLite repository", () => {
     expect(await repo.claimJobs("worker-a", 10, 30_000)).toHaveLength(1);
     expect(await repo.claimJobs("worker-b", 10, 30_000)).toHaveLength(0);
   });
+
+  it("commits records and checkpoint as one ingestion unit", async () => {
+    const repo = await createRepo();
+    const result = await repo.commitIngestion({
+      records: [record("atomic")],
+      targetId: "target-1",
+      checkpoint: { latestId: "post-9" },
+    });
+
+    expect(result).toEqual({ inserted: 1, revised: 0, duplicates: 0 });
+    expect(await repo.getCheckpoint("target-1")).toEqual({ latestId: "post-9" });
+  });
 });

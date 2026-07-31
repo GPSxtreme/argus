@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import type {
+  AppliedConfig,
   DerivedArtifact,
+  IngestionCommit,
+  IngestionCommitResult,
   Job,
   Page,
   QueryRecordsInput,
@@ -84,7 +87,14 @@ export class SqliteRepository implements StorageRepository {
     revision?: RecordRevision;
     created: boolean;
   }> {
-    return this.database.transaction(() => {
+    return this.database.transaction(() => this.upsertRecordSync(record))();
+  }
+
+  private upsertRecordSync(record: RecordEnvelope): {
+    record: RecordEnvelope;
+    revision?: RecordRevision;
+    created: boolean;
+  } {
       const current = this.database
         .prepare("SELECT * FROM records WHERE id = ?")
         .get(record.id) as RecordRow | undefined;
@@ -150,6 +160,35 @@ export class SqliteRepository implements StorageRepository {
         revision,
         created: current === undefined,
       };
+  }
+
+  async commitIngestion(
+    input: IngestionCommit,
+  ): Promise<IngestionCommitResult> {
+    return this.database.transaction(() => {
+      const result: IngestionCommitResult = {
+        inserted: 0,
+        revised: 0,
+        duplicates: 0,
+      };
+      for (const record of input.records) {
+        const write = this.upsertRecordSync(record);
+        if (write.created) result.inserted += 1;
+        else if (write.revision) result.revised += 1;
+        else result.duplicates += 1;
+      }
+      this.database
+        .prepare(
+          `INSERT INTO checkpoints(target_id, value_json, updated_at)
+           VALUES (?, ?, ?) ON CONFLICT(target_id) DO UPDATE SET
+           value_json=excluded.value_json, updated_at=excluded.updated_at`,
+        )
+        .run(
+          input.targetId,
+          JSON.stringify(input.checkpoint),
+          new Date().toISOString(),
+        );
+      return result;
     })();
   }
 
@@ -309,5 +348,37 @@ export class SqliteRepository implements StorageRepository {
         JSON.stringify(artifact.provenance),
         artifact.createdAt,
       );
+  }
+
+  async getAppliedConfig(): Promise<AppliedConfig | undefined> {
+    const row = this.database
+      .prepare("SELECT config_json, content_hash, applied_at FROM applied_config WHERE id=1")
+      .get() as
+      | { config_json: string; content_hash: string; applied_at: string }
+      | undefined;
+    return row
+      ? {
+          config: JSON.parse(row.config_json) as unknown,
+          contentHash: row.content_hash,
+          appliedAt: row.applied_at,
+        }
+      : undefined;
+  }
+
+  async applyConfig(snapshot: AppliedConfig): Promise<void> {
+    this.database.transaction(() => {
+      this.database
+        .prepare(
+          `INSERT INTO applied_config(id,config_json,content_hash,applied_at)
+           VALUES(1,?,?,?) ON CONFLICT(id) DO UPDATE SET
+           config_json=excluded.config_json,content_hash=excluded.content_hash,
+           applied_at=excluded.applied_at`,
+        )
+        .run(
+          JSON.stringify(snapshot.config),
+          snapshot.contentHash,
+          snapshot.appliedAt,
+        );
+    })();
   }
 }

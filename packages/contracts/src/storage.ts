@@ -21,6 +21,24 @@ export interface QueryRecordsInput {
   cursor?: string;
 }
 
+export interface IngestionCommit {
+  records: RecordEnvelope[];
+  targetId: string;
+  checkpoint: unknown;
+}
+
+export interface IngestionCommitResult {
+  inserted: number;
+  revised: number;
+  duplicates: number;
+}
+
+export interface AppliedConfig {
+  config: unknown;
+  contentHash: string;
+  appliedAt: string;
+}
+
 export interface Job {
   id: string;
   targetId: string;
@@ -37,6 +55,7 @@ export interface StorageRepository {
   upsertRecord(
     record: RecordEnvelope,
   ): Promise<{ record: RecordEnvelope; revision?: RecordRevision; created: boolean }>;
+  commitIngestion(input: IngestionCommit): Promise<IngestionCommitResult>;
   listRevisions(recordId: string): Promise<Page<RecordRevision>>;
   queryRecords(input: QueryRecordsInput): Promise<Page<RecordEnvelope>>;
   getCheckpoint<T>(targetId: string): Promise<T | undefined>;
@@ -46,4 +65,6 @@ export interface StorageRepository {
   completeJob(id: string): Promise<void>;
   failJob(id: string, error: string, retryAt?: string): Promise<void>;
   saveArtifact(artifact: DerivedArtifact): Promise<void>;
+  getAppliedConfig(): Promise<AppliedConfig | undefined>;
+  applyConfig(snapshot: AppliedConfig): Promise<void>;
 }
