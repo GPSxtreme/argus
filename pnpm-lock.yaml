@@ -49,6 +49,22 @@ importers:
         specifier: workspace:*
         version: link:../storage-sqlite
 
+  packages/intelligence:
+    dependencies:
+      '@argus/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+
+  packages/query:
+    dependencies:
+      '@argus/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+    devDependencies:
+      '@argus/storage-sqlite':
+        specifier: workspace:*
+        version: link:../storage-sqlite
+
   packages/scheduler:
     dependencies:
       '@argus/config':
