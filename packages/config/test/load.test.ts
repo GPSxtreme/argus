@@ -2,6 +2,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   loadConfig,
+  resolveConfigPath,
   resolveSecretReference,
   serializeRedactedConfig,
 } from "../src/index.js";
@@ -10,6 +11,15 @@ const fixture = (name: string): string =>
   fileURLToPath(new URL(`./fixtures/${name}`, import.meta.url));
 
 describe("loadConfig", () => {
+  it("resolves the short default configuration filename from the working directory", () => {
+    expect(
+      resolveConfigPath({
+        cwd: "/srv/argus",
+        environment: {},
+      }),
+    ).toBe("/srv/argus/argus.yaml");
+  });
+
   it("parses watches across the source trinity", async () => {
     const config = await loadConfig(fixture("valid.yaml"), {
       OPENROUTER_API_KEY: "secret",

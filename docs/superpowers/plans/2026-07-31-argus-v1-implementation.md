@@ -77,7 +77,7 @@ packages/intelligence/src/summarizer.ts summary processor
 deploy/docker/Dockerfile            production image
 deploy/docker/compose.yaml          single-host stack
 deploy/railway/*.toml               role templates
-argus.config.example.yaml           complete sample configuration
+argus.example.yaml                  complete sample configuration
 README.md                           product and quickstart
 docs/operations.md                  deployment and recovery guide
 ```
@@ -179,7 +179,7 @@ git commit -m "feat: establish workspace and canonical contracts"
 - Create: `packages/config/src/schema.ts`
 - Create: `packages/config/src/load.ts`
 - Create: `packages/config/src/index.ts`
-- Create: `argus.config.example.yaml`
+- Create: `argus.example.yaml`
 - Test: `packages/config/test/load.test.ts`
 - Test: `packages/config/test/fixtures/valid.yaml`
 - Test: `packages/config/test/fixtures/invalid-sqlite-role.yaml`
@@ -244,7 +244,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add packages/config argus.config.example.yaml
+git add packages/config argus.example.yaml
 git commit -m "feat: add versioned YAML configuration"
 ```
 
@@ -1036,4 +1036,3 @@ Before publishing:
 6. Confirm SQLite rejects split roles and PostgreSQL successfully runs separate
    API, scheduler, and worker processes.
 7. Create a private GitHub repository, push `main`, and confirm CI begins.
-

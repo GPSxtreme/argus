@@ -45,8 +45,9 @@ documentation references mechanically.
 Add to `packages/config/test/load.test.ts`:
 
 ```ts
-it("uses the short V1 default configuration filename", () => {
-  expect(DEFAULT_CONFIG_FILENAME).toBe("argus.yaml");
+it("resolves the short default configuration filename from the working directory", () => {
+  expect(resolveConfigPath({ cwd: "/srv/argus", environment: {} }))
+    .toBe("/srv/argus/argus.yaml");
 });
 ```
 
@@ -58,13 +59,14 @@ Run:
 pnpm vitest run packages/config/test/load.test.ts
 ```
 
-Expected: failure because `DEFAULT_CONFIG_FILENAME` is not exported.
+Expected: failure because `resolveConfigPath` is not exported.
 
 - [ ] **Step 3: Implement the rename**
 
-Export `DEFAULT_CONFIG_FILENAME` from the config package, consume it in the CLI
-defaults and runtime entrypoint, rename the sample to `argus.example.yaml`, and
-replace all active references with `argus.yaml` or `argus.example.yaml`.
+Export `DEFAULT_CONFIG_FILENAME` and `resolveConfigPath` from the config
+package, consume the resolver in the CLI and runtime entrypoint, rename the
+sample to `argus.example.yaml`, and replace all active references with
+`argus.yaml` or `argus.example.yaml`.
 
 - [ ] **Step 4: Verify behavior and stale references**
 

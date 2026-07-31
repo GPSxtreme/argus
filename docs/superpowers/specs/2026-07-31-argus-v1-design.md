@@ -97,7 +97,7 @@ all | api | scheduler | worker | processor
 
 ## 5. Configuration
 
-The default configuration file is `argus.config.yaml`. An alternate path can be
+The default configuration file is `argus.yaml`. An alternate path can be
 provided with `--config`.
 
 The configuration contains:
@@ -516,4 +516,3 @@ V1 is complete when:
     configuration.
 14. all V1 behavior is documented with an example configuration and operational
     guide.
-

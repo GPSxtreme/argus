@@ -10,7 +10,7 @@ COPY . .
 RUN pnpm install --frozen-lockfile
 
 ENV NODE_ENV=production
-ENV ARGUS_CONFIG=/app/argus.config.yaml
+ENV ARGUS_CONFIG=/app/argus.yaml
 EXPOSE 8788
 
 CMD ["pnpm", "start"]

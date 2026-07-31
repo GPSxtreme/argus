@@ -1,7 +1,10 @@
 #!/usr/bin/env node
-import { resolve } from "node:path";
 import { openRepository, startRuntime } from "@argus/app";
-import { loadConfig, reconcileConfig } from "@argus/config";
+import {
+  loadConfig,
+  reconcileConfig,
+  resolveConfigPath,
+} from "@argus/config";
 import { Command } from "commander";
 
 const program = new Command()
@@ -13,9 +16,11 @@ const config = program.command("config").description("Manage Argus configuration
 
 config
   .command("validate")
-  .argument("[path]", "configuration path", "argus.config.yaml")
-  .action(async (path: string) => {
-    const loaded = await loadConfig(resolve(path));
+  .argument("[path]", "configuration path")
+  .action(async (path?: string) => {
+    const loaded = await loadConfig(
+      resolveConfigPath(path ? { explicitPath: path } : {}),
+    );
     process.stdout.write(
       `${JSON.stringify({
         valid: true,
@@ -28,9 +33,11 @@ config
 
 config
   .command("apply")
-  .argument("[path]", "configuration path", "argus.config.yaml")
-  .action(async (path: string) => {
-    const loaded = await loadConfig(resolve(path));
+  .argument("[path]", "configuration path")
+  .action(async (path?: string) => {
+    const loaded = await loadConfig(
+      resolveConfigPath(path ? { explicitPath: path } : {}),
+    );
     const handle = await openRepository(loaded);
     try {
       const result = await reconcileConfig(handle.repository, loaded);
@@ -42,10 +49,10 @@ config
 
 program
   .command("run")
-  .argument("[path]", "configuration path", "argus.config.yaml")
+  .argument("[path]", "configuration path")
   .description("Start the configured Argus runtime role")
-  .action(async (path: string) => {
-    await startRuntime(resolve(path));
+  .action(async (path?: string) => {
+    await startRuntime(resolveConfigPath(path ? { explicitPath: path } : {}));
   });
 
 await program.parseAsync(process.argv);

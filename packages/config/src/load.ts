@@ -1,8 +1,26 @@
 import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import { parse, stringify } from "yaml";
 import { type ArgusConfig, validateConfig } from "./schema.js";
 
 const SECRET_REFERENCE = /^\$\{([A-Z][A-Z0-9_]*)\}$/u;
+export const DEFAULT_CONFIG_FILENAME = "argus.yaml";
+
+export interface ResolveConfigPathInput {
+  explicitPath?: string;
+  environment?: Record<string, string | undefined>;
+  cwd?: string;
+}
+
+export const resolveConfigPath = (
+  input: ResolveConfigPathInput = {},
+): string =>
+  resolve(
+    input.cwd ?? process.cwd(),
+    input.explicitPath ??
+      (input.environment ?? process.env).ARGUS_CONFIG ??
+      DEFAULT_CONFIG_FILENAME,
+  );
 
 export const resolveSecretReference = (
   value: string,

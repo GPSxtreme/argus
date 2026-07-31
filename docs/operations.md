@@ -79,8 +79,8 @@ them into canonical source records.
 Validate and apply before restarting:
 
 ```bash
-pnpm argus config validate /app/argus.config.yaml
-pnpm argus config apply /app/argus.config.yaml
+pnpm argus config validate /app/argus.yaml
+pnpm argus config apply /app/argus.yaml
 ```
 
 Invalid files never replace the current snapshot. Reapplying identical content

@@ -25,7 +25,7 @@ Requirements: Node.js 24 and pnpm 10.
 
 ```bash
 pnpm install
-cp argus.config.example.yaml argus.config.yaml
+cp argus.example.yaml argus.yaml
 cp .env.example .env
 set -a
 source .env
@@ -35,7 +35,7 @@ pnpm argus config apply
 pnpm start
 ```
 
-Edit `argus.config.yaml` before applying it. Remove unused secret references or
+Edit `argus.yaml` before applying it. Remove unused secret references or
 set their environment variables. The API listens on `http://localhost:8788`;
 `GET /health` is public and `/v1/*` accepts `Authorization: Bearer <token>`.
 
@@ -67,7 +67,7 @@ Scheduled and on-demand summaries are stored separately and available from
 
 ## Configuration
 
-`argus.config.example.yaml` shows the full surface. A watch chooses any
+`argus.example.yaml` shows the full surface. A watch chooses any
 combination of X accounts/searches, Telegram channel usernames, URLs, feeds,
 and web queries. `classify.keywords` adds match metadata; it never discards the
 original record.
