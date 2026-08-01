@@ -1,7 +1,28 @@
+import { isIP } from "node:net";
+
 export const POSTGRES_URL_ERROR =
   "PostgreSQL URL must use postgres:// or postgresql:// with a nonempty host and valid percent encoding.";
+export const URL_REDACTION_ERROR =
+  "Configuration URL could not be safely redacted.";
 
 const invalidPercentEncoding = /%(?![0-9a-f]{2})/iu;
+const dnsLabel = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/iu;
+
+const isSupportedTcpHost = (value: string): boolean => {
+  if (value.startsWith("[") && value.endsWith("]")) {
+    return isIP(value.slice(1, -1)) === 6;
+  }
+  if (isIP(value) !== 0) return true;
+
+  const hostname = value.endsWith(".") ? value.slice(0, -1) : value;
+  return (
+    hostname.length > 0 &&
+    hostname.length <= 253 &&
+    hostname
+      .split(".")
+      .every((label) => label.length <= 63 && dnsLabel.test(label))
+  );
+};
 
 export const parseCanonicalPostgresUrl = (value: string): URL => {
   if (invalidPercentEncoding.test(value)) {
@@ -23,7 +44,7 @@ export const parseCanonicalPostgresUrl = (value: string): URL => {
     // them here so its parser cannot surface a credential-bearing URIError.
     decodeURIComponent(url.username);
     decodeURIComponent(url.password);
-    decodeURIComponent(url.hostname);
+    const authorityHost = decodeURIComponent(url.hostname);
     decodeURI(url.pathname);
 
     let queryHost: string | undefined;
@@ -33,7 +54,10 @@ export const parseCanonicalPostgresUrl = (value: string): URL => {
       if (key === "port") queryPort = entry;
     }
     if (
-      queryHost?.startsWith("/") ||
+      !isSupportedTcpHost(authorityHost) ||
+      (queryHost !== undefined &&
+        queryHost !== "" &&
+        !isSupportedTcpHost(queryHost)) ||
       (queryPort !== undefined &&
         queryPort !== "" &&
         (!/^\d+$/u.test(queryPort) ||
@@ -69,7 +93,7 @@ export const withoutUrlCredentials = (value: string): string => {
     url.password = "";
     return url.toString();
   } catch {
-    return value;
+    throw new Error(URL_REDACTION_ERROR);
   }
 };
 

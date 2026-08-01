@@ -169,3 +169,33 @@ TDD and verification:
   live URL remained byte-for-byte unchanged.
 - Fresh Node 24 typecheck/build: 15/15 packages. Lint checked 166 files with no
   warnings; `git diff --check` was clean.
+
+### Decoded PostgreSQL host validation follow-up
+
+Installed `pg-connection-string` 2.14 preserves percent escapes through its
+WHATWG parse and then decodes the authority hostname before opening the
+connection. Characterization showed `%2Fvar%2Frun` became the Unix socket host
+`/var/run`; backslash, NUL, whitespace, and double-encoded percent forms also
+survived the prior validator.
+
+The centralized validator now checks the decoded authority host and effective
+last lowercase query-host override against supported TCP DNS, IPv4, or IPv6
+syntax. It accepts ordinary DNS names, IPv4, bracketed authority/query IPv6,
+unbracketed query IPv6, a valid last query override, and empty-query fallback.
+It rejects all decoded Unix/path-like, backslash, control, whitespace, invalid
+DNS, and single- or double-encoded variants. An invalid authority remains
+invalid even when a query host would otherwise override it.
+
+Generic URL credential redaction also no longer returns its original input on
+parse failure. It throws a static error without raw or decoded input.
+
+TDD and verification:
+
+- RED reproduced current acceptance of encoded authority socket hosts and the
+  generic redactor returning a malformed credential-bearing input unchanged.
+- Focused config/runtime suite: 26/26 passed, including rejection immediately
+  before the PostgreSQL repository driver is opened.
+- Broader config/runtime/storage matrix: 47 passed; 9 opt-in PostgreSQL tests
+  skipped.
+- Fresh Node 24 typecheck/build: 15/15 packages. Lint checked 166 files with no
+  warnings; `git diff --check` was clean.

@@ -41,8 +41,9 @@ describe("runtime repository", () => {
     expect(config.storage.url).toBe(liveUrl);
   });
 
-  it("rejects fallback-only PostgreSQL URLs before opening the driver", async () => {
-    const invalidUrl = "postgres://user:Runtime-Secret@/argus";
+  it("rejects decoded Unix-socket PostgreSQL hosts before opening the driver", async () => {
+    const invalidUrl =
+      "postgres://user:Runtime-Secret@%2Fvar%2Frun%2Fpostgresql/argus";
     const unsafe = {
       ...validateConfig({
         version: 1,

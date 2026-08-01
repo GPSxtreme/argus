@@ -6,6 +6,7 @@ import {
   resolveSecretReference,
   serializeRedactedConfig,
   validateConfig,
+  withoutUrlCredentials,
 } from "../src/index.js";
 
 const fixture = (name: string): string =>
@@ -161,6 +162,18 @@ describe("loadConfig", () => {
       "postgres://user:Fragment-Secret@localhost/argus#ignored",
       "postgres://localhost/argus?host=%2Fvar%2Frun%2Fpostgresql&password=Socket-Secret",
       "postgres://localhost/argus?port=not-a-port&password=Port-Secret",
+      "postgres://user:AuthoritySlash-Secret@%2Fvar%2Frun/argus",
+      "postgres://user:AuthorityBackslash-Secret@%5Cserver/argus",
+      "postgres://user:AuthorityDouble-Secret@%252Fvar/argus",
+      "postgres://user:AuthorityNul-Secret@%00evil/argus",
+      "postgres://user:AuthoritySpace-Secret@%20evil/argus",
+      "postgres://user:AuthorityPath-Secret@%2E%2E/argus",
+      "postgres://localhost/argus?host=%252Fvar&password=QueryDouble-Secret",
+      "postgres://localhost/argus?host=%5Cserver&password=QueryBackslash-Secret",
+      "postgres://localhost/argus?host=%00evil&password=QueryNul-Secret",
+      "postgres://localhost/argus?host=%20evil&password=QuerySpace-Secret",
+      "postgres://localhost/argus?host=good.internal&host=%2Fsocket&password=LastHost-Secret",
+      "postgres://user:ShadowedAuthority-Secret@%2Fsocket/argus?host=good.internal",
     ];
     for (const url of invalid) {
       let thrown: unknown;
@@ -190,6 +203,18 @@ describe("loadConfig", () => {
         "Fragment-Secret",
         "Socket-Secret",
         "Port-Secret",
+        "AuthoritySlash-Secret",
+        "AuthorityBackslash-Secret",
+        "AuthorityDouble-Secret",
+        "AuthorityNul-Secret",
+        "AuthoritySpace-Secret",
+        "AuthorityPath-Secret",
+        "QueryDouble-Secret",
+        "QueryBackslash-Secret",
+        "QueryNul-Secret",
+        "QuerySpace-Secret",
+        "LastHost-Secret",
+        "ShadowedAuthority-Secret",
       ]) {
         expect(String(thrown)).not.toContain(secret);
       }
@@ -204,6 +229,11 @@ describe("loadConfig", () => {
       "postgres://:@localhost/argus?password=&user=&application_name=argus",
       "postgres://localhost/argus?password=query-secret&user=query-user",
       "postgres://fallback.example/argus?host=db.internal&port=5432",
+      "postgres://fallback.example/argus?host=127.0.0.1",
+      "postgres://fallback.example/argus?host=%3A%3A1",
+      "postgres://fallback.example/argus?host=%5B%3A%3A1%5D",
+      "postgres://fallback.example/argus?host=%2Fshadowed&host=db.internal",
+      "postgres://fallback.example/argus?host=",
     ]) {
       expect(
         validateConfig({
@@ -257,5 +287,20 @@ describe("loadConfig", () => {
     );
     expect(String(thrown)).not.toContain(invalidUrl);
     expect(String(thrown)).not.toContain("Projection-Secret");
+  });
+
+  it("never returns an unparseable credential-bearing source URL from redaction", () => {
+    const invalidUrl = "not-a-url user:Generic-Projection-Secret";
+    let thrown: unknown;
+    try {
+      withoutUrlCredentials(invalidUrl);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(String(thrown)).toContain(
+      "Configuration URL could not be safely redacted.",
+    );
+    expect(String(thrown)).not.toContain(invalidUrl);
+    expect(String(thrown)).not.toContain("Generic-Projection-Secret");
   });
 });
