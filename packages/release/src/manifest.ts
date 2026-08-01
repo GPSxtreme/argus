@@ -26,7 +26,8 @@ export type ReleaseManifestErrorCode =
   | "RELEASE_SIGNATURE_INVALID"
   | "RELEASE_MANIFEST_INVALID"
   | "RELEASE_MANIFEST_JSON_INVALID"
-  | "RELEASE_MANIFEST_SCHEMA_INVALID";
+  | "RELEASE_MANIFEST_SCHEMA_INVALID"
+  | "RELEASE_MANIFEST_NON_CANONICAL";
 
 export class ReleaseManifestError extends Error {
   readonly code: ReleaseManifestErrorCode;
@@ -97,6 +98,7 @@ const imageSchema = z
 
 const assetUrlSchema = z
   .string()
+  .trim()
   .refine(isSafeHttpsAssetUrl, "Expected an HTTPS URL without credentials");
 const sha256Schema = z.string().regex(sha256Pattern);
 
@@ -159,6 +161,57 @@ export interface VerifiedReleaseManifest {
   manifest: ReleaseManifestV1;
   /** Lowercase SHA-256 of the exact bytes that passed signature verification. */
   manifestSha256: string;
+}
+
+export function serializeReleaseManifestCanonical(
+  manifest: ReleaseManifestV1,
+): Uint8Array {
+  const parsed = releaseManifestV1Schema.safeParse(manifest);
+  if (!parsed.success) {
+    throw new ReleaseManifestError(
+      "RELEASE_MANIFEST_SCHEMA_INVALID",
+      "Release manifest does not match the supported schema.",
+    );
+  }
+  const value = parsed.data;
+  return Buffer.from(
+    JSON.stringify({
+      schemaVersion: value.schemaVersion,
+      version: value.version,
+      publishedAt: value.publishedAt,
+      images: {
+        app: {
+          reference: value.images.app.reference,
+          digest: value.images.app.digest,
+        },
+        cli: {
+          reference: value.images.cli.reference,
+          digest: value.images.cli.digest,
+        },
+        searxng: {
+          reference: value.images.searxng.reference,
+          digest: value.images.searxng.digest,
+        },
+        postgres: {
+          reference: value.images.postgres.reference,
+          digest: value.images.postgres.digest,
+        },
+      },
+      assets: {
+        fxembed: {
+          url: value.assets.fxembed.url,
+          sha256: value.assets.fxembed.sha256,
+          compatibilityDate: value.assets.fxembed.compatibilityDate,
+        },
+        wrapper: {
+          url: value.assets.wrapper.url,
+          sha256: value.assets.wrapper.sha256,
+        },
+      },
+      minimumStateSchema: value.minimumStateSchema,
+    }),
+    "utf8",
+  );
 }
 
 export const releaseManifestSha256 = (manifestBytes: Uint8Array): string =>
@@ -234,8 +287,11 @@ export function verifyReleaseManifestWithIdentity(
     );
   }
 
+  const parseableManifest = decodedManifest.startsWith("\uFEFF")
+    ? decodedManifest.slice(1)
+    : decodedManifest;
   try {
-    assertJsonObjectKeysUnique(decodedManifest);
+    assertJsonObjectKeysUnique(parseableManifest);
   } catch (error) {
     if (error instanceof DuplicateJsonKeyError) {
       throw new ReleaseManifestError(
@@ -259,7 +315,7 @@ export function verifyReleaseManifestWithIdentity(
   // policy before this native parse can materialize an object.
   let untrustedManifest: unknown;
   try {
-    untrustedManifest = JSON.parse(decodedManifest);
+    untrustedManifest = JSON.parse(parseableManifest);
   } catch {
     throw new ReleaseManifestError(
       "RELEASE_MANIFEST_JSON_INVALID",
@@ -275,8 +331,17 @@ export function verifyReleaseManifestWithIdentity(
     );
   }
 
+  const manifest = parsed.data as ReleaseManifestV1;
+  const canonicalBytes = serializeReleaseManifestCanonical(manifest);
+  if (!Buffer.from(manifestBytes).equals(Buffer.from(canonicalBytes))) {
+    throw new ReleaseManifestError(
+      "RELEASE_MANIFEST_NON_CANONICAL",
+      "Signed release manifest is valid but not canonical.",
+    );
+  }
+
   return {
-    manifest: parsed.data as ReleaseManifestV1,
+    manifest,
     manifestSha256: releaseManifestSha256(manifestBytes),
   };
 }

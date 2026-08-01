@@ -54,6 +54,7 @@ argus_docker_key_fingerprint=9DC858229FC7DD38854AE2D88D81803C0EBFCD88
 argus_tmp=
 argus_lock=
 argus_target_tmp=
+argus_backup_tmp=
 
 argus_die() {
   printf '%s\\n' "argus installer: $*" >&2
@@ -66,6 +67,13 @@ argus_cleanup() {
       rm -f -- "$argus_target_tmp" 2>/dev/null || true
     elif command -v sudo >/dev/null 2>&1; then
       sudo -n rm -f -- "$argus_target_tmp" >/dev/null 2>&1 || true
+    fi
+  fi
+  if [ -n "$argus_backup_tmp" ]; then
+    if [ -w "$(dirname "$argus_backup_tmp")" ]; then
+      rm -f -- "$argus_backup_tmp" 2>/dev/null || true
+    elif command -v sudo >/dev/null 2>&1; then
+      sudo -n rm -f -- "$argus_backup_tmp" >/dev/null 2>&1 || true
     fi
   fi
   if [ -n "$argus_lock" ]; then
@@ -187,6 +195,7 @@ command -v openssl >/dev/null 2>&1 || argus_die "OpenSSL with Ed25519 pkeyutl su
 openssl pkeyutl -help 2>&1 | grep -q -- -rawin || argus_die "OpenSSL is too old; install a version with pkeyutl -rawin support"
 command -v sha256sum >/dev/null 2>&1 || argus_die "sha256sum is required"
 command -v mktemp >/dev/null 2>&1 || argus_die "mktemp is required"
+command -v sync >/dev/null 2>&1 || argus_die "sync from GNU coreutils is required"
 argus_requested_lock=\${ARGUS_INSTALL_LOCK:-\${TMPDIR:-/tmp}/argus-installer.lock}
 printf '%s\\n' "$argus_requested_lock" | LC_ALL=C grep -Eq '^/[A-Za-z0-9._/+:-]+$' ||
   argus_die "unsafe installer lock path"
@@ -226,6 +235,8 @@ argus_curl "$argus_signature_url" "$argus_tmp/manifest.sig" || argus_die "failed
 openssl pkeyutl -verify -pubin -inkey "$argus_tmp/release-public.pem" -rawin -in "$argus_tmp/manifest.json" -sigfile "$argus_tmp/manifest.sig" >/dev/null 2>&1 ||
   argus_die "release manifest signature is invalid"
 
+[ "$(tail -c 1 "$argus_tmp/manifest.json" | od -An -tuC | tr -d ' ')" = 125 ] ||
+  argus_die "signed release manifest must have canonical bytes without BOM or trailing newline"
 [ "$(awk 'END { print NR }' "$argus_tmp/manifest.json")" -eq 1 ] || argus_die "signed release manifest must be canonical single-line JSON"
 LC_ALL=C grep -Eq '^\\{"schemaVersion":1,"version":"(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?","publishedAt":"[0-9]{4}-(0[1-9]|1[0-2])-([012][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]\\.[0-9]{3}Z","images":\\{"app":\\{"reference":"[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}","digest":"sha256:[a-f0-9]{64}"\\},"cli":\\{"reference":"[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}","digest":"sha256:[a-f0-9]{64}"\\},"searxng":\\{"reference":"[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}","digest":"sha256:[a-f0-9]{64}"\\},"postgres":\\{"reference":"[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}","digest":"sha256:[a-f0-9]{64}"\\}\\},"assets":\\{"fxembed":\\{"url":"https://[A-Za-z0-9.-]+(:[0-9]+)?/[A-Za-z0-9._~/%+-]+","sha256":"[a-f0-9]{64}","compatibilityDate":"[0-9]{4}-(0[1-9]|1[0-2])-([012][0-9]|3[01])"\\},"wrapper":\\{"url":"https://[A-Za-z0-9.-]+(:[0-9]+)?/[A-Za-z0-9._~/%+-]+","sha256":"[a-f0-9]{64}"\\}\\},"minimumStateSchema":1\\}$' "$argus_tmp/manifest.json" ||
   argus_die "signed release manifest does not match the supported canonical schema"
@@ -322,8 +333,19 @@ argus_curl "$argus_wrapper_url" "$argus_tmp/argus" || argus_die "failed to downl
 printf '%s  %s\\n' "$argus_wrapper_sha" "$argus_tmp/argus" | sha256sum -c - >/dev/null 2>&1 ||
   argus_die "Argus wrapper checksum does not match the signed manifest"
 sh -n "$argus_tmp/argus" || argus_die "Argus wrapper is not valid POSIX shell"
-grep -q '^argus_cli_image=' "$argus_tmp/argus" || argus_die "signed wrapper is not a recognizable Argus host command"
-grep -q 'ARGUS_INSTALL_ROOT=/opt/argus' "$argus_tmp/argus" || argus_die "signed wrapper is missing the Argus install boundary"
+argus_is_wrapper() {
+  [ "$(sed -n '1p' "$1")" = '#!/bin/sh' ] &&
+    [ "$(sed -n '2p' "$1")" = '# argus-host-wrapper schema=1' ] &&
+    [ "$(sed -n '3p' "$1")" = '# generated-by=@argus/release' ] &&
+    [ "$(sed -n '4p' "$1")" = 'set -eu' ] &&
+    sed -n '6p' "$1" | LC_ALL=C grep -Eq "^argus_version='(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?'$" &&
+    sed -n '7p' "$1" | LC_ALL=C grep -Eq "^argus_cli_image='[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}'$" &&
+    [ "$(grep -Ec '^argus_version=' "$1")" -eq 1 ] &&
+    [ "$(grep -Ec '^argus_cli_image=' "$1")" -eq 1 ] &&
+    [ "$(grep -Ec -- "--env 'ARGUS_INSTALL_ROOT=/opt/argus'" "$1")" -ge 1 ]
+}
+argus_is_wrapper "$argus_tmp/argus" ||
+  argus_die "signed wrapper is not a recognizable Argus host command"
 chmod 755 "$argus_tmp/argus"
 
 argus_as_root() {
@@ -360,16 +382,36 @@ argus_check_docker() {
 argus_install_docker() {
   command -v apt-get >/dev/null 2>&1 || argus_die "apt-get is required to install Docker Engine"
   command -v dpkg >/dev/null 2>&1 || argus_die "dpkg is required to install Docker Engine"
+  command -v dpkg-query >/dev/null 2>&1 || argus_die "dpkg-query is required to check Docker package conflicts"
   command -v timeout >/dev/null 2>&1 || argus_die "timeout from GNU coreutils is required to install Docker Engine safely"
+  argus_conflicts=
+  for argus_package in docker.io docker-compose docker-compose-v2 docker-doc docker-buildx podman-docker containerd runc; do
+    if [ "$(dpkg-query -W -f='\${Status}' "$argus_package" 2>/dev/null || true)" = 'install ok installed' ]; then
+      argus_conflicts="$argus_conflicts $argus_package"
+    fi
+  done
+  [ -z "$argus_conflicts" ] ||
+    argus_die "conflicting distro Docker packages are installed:$argus_conflicts; remove them explicitly, then rerun Argus"
   argus_as_root timeout 300 apt-get -o Acquire::Retries=3 update
   argus_as_root timeout 300 apt-get -o Acquire::Retries=3 install -y ca-certificates curl gnupg
   argus_as_root install -d -m 0755 /etc/apt/keyrings
   argus_curl "https://download.docker.com/linux/$argus_os_id/gpg" "$argus_tmp/docker.asc" ||
     argus_die "failed to download Docker repository key"
-  argus_key_fingerprint=$(gpg --batch --show-keys --with-colons "$argus_tmp/docker.asc" 2>/dev/null | awk -F: '$1 == "fpr" { print $10; exit }')
+  install -d -m 0700 "$argus_tmp/docker-gnupg"
+  gpg --homedir "$argus_tmp/docker-gnupg" --batch --import-options import-minimal --import "$argus_tmp/docker.asc" >/dev/null 2>&1 ||
+    argus_die "Docker repository key could not be imported"
+  argus_primary_fingerprints=$(gpg --homedir "$argus_tmp/docker-gnupg" --batch --with-colons --list-keys 2>/dev/null |
+    awk -F: '$1 == "pub" { primary = 1; next } $1 == "sub" { primary = 0; next } $1 == "fpr" && primary { print $10; primary = 0 }')
+  [ "$(printf '%s\\n' "$argus_primary_fingerprints" | awk 'NF { count++ } END { print count + 0 }')" -eq 1 ] ||
+    argus_die "Docker repository key bundle must contain exactly one primary key"
+  argus_key_fingerprint=$argus_primary_fingerprints
   [ "$argus_key_fingerprint" = "$argus_docker_key_fingerprint" ] ||
     argus_die "Docker repository key fingerprint did not match the pinned official key"
-  argus_as_root install -m 0644 "$argus_tmp/docker.asc" /etc/apt/keyrings/docker.asc
+  gpg --homedir "$argus_tmp/docker-gnupg" --batch --armor --export "$argus_docker_key_fingerprint" > "$argus_tmp/docker.filtered.asc" ||
+    argus_die "Docker repository key could not be exported"
+  [ -s "$argus_tmp/docker.filtered.asc" ] ||
+    argus_die "Docker repository key export was empty"
+  argus_as_root install -m 0644 "$argus_tmp/docker.filtered.asc" /etc/apt/keyrings/docker.asc
   cat > "$argus_tmp/docker.sources" <<ARGUS_DOCKER_SOURCES
 Types: deb
 URIs: https://download.docker.com/linux/$argus_os_id
@@ -391,7 +433,7 @@ if ! argus_check_docker; then
     0) argus_die "Docker Engine and Compose are required; ARGUS_INSTALL_DOCKER=0 forbids installation" ;;
     1) argus_install_docker ;;
     '')
-      if ! exec 3<>/dev/tty 2>/dev/null; then
+      if ! { exec 3<>/dev/tty; } 2>/dev/null; then
         argus_die "Docker is missing and no controlling terminal is available; set ARGUS_INSTALL_DOCKER=1 to approve installation"
       fi
       printf '%s' "Docker Engine and Compose are required. Install from Docker's official apt repository? [y/N] " >&3
@@ -424,7 +466,7 @@ if [ -e "$argus_target" ]; then
     argus_die "could not inspect existing installation target"
   if cmp -s "$argus_tmp/argus" "$argus_target"; then
     argus_existing_exact=1
-  elif grep -q '^argus_cli_image=' "$argus_target" 2>/dev/null && grep -q 'ARGUS_INSTALL_ROOT=/opt/argus' "$argus_target" 2>/dev/null; then
+  elif argus_is_wrapper "$argus_target" 2>/dev/null; then
     argus_existing_exact=0
   else
     argus_die "refusing to replace unrelated file $argus_target"
@@ -454,15 +496,23 @@ if [ "$argus_existing_exact" -eq 0 ]; then
     argus_die "new Argus wrapper failed its version check; existing installation was preserved"
   [ "$argus_temp_version" = "$argus_version" ] ||
     argus_die "new Argus wrapper reported version $argus_temp_version, expected $argus_version; existing installation was preserved"
-  if command -v sync >/dev/null 2>&1; then
-    sync "$argus_target_tmp" 2>/dev/null || sync 2>/dev/null || true
-  fi
+  sync -f "$argus_target_tmp" ||
+    argus_die "could not durably sync the new Argus wrapper; existing installation was preserved"
   [ ! -L "$argus_target" ] || argus_die "target became a symlink during installation"
   if [ "$argus_target_identity" = absent ]; then
     [ ! -e "$argus_target" ] || argus_die "installation target changed during installation"
   else
     [ "$(stat -c '%d:%i:%s' "$argus_target" 2>/dev/null || stat -f '%d:%i:%z' "$argus_target" 2>/dev/null || true)" = "$argus_target_identity" ] ||
       argus_die "installation target changed during installation"
+    if [ -w "$argus_target_dir" ]; then
+      argus_backup_tmp=$(mktemp "$argus_target_dir/.argus.backup.XXXXXX")
+      install -m 0755 "$argus_target" "$argus_backup_tmp"
+    else
+      argus_backup_tmp=$(argus_as_root mktemp "$argus_target_dir/.argus.backup.XXXXXX")
+      argus_as_root install -m 0755 "$argus_target" "$argus_backup_tmp"
+    fi
+    sync -f "$argus_backup_tmp" ||
+      argus_die "could not durably preserve the existing Argus wrapper"
   fi
   if [ -w "$argus_target_dir" ]; then
     mv -f -- "$argus_target_tmp" "$argus_target"
@@ -470,6 +520,33 @@ if [ "$argus_existing_exact" -eq 0 ]; then
     argus_as_root mv -f -- "$argus_target_tmp" "$argus_target"
   fi
   argus_target_tmp=
+  if ! sync -f "$argus_target" || ! sync -f "$argus_target_dir"; then
+    if [ -n "$argus_backup_tmp" ]; then
+      if [ -w "$argus_target_dir" ]; then
+        mv -f -- "$argus_backup_tmp" "$argus_target"
+      else
+        argus_as_root mv -f -- "$argus_backup_tmp" "$argus_target"
+      fi
+      argus_backup_tmp=
+    else
+      if [ -w "$argus_target_dir" ]; then
+        rm -f -- "$argus_target"
+      else
+        argus_as_root rm -f -- "$argus_target"
+      fi
+    fi
+    sync -f "$argus_target_dir" 2>/dev/null || true
+    argus_die "could not durably sync the Argus installation; previous state was restored"
+  fi
+  if [ -n "$argus_backup_tmp" ]; then
+    if [ -w "$argus_target_dir" ]; then
+      rm -f -- "$argus_backup_tmp"
+    else
+      argus_as_root rm -f -- "$argus_backup_tmp"
+    fi
+    argus_backup_tmp=
+    sync -f "$argus_target_dir"
+  fi
 fi
 
 argus_installed_version=$(argus_run_wrapper_version "$argus_target") ||

@@ -4,7 +4,7 @@ import {
   sign,
   type KeyObject,
 } from "node:crypto";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import {
   lstat,
   mkdir,
@@ -18,7 +18,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
-import { renderInstaller } from "../src/installer.js";
+import {
+  type ReleaseManifestError,
+  renderInstaller,
+  serializeReleaseManifestCanonical,
+  type ReleaseManifestV1,
+  verifyReleaseManifest,
+} from "../src/index.js";
 
 const execute = promisify(execFile);
 const servers: ReturnType<typeof createServer>[] = [];
@@ -35,8 +41,21 @@ afterEach(async () => {
 });
 
 const digest = "0".repeat(64);
+const previousWrapper = `#!/bin/sh
+# argus-host-wrapper schema=1
+# generated-by=@argus/release
+set -eu
 
-const manifest = (wrapperSha: string, wrapperUrl = "https://fixture.invalid/wrapper") => ({
+argus_version='0.9.0'
+argus_cli_image='ghcr.io/gpsxtreme/argus-cli@sha256:${digest}'
+# --env 'ARGUS_INSTALL_ROOT=/opt/argus'
+printf '%s\\n' 0.9.0
+`;
+
+const manifest = (
+  wrapperSha: string,
+  wrapperUrl = "https://fixture.invalid/wrapper",
+): ReleaseManifestV1 => ({
   schemaVersion: 1,
   version: "1.2.3",
   publishedAt: "2026-08-01T00:00:00.000Z",
@@ -99,9 +118,13 @@ const createFixture = async (): Promise<Fixture> => {
   await writeFile(
     wrapper,
     `#!/bin/sh
+# argus-host-wrapper schema=1
+# generated-by=@argus/release
 set -eu
+
+argus_version='1.2.3'
 argus_cli_image='ghcr.io/gpsxtreme/argus-cli@sha256:${digest}'
-# ARGUS_INSTALL_ROOT=/opt/argus
+# --env 'ARGUS_INSTALL_ROOT=/opt/argus'
 if [ "\${1:-}" = --version ]; then
   printf '%s\\n' "\${ARGUS_FIXTURE_WRAPPER_VERSION:-1.2.3}"
   exit 0
@@ -113,6 +136,7 @@ exit 64
     join(bin, "uname"),
     `printf "%s\\n" "\${ARGUS_FIXTURE_ARCH:-x86_64}"`,
   );
+  await command(join(bin, "sync"), "exit 0");
   await command(
     join(bin, "docker"),
     'case "$*" in "info"|"compose version") exit 0 ;; *) exit 64 ;; esac',
@@ -214,6 +238,74 @@ const runInstaller = async (
   });
 };
 
+const runInstallerInPty = async (
+  fixture: Fixture,
+  manifestBytes: Buffer,
+  answer: string,
+  environment: Record<string, string> = {},
+): Promise<{ code: number | null; output: string }> => {
+  const manifestUrl = await serveRelease(fixture, manifestBytes);
+  const helper = join(fixture.root, "pty_runner.py");
+  await writeFile(
+    helper,
+    `import errno, os, pty, sys
+pid, master = pty.fork()
+if pid == 0:
+    os.execv("/bin/sh", ["sh", sys.argv[1]])
+answer = os.environ.get("ARGUS_PTY_ANSWER", "").encode()
+os.write(master, answer if answer else b"\\x04")
+chunks = []
+while True:
+    try:
+        chunk = os.read(master, 4096)
+        if not chunk:
+            break
+        chunks.append(chunk)
+    except OSError as error:
+        if error.errno == errno.EIO:
+            break
+        raise
+_, status = os.waitpid(pid, 0)
+os.write(1, b"".join(chunks))
+sys.exit(os.waitstatus_to_exitcode(status))
+`,
+  );
+  const child = spawn("python3", [helper, fixture.installer], {
+    env: {
+      ...process.env,
+      PATH: `${fixture.bin}:/opt/homebrew/bin:/usr/bin:/bin`,
+      ARGUS_MANIFEST_URL: manifestUrl,
+      ARGUS_INSTALL_OS_RELEASE: fixture.osRelease,
+      ARGUS_INSTALL_TARGET: fixture.target,
+      ARGUS_INSTALL_LOCK: join(fixture.root, "installer.lock"),
+      ARGUS_FIXTURE_WRAPPER: fixture.wrapper,
+      ARGUS_PTY_ANSWER: answer,
+      ...environment,
+    },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  let output = "";
+  child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+    output += chunk;
+  });
+  child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+    output += chunk;
+  });
+  child.stdin.end();
+  const code = await new Promise<number | null>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error("PTY installer timed out"));
+    }, 15_000);
+    child.once("error", reject);
+    child.once("exit", (status) => {
+      clearTimeout(timer);
+      resolve(status);
+    });
+  });
+  return { code, output };
+};
+
 describe("renderInstaller", () => {
   it("renders a strict POSIX installer with the supplied trust root", () => {
     const { publicKey } = generateKeyPairSync("ed25519");
@@ -252,6 +344,52 @@ describe("renderInstaller", () => {
     const second = await runInstaller(fixture, bytes);
     expect(second.stdout).toBe("argus onboard\n");
     expect(await readFile(fixture.target)).toEqual(installed);
+  }, 15_000);
+
+  it("shares the exact canonical manifest corpus with the Node verifier", async () => {
+    const fixture = await createFixture();
+    const wrapperSha = createHash("sha256")
+      .update(await readFile(fixture.wrapper))
+      .digest("hex");
+    const canonical = Buffer.from(
+      serializeReleaseManifestCanonical(manifest(wrapperSha)),
+    );
+    const canonicalSignature = sign(null, canonical, fixture.privateKey);
+    expect(
+      verifyReleaseManifest(
+        canonical,
+        canonicalSignature,
+        fixture.publicKeyPem,
+      ),
+    ).toEqual(manifest(wrapperSha));
+    await expect(runInstaller(fixture, canonical)).resolves.toMatchObject({
+      stdout: "argus onboard\n",
+    });
+
+    const value = manifest(wrapperSha);
+    const { version: reorderedVersion, ...reorderedRest } = value;
+    const variants = [
+      Buffer.concat([Buffer.from(" "), canonical]),
+      Buffer.concat([canonical, Buffer.from("\n")]),
+      Buffer.concat([Buffer.from("\uFEFF"), canonical]),
+      Buffer.from(JSON.stringify({ version: reorderedVersion, ...reorderedRest })),
+    ];
+    for (const noncanonical of variants) {
+      const second = await createFixture();
+      const noncanonicalSignature = sign(null, noncanonical, second.privateKey);
+      expect(() =>
+        verifyReleaseManifest(
+          noncanonical,
+          noncanonicalSignature,
+          second.publicKeyPem,
+        ),
+      ).toThrowError(
+        expect.objectContaining<Partial<ReleaseManifestError>>({
+          code: "RELEASE_MANIFEST_NON_CANONICAL",
+        }),
+      );
+      await expect(runInstaller(second, noncanonical)).rejects.toBeDefined();
+    }
   });
 
   it("rejects a bad signature before trusting manifest fields", async () => {
@@ -293,7 +431,7 @@ describe("renderInstaller", () => {
     const fixture = await createFixture();
     await writeFile(
       fixture.target,
-      "#!/bin/sh\nargus_cli_image=old\n# ARGUS_INSTALL_ROOT=/opt/argus\nprintf '%s\\n' 0.9.0\n",
+      previousWrapper,
       { mode: 0o755 },
     );
     const original = await readFile(fixture.target);
@@ -311,6 +449,33 @@ describe("renderInstaller", () => {
     expect(await readFile(fixture.target)).toEqual(original);
   });
 
+  it("restores the previous wrapper when post-rename durability sync fails", async () => {
+    const fixture = await createFixture();
+    await writeFile(fixture.target, previousWrapper, { mode: 0o755 });
+    const syncCount = join(fixture.root, "sync-count");
+    await command(
+      join(fixture.bin, "sync"),
+      `argus_count=0
+[ ! -f "$ARGUS_SYNC_COUNT" ] || argus_count=$(cat "$ARGUS_SYNC_COUNT")
+argus_count=$((argus_count + 1))
+printf '%s' "$argus_count" > "$ARGUS_SYNC_COUNT"
+[ "$argus_count" -ne 3 ]`,
+    );
+    const wrapperSha = createHash("sha256")
+      .update(await readFile(fixture.wrapper))
+      .digest("hex");
+    await expect(
+      runInstaller(
+        fixture,
+        Buffer.from(JSON.stringify(manifest(wrapperSha))),
+        { ARGUS_SYNC_COUNT: syncCount },
+      ),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining("previous state was restored"),
+    });
+    expect(await readFile(fixture.target, "utf8")).toBe(previousWrapper);
+  });
+
   it("refuses target symlinks, unrelated targets, and held installer locks", async () => {
     const fixture = await createFixture();
     const wrapperSha = createHash("sha256")
@@ -324,7 +489,10 @@ describe("renderInstaller", () => {
     });
 
     const second = await createFixture();
-    await writeFile(second.target, "mine");
+    await writeFile(
+      second.target,
+      "mine\n# argus-host-wrapper schema=1\nargus_version=1.0.0\nargus_cli_image=spoof\n--env 'ARGUS_INSTALL_ROOT=/opt/argus'\n# generated-by=@argus/release\n",
+    );
     await expect(runInstaller(second, bytes)).rejects.toMatchObject({
       stderr: expect.stringContaining("unrelated"),
     });
@@ -440,6 +608,107 @@ describe("renderInstaller", () => {
     });
   });
 
+  it("reads Docker decline only from a controlling TTY and performs no mutation", async () => {
+    const fixture = await createFixture();
+    await writeFile(join(fixture.bin, "docker"), "#!/bin/sh\nexit 1\n", {
+      mode: 0o755,
+    });
+    const aptRecord = join(fixture.root, "apt-called");
+    await command(join(fixture.bin, "apt-get"), `: > "${aptRecord}"`);
+    const wrapperSha = createHash("sha256")
+      .update(await readFile(fixture.wrapper))
+      .digest("hex");
+    const result = await runInstallerInPty(
+      fixture,
+      Buffer.from(JSON.stringify(manifest(wrapperSha))),
+      "n\n",
+    );
+    expect(result.output).toContain("official apt repository? [y/N]");
+    expect(result.output).toContain("Docker installation declined");
+    await expect(lstat(fixture.target)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(lstat(aptRecord)).rejects.toMatchObject({ code: "ENOENT" });
+  }, 20_000);
+
+  it.each([
+    ["invalid input", "maybe\n", "Docker installation declined"],
+    ["TTY EOF", "", "could not read Docker installation approval"],
+  ])("fails closed on %s", async (_label, answer, expected) => {
+    const fixture = await createFixture();
+    await writeFile(join(fixture.bin, "docker"), "#!/bin/sh\nexit 1\n", {
+      mode: 0o755,
+    });
+    const wrapperSha = createHash("sha256")
+      .update(await readFile(fixture.wrapper))
+      .digest("hex");
+    const result = await runInstallerInPty(
+      fixture,
+      Buffer.from(JSON.stringify(manifest(wrapperSha))),
+      answer,
+    );
+    expect(result.output).toContain(expected);
+    await expect(lstat(fixture.target)).rejects.toMatchObject({ code: "ENOENT" });
+  }, 20_000);
+
+  it("executes the Docker install path only after yes from the controlling TTY", async () => {
+    const fixture = await createFixture();
+    const sentinel = join(fixture.root, "docker-installed");
+    const fakeEtc = join(fixture.root, "etc");
+    await mkdir(fakeEtc);
+    await command(join(fixture.bin, "id"), 'printf "%s\\n" 0');
+    await command(
+      join(fixture.bin, "docker"),
+      `[ -f "$ARGUS_FIXTURE_DOCKER_SENTINEL" ] || exit 1
+case "$*" in "info"|"compose version") exit 0 ;; *) exit 64 ;; esac`,
+    );
+    await command(
+      join(fixture.bin, "apt-get"),
+      `case " $* " in *" docker-ce "*) : > "$ARGUS_FIXTURE_DOCKER_SENTINEL" ;; esac`,
+    );
+    await command(join(fixture.bin, "dpkg"), "exit 0");
+    await command(join(fixture.bin, "dpkg-query"), "exit 1");
+    await command(join(fixture.bin, "timeout"), 'shift; exec "$@"');
+    await command(join(fixture.bin, "install"), "exit 0");
+    await command(
+      join(fixture.bin, "gpg"),
+      `case " $* " in
+  *" --import "*) exit 0 ;;
+  *" --list-keys "*) printf '%s\\n' 'pub:::::::::' 'fpr:::::::::9DC858229FC7DD38854AE2D88D81803C0EBFCD88:' 'sub:::::::::' 'fpr:::::::::AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA:' ;;
+  *" --export "*) printf '%s\\n' fixture ;;
+  *) exit 64 ;;
+esac`,
+    );
+    await command(join(fixture.bin, "systemctl"), "exit 0");
+    await command(
+      join(fixture.bin, "install"),
+      `argus_last=
+argus_previous=
+for argus_item do argus_previous=$argus_last; argus_last=$argus_item; done
+case "$argus_last" in
+  /etc/*)
+    argus_mapped="$ARGUS_FIXTURE_ETC$argus_last"
+    case " $* " in *" -d "*) mkdir -p "$argus_mapped" ;; *) mkdir -p "$(dirname "$argus_mapped")"; cp "$argus_previous" "$argus_mapped" ;; esac
+    ;;
+  *) exec /usr/bin/install "$@" ;;
+esac`,
+    );
+    const wrapperSha = createHash("sha256")
+      .update(await readFile(fixture.wrapper))
+      .digest("hex");
+    const result = await runInstallerInPty(
+      fixture,
+      Buffer.from(JSON.stringify(manifest(wrapperSha))),
+      "y\n",
+      {
+        ARGUS_FIXTURE_DOCKER_SENTINEL: sentinel,
+        ARGUS_FIXTURE_ETC: fakeEtc,
+      },
+    );
+    expect(result.output).toContain("official apt repository? [y/N]");
+    expect(result.output).toContain("argus onboard");
+    expect(await readFile(sentinel, "utf8")).toBe("");
+    expect((await lstat(fixture.target)).isFile()).toBe(true);
+  }, 20_000);
+
   it("installs Docker only with explicit automation approval from the pinned apt repository", async () => {
     const fixture = await createFixture();
     const sentinel = join(fixture.root, "docker-installed");
@@ -457,10 +726,22 @@ case "$*" in "info"|"compose version") exit 0 ;; *) exit 64 ;; esac`,
 exit 0`,
     );
     await command(join(fixture.bin, "dpkg"), "exit 0");
+    await command(join(fixture.bin, "dpkg-query"), "exit 1");
     await command(join(fixture.bin, "timeout"), 'shift; exec "$@"');
+    await command(join(fixture.bin, "install"), "exit 0");
     await command(
       join(fixture.bin, "gpg"),
-      `printf '%s\\n' 'fpr:::::::::9DC858229FC7DD38854AE2D88D81803C0EBFCD88:'`,
+      `case " $* " in
+  *" --import "*) exit 0 ;;
+  *" --list-keys "*)
+    printf '%s\\n' 'pub:::::::::' 'fpr:::::::::9DC858229FC7DD38854AE2D88D81803C0EBFCD88:' 'sub:::::::::' 'fpr:::::::::AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA:'
+    if [ "\${ARGUS_FIXTURE_EXTRA_DOCKER_PRIMARY:-0}" = 1 ]; then
+      printf '%s\\n' 'pub:::::::::' 'fpr:::::::::BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB:'
+    fi
+    ;;
+  *" --export "*) printf '%s\\n' '-----BEGIN PGP PUBLIC KEY BLOCK-----' fixture '-----END PGP PUBLIC KEY BLOCK-----' ;;
+  *) exit 64 ;;
+esac`,
     );
     await command(join(fixture.bin, "systemctl"), "exit 0");
     await command(
@@ -496,5 +777,107 @@ esac`,
     expect(
       await readFile(join(fakeEtc, "etc/apt/sources.list.d/docker.sources"), "utf8"),
     ).toContain("URIs: https://download.docker.com/linux/ubuntu");
+    expect(
+      await readFile(join(fakeEtc, "etc/apt/keyrings/docker.asc"), "utf8"),
+    ).toContain("BEGIN PGP PUBLIC KEY BLOCK");
+  });
+
+  it("rejects an extra primary Docker key before repository mutation", async () => {
+    const fixture = await createFixture();
+    const sentinel = join(fixture.root, "docker-installed");
+    await command(join(fixture.bin, "id"), 'printf "%s\\n" 0');
+    await command(join(fixture.bin, "docker"), "exit 1");
+    await command(join(fixture.bin, "apt-get"), "exit 0");
+    await command(join(fixture.bin, "dpkg"), "exit 0");
+    await command(join(fixture.bin, "dpkg-query"), "exit 1");
+    await command(join(fixture.bin, "timeout"), 'shift; exec "$@"');
+    await command(join(fixture.bin, "install"), "exit 0");
+    await command(
+      join(fixture.bin, "gpg"),
+      `case " $* " in
+  *" --import "*) exit 0 ;;
+  *" --list-keys "*) printf '%s\\n' 'pub:::::::::' 'fpr:::::::::9DC858229FC7DD38854AE2D88D81803C0EBFCD88:' 'sub:::::::::' 'fpr:::::::::AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA:' 'pub:::::::::' 'fpr:::::::::BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB:' ;;
+  *) exit 64 ;;
+esac`,
+    );
+    const wrapperSha = createHash("sha256")
+      .update(await readFile(fixture.wrapper))
+      .digest("hex");
+    await expect(
+      runInstaller(
+        fixture,
+        Buffer.from(JSON.stringify(manifest(wrapperSha))),
+        {
+          ARGUS_INSTALL_DOCKER: "1",
+          ARGUS_FIXTURE_DOCKER_SENTINEL: sentinel,
+          ARGUS_FIXTURE_ETC: join(fixture.root, "etc"),
+        },
+      ),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining("exactly one primary key"),
+    });
+  });
+
+  it("rejects a wrong Docker primary-key fingerprint", async () => {
+    const fixture = await createFixture();
+    await command(join(fixture.bin, "id"), 'printf "%s\\n" 0');
+    await command(join(fixture.bin, "docker"), "exit 1");
+    await command(join(fixture.bin, "apt-get"), "exit 0");
+    await command(join(fixture.bin, "dpkg"), "exit 0");
+    await command(join(fixture.bin, "dpkg-query"), "exit 1");
+    await command(join(fixture.bin, "timeout"), 'shift; exec "$@"');
+    await command(join(fixture.bin, "install"), "exit 0");
+    await command(
+      join(fixture.bin, "gpg"),
+      `case " $* " in
+  *" --import "*) exit 0 ;;
+  *" --list-keys "*) printf '%s\\n' 'pub:::::::::' 'fpr:::::::::BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB:' ;;
+  *) exit 64 ;;
+esac`,
+    );
+    const wrapperSha = createHash("sha256")
+      .update(await readFile(fixture.wrapper))
+      .digest("hex");
+    await expect(
+      runInstaller(
+        fixture,
+        Buffer.from(JSON.stringify(manifest(wrapperSha))),
+        { ARGUS_INSTALL_DOCKER: "1" },
+      ),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining("fingerprint did not match"),
+    });
+  });
+
+  it("fails closed on conflicting distro Docker packages before apt mutation", async () => {
+    const fixture = await createFixture();
+    const aptRecord = join(fixture.root, "apt-called");
+    await command(
+      join(fixture.bin, "docker"),
+      'case "$*" in info) exit 0 ;; "compose version") exit 1 ;; *) exit 64 ;; esac',
+    );
+    await command(join(fixture.bin, "dpkg"), "exit 0");
+    await command(
+      join(fixture.bin, "dpkg-query"),
+      `argus_last=
+for argus_item do argus_last=$argus_item; done
+case "$argus_last" in docker.io|containerd) printf '%s' 'install ok installed'; exit 0 ;; esac
+exit 1`,
+    );
+    await command(join(fixture.bin, "timeout"), 'shift; exec "$@"');
+    await command(join(fixture.bin, "apt-get"), `: > "${aptRecord}"`);
+    const wrapperSha = createHash("sha256")
+      .update(await readFile(fixture.wrapper))
+      .digest("hex");
+    await expect(
+      runInstaller(
+        fixture,
+        Buffer.from(JSON.stringify(manifest(wrapperSha))),
+        { ARGUS_INSTALL_DOCKER: "1" },
+      ),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining("conflicting distro Docker packages"),
+    });
+    await expect(lstat(aptRecord)).rejects.toMatchObject({ code: "ENOENT" });
   });
 });

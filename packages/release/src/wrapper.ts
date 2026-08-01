@@ -85,6 +85,8 @@ export function renderArgusWrapper(options: ArgusWrapperOptions): string {
   const commandWithTty = renderDockerCommand(options.cliImageDigest, true);
 
   return `#!/bin/sh
+# argus-host-wrapper schema=1
+# generated-by=@argus/release
 set -eu
 
 argus_version=${shellLiteral(options.version)}

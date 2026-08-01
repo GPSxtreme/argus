@@ -115,6 +115,12 @@ describe("renderArgusWrapper", () => {
     const second = renderArgusWrapper({ ...fixture });
 
     expect(first).toBe(second);
+    expect(first.split("\n").slice(0, 4)).toEqual([
+      "#!/bin/sh",
+      "# argus-host-wrapper schema=1",
+      "# generated-by=@argus/release",
+      "set -eu",
+    ]);
     expect(first.endsWith("\n")).toBe(true);
     expect(first).not.toMatch(/:latest\b/u);
     expect(first).not.toContain("$HOME");

@@ -9,6 +9,7 @@ import {
   MAX_RELEASE_MANIFEST_BYTES,
   ReleaseManifestError,
   releaseManifestSha256,
+  serializeReleaseManifestCanonical,
   verifyReleaseManifest,
   verifyReleaseManifestWithIdentity,
 } from "../src/index.js";
@@ -127,13 +128,46 @@ describe("verifyReleaseManifest", () => {
       () => verifyReleaseManifest(spaced, compactSignature, publicPem(publicKey)),
       "RELEASE_SIGNATURE_INVALID",
     );
-    expect(
-      verifyReleaseManifest(
-        spaced,
-        signatureOf(spaced, privateKey),
-        publicPem(publicKey),
+    expectCode(
+      () =>
+        verifyReleaseManifest(
+          spaced,
+          signatureOf(spaced, privateKey),
+          publicPem(publicKey),
+        ),
+      "RELEASE_MANIFEST_NON_CANONICAL",
+    );
+  });
+
+  it("serializes one exact canonical byte contract and trims asset URL input", () => {
+    const bytes = serializeReleaseManifestCanonical({
+      ...validManifest,
+      assets: {
+        ...validManifest.assets,
+        wrapper: {
+          ...validManifest.assets.wrapper,
+          url: `  ${validManifest.assets.wrapper.url}  `,
+        },
+      },
+    });
+    expect(Buffer.from(bytes).toString("utf8")).toBe(JSON.stringify(validManifest));
+  });
+
+  it.each([
+    Buffer.from(` ${JSON.stringify(validManifest)}`),
+    Buffer.from(`${JSON.stringify(validManifest)}\n`),
+    Buffer.from(`\uFEFF${JSON.stringify(validManifest)}`),
+    Buffer.from(
+      JSON.stringify(
+        (({ version, ...rest }) => ({ version, ...rest }))(validManifest),
       ),
-    ).toEqual(validManifest);
+    ),
+  ])("rejects signed noncanonical byte variants", (bytes) => {
+    const { privateKey, publicKey } = keys();
+    expectCode(
+      () => verifyReleaseManifest(bytes, signatureOf(bytes, privateKey), publicPem(publicKey)),
+      "RELEASE_MANIFEST_NON_CANONICAL",
+    );
   });
 
   it("only reports invalid JSON after the invalid bytes have a valid signature", () => {
@@ -404,7 +438,7 @@ describe("verifyReleaseManifest", () => {
 
   it("exposes the exact signed-byte SHA-256 identity", () => {
     const { privateKey, publicKey } = keys();
-    const bytes = Buffer.from(`\n${JSON.stringify(validManifest)}\n`);
+    const bytes = serializeReleaseManifestCanonical(validManifest);
     const expected = createHash("sha256").update(bytes).digest("hex");
 
     expect(releaseManifestSha256(bytes)).toBe(expected);
