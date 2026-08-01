@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { inspectHost, type CommandExecutor, type CommandResult } from "../src/index.js";
+import {
+  inspectHost,
+  parseDiskFreeBytes,
+  parseListeningPorts,
+  parseMemoryBytes,
+  type CommandExecutor,
+  type CommandResult,
+} from "../src/index.js";
 
 const gibibyte = 1024 ** 3;
 
@@ -15,10 +22,10 @@ class FixtureExecutor implements CommandExecutor {
   }
 }
 
-const result = (stdout: string, exitCode = 0): CommandResult => ({
+const result = (stdout: string, exitCode = 0, stderr = ""): CommandResult => ({
   exitCode,
   stdout,
-  stderr: "",
+  stderr,
 });
 
 const hostFixtures = (overrides: Record<string, CommandResult> = {}) => ({
@@ -59,9 +66,26 @@ describe("inspectHost", () => {
     );
 
     expect(report.supported).toBe(false);
+    expect(report.os).toEqual({ id: "fedora", version: "42", arch: "arm64" });
     expect(report.failures).toContainEqual(
       expect.objectContaining({ code: "UNSUPPORTED_OS" }),
     );
+  });
+
+  it("preserves unreadable OS and unsupported architecture facts", async () => {
+    const report = await inspectHost(
+      new FixtureExecutor(
+        hostFixtures({
+          "cat /etc/os-release": result("", 1, "permission denied"),
+          "uname -m": result("riscv64\n"),
+        }),
+      ),
+    );
+
+    expect(report.supported).toBe(false);
+    expect(report.os).toEqual({ id: "unknown", version: "unknown", arch: "riscv64" });
+    expect(report.failures.map((entry) => entry.code)).toContain("UNSUPPORTED_OS");
+    expect(report.failures.map((entry) => entry.code)).toContain("UNSUPPORTED_ARCH");
   });
 
   it("reports API ports already listening", async () => {
@@ -82,6 +106,21 @@ describe("inspectHost", () => {
     );
   });
 
+  it("blocks onboarding when socket inspection fails without leaking command output", async () => {
+    const report = await inspectHost(
+      new FixtureExecutor(
+        hostFixtures({ "ss -ltn": result("", 1, "socket-error-api-secret") }),
+      ),
+      { apiPort: 8788 },
+    );
+
+    expect(report.ports).toEqual([{ port: 8788, available: "unknown" }]);
+    expect(report.failures).toContainEqual(
+      expect.objectContaining({ code: "PORT_INSPECTION_FAILED" }),
+    );
+    expect(JSON.stringify(report)).not.toContain("socket-error-api-secret");
+  });
+
   it("requires 2 GiB memory for managed SearXNG and 5 GiB free disk", async () => {
     const report = await inspectHost(
       new FixtureExecutor(
@@ -98,6 +137,30 @@ describe("inspectHost", () => {
     expect(report.failures.map((entry) => entry.code)).toEqual([
       "INSUFFICIENT_MEMORY",
       "INSUFFICIENT_DISK",
+    ]);
+  });
+
+  it("treats malformed resource and socket output as indeterminate", async () => {
+    expect(parseMemoryBytes("Mem: unavailable\n")).toBeUndefined();
+    expect(parseDiskFreeBytes("Filesystem unavailable\n")).toBeUndefined();
+    expect(parseListeningPorts("LISTEN malformed\n")).toBeUndefined();
+
+    const report = await inspectHost(
+      new FixtureExecutor(
+        hostFixtures({
+          "free -b": result("Mem: unavailable\n"),
+          "df -B1 /": result("Filesystem unavailable\n"),
+          "ss -ltn": result("LISTEN malformed\n"),
+        }),
+      ),
+    );
+
+    expect(report.resources).toEqual({ memoryBytes: undefined, diskFreeBytes: undefined });
+    expect(report.ports).toEqual([{ port: 8788, available: "unknown" }]);
+    expect(report.failures.map((entry) => entry.code)).toEqual([
+      "MEMORY_INSPECTION_FAILED",
+      "DISK_INSPECTION_FAILED",
+      "PORT_INSPECTION_FAILED",
     ]);
   });
 });

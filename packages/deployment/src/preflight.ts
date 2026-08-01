@@ -6,10 +6,10 @@ const minimumDiskBytes = 5 * gibibyte;
 
 export interface PreflightReport {
   supported: boolean;
-  os: { id: "ubuntu" | "debian"; version: string; arch: "x64" | "arm64" };
+  os: { id: string; version: string; arch: string };
   docker: { installed: boolean; compose: boolean; daemonReachable: boolean };
-  resources: { memoryBytes: number; diskFreeBytes: number };
-  ports: Array<{ port: number; available: boolean }>;
+  resources: { memoryBytes: number | undefined; diskFreeBytes: number | undefined };
+  ports: Array<{ port: number; available: boolean | "unknown" }>;
   failures: Array<{ code: string; message: string; recovery: string }>;
 }
 
@@ -32,11 +32,15 @@ export const parseOsRelease = (stdout: string): ParsedOsRelease => {
     const value = line.slice(separator + 1).replace(/^(?:"|')|(?:"|')$/g, "");
     values.set(key, value);
   }
-  return { id: values.get("ID")?.toLowerCase() ?? "", version: values.get("VERSION_ID") ?? "" };
+  return {
+    id: values.get("ID")?.toLowerCase() || "unknown",
+    version: values.get("VERSION_ID") || "unknown",
+  };
 };
 
-export const parseArchitecture = (stdout: string): "x64" | "arm64" | undefined => {
-  switch (stdout.trim().toLowerCase()) {
+export const parseArchitecture = (stdout: string): string => {
+  const observed = stdout.trim().toLowerCase();
+  switch (observed) {
     case "x86_64":
     case "amd64":
       return "x64";
@@ -44,28 +48,32 @@ export const parseArchitecture = (stdout: string): "x64" | "arm64" | undefined =
     case "arm64":
       return "arm64";
     default:
-      return undefined;
+      return observed || "unknown";
   }
 };
 
-export const parseMemoryBytes = (stdout: string): number => {
+export const parseMemoryBytes = (stdout: string): number | undefined => {
   const match = stdout.match(/^Mem:\s+(\d+)/m);
-  return match === null ? 0 : Number(match[1]);
+  return match === null ? undefined : Number(match[1]);
 };
 
-export const parseDiskFreeBytes = (stdout: string): number => {
+export const parseDiskFreeBytes = (stdout: string): number | undefined => {
   const line = stdout.split("\n").find((entry) => entry.trim().length > 0 && !entry.startsWith("Filesystem"));
-  if (line === undefined) return 0;
+  if (line === undefined) return undefined;
   const fields = line.trim().split(/\s+/);
-  return Number(fields[3]) || 0;
+  const available = Number(fields[3]);
+  return Number.isFinite(available) ? available : undefined;
 };
 
-export const parseListeningPorts = (stdout: string): ReadonlySet<number> => {
+export const parseListeningPorts = (stdout: string): ReadonlySet<number> | undefined => {
   const ports = new Set<number>();
   for (const line of stdout.split("\n")) {
-    const localAddress = line.trim().split(/\s+/)[3];
+    const trimmed = line.trim();
+    if (trimmed.length === 0 || trimmed.startsWith("State ")) continue;
+    const localAddress = trimmed.split(/\s+/)[3];
     const match = localAddress?.match(/:(\d+)$/);
-    if (match) ports.add(Number(match[1]));
+    if (!match) return undefined;
+    ports.add(Number(match[1]));
   }
   return ports;
 };
@@ -94,15 +102,15 @@ export const inspectHost = async (
   const os = parseOsRelease(osRelease.stdout);
   const arch = parseArchitecture(architecture.stdout);
   const supportedOs = os.id === "ubuntu" || os.id === "debian";
-  const supportedArchitecture = arch !== undefined;
+  const supportedArchitecture = arch === "x64" || arch === "arm64";
   const installed = succeeded(dockerVersion);
   const compose = installed && succeeded(composeVersion);
   const daemonReachable = installed && succeeded(dockerInfo);
-  const memoryBytes = parseMemoryBytes(memory.stdout);
-  const diskFreeBytes = parseDiskFreeBytes(disk.stdout);
+  const memoryBytes = succeeded(memory) ? parseMemoryBytes(memory.stdout) : undefined;
+  const diskFreeBytes = succeeded(disk) ? parseDiskFreeBytes(disk.stdout) : undefined;
   const minimumMemoryBytes = (options.searxngEnabled ? 2 : 1) * gibibyte;
-  const usedPorts = parseListeningPorts(sockets.stdout);
-  const portAvailable = !usedPorts.has(apiPort);
+  const usedPorts = succeeded(sockets) ? parseListeningPorts(sockets.stdout) : undefined;
+  const portAvailable = usedPorts === undefined ? "unknown" : !usedPorts.has(apiPort);
   const failures: PreflightReport["failures"] = [];
 
   if (!supportedOs) {
@@ -150,7 +158,15 @@ export const inspectHost = async (
       ),
     );
   }
-  if (memoryBytes < minimumMemoryBytes) {
+  if (memoryBytes === undefined) {
+    failures.push(
+      failure(
+        "MEMORY_INSPECTION_FAILED",
+        "Host memory could not be inspected.",
+        "Confirm the host memory inspection command is available, then run argus onboard again.",
+      ),
+    );
+  } else if (memoryBytes < minimumMemoryBytes) {
     failures.push(
       failure(
         "INSUFFICIENT_MEMORY",
@@ -159,7 +175,15 @@ export const inspectHost = async (
       ),
     );
   }
-  if (diskFreeBytes < minimumDiskBytes) {
+  if (diskFreeBytes === undefined) {
+    failures.push(
+      failure(
+        "DISK_INSPECTION_FAILED",
+        "Host free disk space could not be inspected.",
+        "Confirm the host disk inspection command is available, then run argus onboard again.",
+      ),
+    );
+  } else if (diskFreeBytes < minimumDiskBytes) {
     failures.push(
       failure(
         "INSUFFICIENT_DISK",
@@ -168,7 +192,15 @@ export const inspectHost = async (
       ),
     );
   }
-  if (!portAvailable) {
+  if (portAvailable === "unknown") {
+    failures.push(
+      failure(
+        "PORT_INSPECTION_FAILED",
+        "Listening ports could not be inspected.",
+        "Confirm the socket inspection command is available, then run argus onboard again.",
+      ),
+    );
+  } else if (!portAvailable) {
     failures.push(
       failure(
         "PORT_IN_USE",
@@ -180,7 +212,7 @@ export const inspectHost = async (
 
   return {
     supported: supportedOs && supportedArchitecture,
-    os: { id: os.id === "ubuntu" ? "ubuntu" : "debian", version: os.version, arch: arch ?? "x64" },
+    os: { id: os.id, version: os.version, arch },
     docker: { installed, compose, daemonReachable },
     resources: { memoryBytes, diskFreeBytes },
     ports: [{ port: apiPort, available: portAvailable }],
