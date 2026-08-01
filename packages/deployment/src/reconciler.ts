@@ -21,6 +21,7 @@ export interface DesiredDeployment {
 export interface DeploymentContext {
   root: string;
   executor: CommandExecutor;
+  desired?: DesiredDeployment;
 }
 
 export interface ActualDeployment {
@@ -105,7 +106,8 @@ const parseStatus = (stdout: string): DeploymentStatus["services"] => {
 };
 
 export const getDeploymentStatus = async (context: DeploymentContext): Promise<DeploymentStatus> => {
-  const result = await runCompose(context, ["ps", "--format", "json"], "status inspection");
+  const environment = context.desired === undefined ? undefined : composeEnvironment(context.desired);
+  const result = await runCompose(context, ["ps", "--format", "json"], "status inspection", environment);
   const services = parseStatus(result.stdout);
   return {
     services,
@@ -146,6 +148,11 @@ export const planDeployment = (actual: ActualDeployment, desired: DesiredDeploym
       changes.push(change(service, "create", `Create ${service} service.`));
     } else if (observed.image !== expectedImage) {
       changes.push(change(service, "update", `Update ${service} to its pinned release image.`));
+    } else {
+      const runtime = actual.services[service];
+      if (runtime === undefined || !runtime.running || !runtime.healthy) {
+        changes.push(change(service, "restart", `Restore ${service} to a healthy running state.`));
+      }
     }
   }
   for (const service of Object.keys(state?.services ?? {})) {
@@ -163,11 +170,7 @@ export const applyDeployment = async (plan: LifecyclePlan, context: DeploymentCo
   const environment = composeEnvironment(plan.desired);
   await runCompose(context, ["config"], "configuration validation", environment);
   await runCompose(context, ["up", "-d", "--remove-orphans"], "apply", environment);
-  const status = await getDeploymentStatus(context);
-  const running = new Set(status.services.filter((service) => service.state === "running").map((service) => service.name.replace(/^argus-/, "")));
-  if (!status.healthy || requiredServices(plan.desired).some((service) => !running.has(service))) {
-    throw new Error("Argus deployment did not become healthy. Run 'argus status' for safe diagnostics.");
-  }
+  await verifyRunning(context, plan.desired);
 
   const services = Object.fromEntries(
     requiredServices(plan.desired).map((service) => [
@@ -185,15 +188,56 @@ export const applyDeployment = async (plan: LifecyclePlan, context: DeploymentCo
   });
 };
 
+const requiredDesired = (context: DeploymentContext): DesiredDeployment => {
+  if (context.desired === undefined) {
+    throw new Error("A verified desired deployment is required before changing lifecycle state.");
+  }
+  return context.desired;
+};
+
+const verifyRunning = async (context: DeploymentContext, desired: DesiredDeployment): Promise<void> => {
+  const status = await getDeploymentStatus({ ...context, desired });
+  const running = new Set(
+    status.services
+      .filter((service) => service.state === "running" && service.health !== "unhealthy")
+      .map((service) => service.name.replace(/^argus-/, "")),
+  );
+  if (!status.healthy || requiredServices(desired).some((service) => !running.has(service))) {
+    throw new Error("Argus deployment did not become healthy. Run 'argus status' for safe diagnostics.");
+  }
+};
+
+const verifyStopped = async (context: DeploymentContext, desired: DesiredDeployment): Promise<void> => {
+  const status = await getDeploymentStatus({ ...context, desired });
+  const running = new Set(
+    status.services.filter((service) => service.state === "running").map((service) => service.name.replace(/^argus-/, "")),
+  );
+  if (requiredServices(desired).some((service) => running.has(service))) {
+    throw new Error("Argus deployment did not stop. Run 'argus status' for safe diagnostics.");
+  }
+};
+
 export const startDeployment = async (context: DeploymentContext): Promise<void> => {
-  await runCompose(context, ["config"], "configuration validation");
-  await runCompose(context, ["up", "-d"], "start");
+  const desired = requiredDesired(context);
+  const environment = composeEnvironment(desired);
+  await getDeploymentStatus(context);
+  await runCompose(context, ["config"], "configuration validation", environment);
+  await runCompose(context, ["up", "-d"], "start", environment);
+  await verifyRunning(context, desired);
 };
 
 export const stopDeployment = async (context: DeploymentContext): Promise<void> => {
-  await runCompose(context, ["stop"], "stop");
+  const desired = requiredDesired(context);
+  const environment = composeEnvironment(desired);
+  await getDeploymentStatus(context);
+  await runCompose(context, ["stop"], "stop", environment);
+  await verifyStopped(context, desired);
 };
 
 export const restartDeployment = async (context: DeploymentContext): Promise<void> => {
-  await runCompose(context, ["restart"], "restart");
+  const desired = requiredDesired(context);
+  const environment = composeEnvironment(desired);
+  await getDeploymentStatus(context);
+  await runCompose(context, ["restart"], "restart", environment);
+  await verifyRunning(context, desired);
 };

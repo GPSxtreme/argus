@@ -29,6 +29,14 @@ class FixtureExecutor implements CommandExecutor {
     env: Record<string, string> | undefined;
   }> = [];
 
+  private running: boolean;
+  private readonly ignoreLifecycleActions: boolean;
+
+  constructor({ running = true, ignoreLifecycleActions = false } = {}) {
+    this.running = running;
+    this.ignoreLifecycleActions = ignoreLifecycleActions;
+  }
+
   async run(
     command: string,
     args: string[],
@@ -39,12 +47,15 @@ class FixtureExecutor implements CommandExecutor {
       return {
         exitCode: 0,
         stdout: JSON.stringify([
-          { Name: "argus-argus", State: "running", Health: "healthy" },
-          { Name: "argus-searxng", State: "running", Health: "healthy" },
+          { Service: "argus", State: this.running ? "running" : "exited", Health: "healthy" },
+          { Service: "searxng", State: this.running ? "running" : "exited", Health: "healthy" },
         ]),
         stderr: "",
       };
     }
+    if (!this.ignoreLifecycleActions && args.includes("up")) this.running = true;
+    if (!this.ignoreLifecycleActions && args.includes("stop")) this.running = false;
+    if (!this.ignoreLifecycleActions && args.includes("restart")) this.running = true;
     return { exitCode: 0, stdout: "", stderr: "" };
   }
 }
@@ -62,11 +73,13 @@ const desired: DesiredDeployment = {
   },
 };
 
-const contextFor = async (): Promise<{ context: DeploymentContext; executor: FixtureExecutor }> => {
+const contextFor = async (
+  executorOptions?: ConstructorParameters<typeof FixtureExecutor>[0],
+): Promise<{ context: DeploymentContext; executor: FixtureExecutor }> => {
   const root = await mkdtemp(join(tmpdir(), "argus-reconciler-"));
   roots.push(root);
-  const executor = new FixtureExecutor();
-  return { context: { root, executor }, executor };
+  const executor = new FixtureExecutor(executorOptions);
+  return { context: { root, executor, desired }, executor };
 };
 
 describe("deployment reconciliation", () => {
@@ -112,6 +125,59 @@ describe("deployment reconciliation", () => {
     });
   });
 
+  it.each([
+    ["missing", {}, "searxng"],
+    ["stopped", { searxng: { running: false, healthy: true } }, "searxng"],
+    ["unhealthy", { searxng: { running: true, healthy: false } }, "searxng"],
+    ["stopped", { argus: { running: false, healthy: true } }, "argus"],
+  ])("reconciles a %s selected service", (condition, overrides, expectedService) => {
+    const currentServices: Record<string, { running: boolean; healthy: boolean }> = {
+      argus: { running: true, healthy: true },
+      searxng: { running: true, healthy: true },
+      ...overrides,
+    };
+    if (condition === "missing") Reflect.deleteProperty(currentServices, "searxng");
+    const plan = planDeployment(
+      {
+        state: {
+          schemaVersion: 1,
+          argusVersion: desired.version,
+          composeProject: "argus",
+          configHash: desired.configHash,
+          services: {
+            argus: { image: `${desired.images.argus.reference}@${desired.images.argus.digest}`, healthy: true },
+            searxng: { image: `${desired.images.searxng.reference}@${desired.images.searxng.digest}`, healthy: true },
+          },
+          updatedAt: "2026-08-01T00:00:00.000Z",
+        },
+        services: currentServices,
+      },
+      desired,
+    );
+
+    expect(plan.changes).toEqual([
+      expect.objectContaining({ component: expectedService, action: "restart" }),
+    ]);
+  });
+
+  it("fails start when the expected services do not become running", async () => {
+    const { context } = await contextFor({ running: false, ignoreLifecycleActions: true });
+
+    await expect(startDeployment(context)).rejects.toThrow("did not become healthy");
+  });
+
+  it("fails stop when selected services remain running", async () => {
+    const { context } = await contextFor({ running: true, ignoreLifecycleActions: true });
+
+    await expect(stopDeployment(context)).rejects.toThrow("did not stop");
+  });
+
+  it("fails restart when selected services do not become healthy", async () => {
+    const { context } = await contextFor({ running: false, ignoreLifecycleActions: true });
+
+    await expect(restartDeployment(context)).rejects.toThrow("did not become healthy");
+  });
+
   it("uses Docker Compose lifecycle commands with the fixed project name", async () => {
     const { context, executor } = await contextFor();
 
@@ -121,11 +187,18 @@ describe("deployment reconciliation", () => {
     await getDeploymentStatus(context);
 
     expect(executor.calls.map(({ command, args }) => [command, args])).toEqual([
+      ["docker", ["compose", "-p", "argus", "ps", "--format", "json"]],
       ["docker", ["compose", "-p", "argus", "config"]],
       ["docker", ["compose", "-p", "argus", "up", "-d"]],
+      ["docker", ["compose", "-p", "argus", "ps", "--format", "json"]],
+      ["docker", ["compose", "-p", "argus", "ps", "--format", "json"]],
       ["docker", ["compose", "-p", "argus", "stop"]],
+      ["docker", ["compose", "-p", "argus", "ps", "--format", "json"]],
+      ["docker", ["compose", "-p", "argus", "ps", "--format", "json"]],
       ["docker", ["compose", "-p", "argus", "restart"]],
       ["docker", ["compose", "-p", "argus", "ps", "--format", "json"]],
+      ["docker", ["compose", "-p", "argus", "ps", "--format", "json"]],
     ]);
+    expect(executor.calls.every((call) => call.env?.ARGUS_API_PORT === "8788")).toBe(true);
   });
 });
