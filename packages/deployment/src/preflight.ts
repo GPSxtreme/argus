@@ -16,6 +16,12 @@ export interface PreflightReport {
 export interface InspectHostOptions {
   apiPort?: number;
   searxngEnabled?: boolean;
+  hostArchitecture?: string;
+  hostPaths?: {
+    osRelease: string;
+    meminfo: string;
+    diskRoot: string;
+  };
 }
 
 interface ParsedOsRelease {
@@ -53,8 +59,10 @@ export const parseArchitecture = (stdout: string): string => {
 };
 
 export const parseMemoryBytes = (stdout: string): number | undefined => {
-  const match = stdout.match(/^Mem:\s+(\d+)/m);
-  return match === null ? undefined : Number(match[1]);
+  const free = stdout.match(/^Mem:\s+(\d+)/m);
+  if (free !== null) return Number(free[1]);
+  const proc = stdout.match(/^MemTotal:\s+(\d+)\s+kB$/m);
+  return proc === null ? undefined : Number(proc[1]) * 1024;
 };
 
 export const parseDiskFreeBytes = (stdout: string): number | undefined => {
@@ -87,15 +95,26 @@ export const inspectHost = async (
   options: InspectHostOptions = {},
 ): Promise<PreflightReport> => {
   const apiPort = options.apiPort ?? 8788;
+  const hostPaths = options.hostPaths ?? {
+    osRelease: "/etc/os-release",
+    meminfo: "/proc/meminfo",
+    diskRoot: "/",
+  };
   const [osRelease, architecture, dockerVersion, composeVersion, dockerInfo, memory, disk, sockets] =
     await Promise.all([
-      executor.run("cat", ["/etc/os-release"]),
-      executor.run("uname", ["-m"]),
+      executor.run("cat", [hostPaths.osRelease]),
+      options.hostArchitecture === undefined
+        ? executor.run("docker", ["info", "--format", "{{.Architecture}}"])
+        : Promise.resolve({
+            exitCode: 0,
+            stdout: options.hostArchitecture,
+            stderr: "",
+          }),
       executor.run("docker", ["--version"]),
       executor.run("docker", ["compose", "version"]),
       executor.run("docker", ["info"]),
-      executor.run("free", ["-b"]),
-      executor.run("df", ["-B1", "/"]),
+      executor.run("cat", [hostPaths.meminfo]),
+      executor.run("df", ["-B1", hostPaths.diskRoot]),
       executor.run("ss", ["-ltn"]),
     ]);
 

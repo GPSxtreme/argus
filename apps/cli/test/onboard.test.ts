@@ -2,7 +2,9 @@ import {
   chmod,
   mkdtemp,
   readFile,
+  readdir,
   stat,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -199,8 +201,14 @@ intelligence:
     const dependencies: CliDependencies = {
       deployment: {
         ...deploymentAdapter(),
+        async inspectOnboarding(_answers, secrets) {
+          return { summary: `plan ${secrets.ARGUS_API_TOKEN}` };
+        },
         async applyOnboarding(_answers, secrets) {
           appliedSecrets = secrets;
+        },
+        async verifyOnboarding() {
+          return { echo: appliedSecrets?.ARGUS_API_TOKEN };
         },
       },
       prompt: noPrompt,
@@ -215,6 +223,7 @@ intelligence:
         async writeSecret() {},
       },
       root: "/opt/argus",
+      interactive: true,
       secretValues: async () => ({}),
       config: {
         async validate() {
@@ -241,7 +250,124 @@ intelligence:
     expect(appliedSecrets).toEqual({
       ARGUS_API_TOKEN: "Argus API token-value",
     });
+    expect(stdout).not.toContain("Argus API token-value");
     expect(JSON.parse(stdout).ok).toBe(true);
+  });
+
+  it("redacts newly entered secrets from future adapter errors", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "argus-cli-ephemeral-"));
+    temporaryDirectories.push(directory);
+    const setup = join(directory, "setup.yaml");
+    await writeFile(setup, onboardingFixture, { mode: 0o600 });
+    let stdout = "";
+    const dependencies: CliDependencies = {
+      deployment: {
+        ...deploymentAdapter(),
+        async applyOnboarding(_answers, secrets) {
+          const { DeploymentError } = await import("@argus/deployment");
+          throw new DeploymentError(
+            "FUTURE_ADAPTER_FAILED",
+            `future adapter leaked ${secrets.ARGUS_API_TOKEN}`,
+          );
+        },
+      },
+      prompt: noPrompt,
+      io: { stdout: (value) => (stdout += value), stderr: () => undefined },
+      files: {
+        readText: (path) => readFile(path, "utf8"),
+        async stat(path) {
+          return { mode: (await stat(path)).mode };
+        },
+        async writeSecret() {},
+      },
+      root: "/opt/argus",
+      interactive: true,
+      secretValues: async () => ({}),
+      config: {
+        async validate() {
+          return {};
+        },
+        async apply() {
+          return {};
+        },
+        async show() {
+          return {};
+        },
+      },
+    };
+
+    await expect(
+      createProgram(dependencies).parseAsync([
+        "node",
+        "argus",
+        "onboard",
+        "--from",
+        setup,
+        "--yes",
+        "--json",
+      ]),
+    ).rejects.toMatchObject({ exitCode: 1 });
+    expect(stdout).not.toContain("Argus API token-value");
+    expect(JSON.parse(stdout).error.message).toContain("[REDACTED]");
+  });
+
+  it("dry-runs file onboarding without secret prompts or mutation", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "argus-cli-dry-run-"));
+    temporaryDirectories.push(directory);
+    const setup = join(directory, "setup.yaml");
+    await writeFile(setup, onboardingFixture, { mode: 0o600 });
+    let stdout = "";
+    let applied = false;
+    const dependencies: CliDependencies = {
+      deployment: {
+        ...deploymentAdapter(),
+        async inspectOnboarding() {
+          return { changes: [{ component: "argus", action: "create" }] };
+        },
+        async applyOnboarding() {
+          applied = true;
+        },
+      },
+      prompt: noPrompt,
+      io: { stdout: (value) => (stdout += value), stderr: () => undefined },
+      files: {
+        readText: (path) => readFile(path, "utf8"),
+        async stat(path) {
+          return { mode: (await stat(path)).mode };
+        },
+        async writeSecret() {},
+      },
+      root: "/opt/argus",
+      interactive: true,
+      secretValues: async () => ({}),
+      config: {
+        async validate() {
+          return {};
+        },
+        async apply() {
+          return {};
+        },
+        async show() {
+          return {};
+        },
+      },
+    };
+
+    await createProgram(dependencies).parseAsync([
+      "node",
+      "argus",
+      "onboard",
+      "--from",
+      setup,
+      "--dry-run",
+      "--json",
+    ]);
+
+    expect(applied).toBe(false);
+    expect(JSON.parse(stdout)).toMatchObject({
+      ok: true,
+      data: { plan: { changes: expect.any(Array) } },
+    });
   });
 
   it("emits a JSON schema that validates the checked-in onboarding fixture", async () => {
@@ -260,6 +386,7 @@ intelligence:
         async writeSecret() {},
       },
       root: "/opt/argus",
+      interactive: true,
       secretValues: async () => ({}),
       config: {
         async validate() {
@@ -294,6 +421,22 @@ intelligence:
       formats: { uri: true },
     }).compile(schema);
     expect(validate(fixture), JSON.stringify(validate.errors)).toBe(true);
+    for (const invalid of [
+      {
+        ...structuredClone(fixture),
+        managed: { searxng: "managed", fxembed: "managed" },
+      },
+      {
+        ...structuredClone(fixture),
+        managed: { searxng: "external", fxembed: "disabled" },
+      },
+      {
+        ...structuredClone(fixture),
+        managed: { searxng: "managed", fxembed: "external" },
+      },
+    ]) {
+      expect(validate(invalid)).toBe(false);
+    }
   });
 
   it("redacts exact secrets and secret-derived strings from config show JSON", async () => {
@@ -313,6 +456,7 @@ intelligence:
         async writeSecret() {},
       },
       root: "/opt/argus",
+      interactive: true,
       secretValues: async () => ({ TOKEN: secret }),
       config: {
         async validate() {
@@ -387,6 +531,7 @@ apiToken: forbidden
         async writeSecret() {},
       },
       root: "/opt/argus",
+      interactive: true,
       secretValues: async () => ({}),
       config: {
         async validate() {
@@ -435,6 +580,7 @@ apiToken: forbidden
       },
       io: { stdout: (value) => (stdout += value), stderr: () => undefined },
     });
+    dependencies.interactive = true;
 
     await createProgram(dependencies).parseAsync([
       "node",
@@ -452,5 +598,89 @@ apiToken: forbidden
       "ARGUS_API_TOKEN=value-that-must-not-print",
     );
     expect(stdout).not.toContain(secret);
+  });
+
+  it.each(["symlink", "wrong-mode"] as const)(
+    "refuses to read an unsafe existing secrets file: %s",
+    async (kind) => {
+      const directory = await mkdtemp(join(tmpdir(), "argus-cli-unsafe-"));
+      temporaryDirectories.push(directory);
+      const secretsPath = join(directory, "secrets.env");
+      if (kind === "symlink") {
+        const target = join(directory, "target.env");
+        await writeFile(target, "ARGUS_API_TOKEN=sentinel\n", { mode: 0o600 });
+        await symlink(target, secretsPath);
+      } else {
+        await writeFile(secretsPath, "ARGUS_API_TOKEN=sentinel\n", {
+          mode: 0o644,
+        });
+        await chmod(secretsPath, 0o644);
+      }
+      const dependencies = createNodeCliDependencies({
+        root: directory,
+        executor: {
+          async run() {
+            return { exitCode: 0, stdout: "", stderr: "" };
+          },
+        },
+        prompt: noPrompt,
+        io: { stdout: () => undefined, stderr: () => undefined },
+      });
+
+      await expect(dependencies.secretValues()).rejects.toMatchObject({
+        code: "SECRETS_FILE_UNSAFE",
+      });
+    },
+  );
+
+  it("fails closed before any partial mutation when signed release integration is absent", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "argus-cli-release-"));
+    temporaryDirectories.push(directory);
+    const installRoot = join(directory, "instance");
+    const setup = join(directory, "setup.yaml");
+    await writeFile(setup, onboardingFixture, { mode: 0o600 });
+    const results: Record<string, string> = {
+      "cat /host/etc/os-release": 'ID=ubuntu\nVERSION_ID="24.04"\n',
+      "docker info --format {{.Architecture}}": "x86_64\n",
+      "docker --version": "Docker version 28\n",
+      "docker compose version": "Docker Compose version v2\n",
+      "docker info": "Server: Docker\n",
+      "cat /host/proc/meminfo": "MemTotal:       2097152 kB\n",
+      "df -B1 /opt/argus":
+        "Filesystem 1B-blocks Used Available Use% Mounted on\n/dev/vda 10000000000 1 9000000000 1% /\n",
+      "ss -ltn": "State Recv-Q Send-Q Local Address:Port Peer Address:Port\n",
+    };
+    let stdout = "";
+    const dependencies = createNodeCliDependencies({
+      root: installRoot,
+      executor: {
+        async run(command, args) {
+          const key = [command, ...args].join(" ");
+          return {
+            exitCode: key in results ? 0 : 1,
+            stdout: results[key] ?? "",
+            stderr: "",
+          };
+        },
+      },
+      prompt: noPrompt,
+      io: { stdout: (value) => (stdout += value), stderr: () => undefined },
+    });
+    dependencies.interactive = true;
+
+    await expect(
+      createProgram(dependencies).parseAsync([
+        "node",
+        "argus",
+        "onboard",
+        "--from",
+        setup,
+        "--yes",
+        "--json",
+      ]),
+    ).rejects.toMatchObject({ exitCode: 1 });
+
+    expect(JSON.parse(stdout).error.code).toBe("RELEASE_MANIFEST_REQUIRED");
+    expect(await readdir(directory)).toEqual(["setup.yaml"]);
   });
 });

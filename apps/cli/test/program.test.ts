@@ -82,6 +82,7 @@ const createHarness = (
       async writeSecret() {},
     },
     root: "/opt/argus",
+    interactive: true,
     secretValues: async () => secretValues,
     config: {
       async validate() {
@@ -139,6 +140,16 @@ describe("CLI JSON contract", () => {
     expect(harness.output().stderr).toBe("");
   });
 
+  it("honors JSON mode before the selected command", async () => {
+    const harness = createHarness();
+    await run(["--json", "status"], harness.dependencies);
+    expect(JSON.parse(harness.output().stdout)).toMatchObject({
+      contractVersion: 1,
+      ok: true,
+    });
+    expect(harness.output().stderr).toBe("");
+  });
+
   it("emits redacted stable errors with deterministic exit codes", async () => {
     const harness = createHarness({
       async status() {
@@ -192,12 +203,130 @@ describe("CLI JSON contract", () => {
       { ARGUS_API_TOKEN: "secret-value" },
     );
 
-    await run(["logs", "argus", "--tail", "999999", "--json"], harness.dependencies);
+    await run(["logs", "argus", "--tail", "10000", "--json"], harness.dependencies);
 
     expect(requestedLimit).toBe(10_000);
     expect(harness.output().stdout).not.toContain("secret-value");
     expect(JSON.parse(harness.output().stdout).data.logs).toBe(
       "before [REDACTED] after",
+    );
+  });
+
+  it.each(["0", "-1", "1junk", "1.5", "10001", "99999999999999999999"])(
+    "rejects invalid log tail %s",
+    async (tail) => {
+      const harness = createHarness();
+      await expect(
+        createProgram(harness.dependencies).parseAsync([
+          "node",
+          "argus",
+          "logs",
+          "--tail",
+          tail,
+          "--json",
+        ]),
+      ).rejects.toMatchObject({ exitCode: 1 });
+      expect(JSON.parse(harness.output().stdout).error.code).toBe(
+        "LOG_TAIL_INVALID",
+      );
+    },
+  );
+
+  it("dry-runs lifecycle plans without confirmation or mutation", async () => {
+    let applied = false;
+    const harness = createHarness({
+      async applyLifecycle() {
+        applied = true;
+      },
+    });
+    harness.dependencies.prompt.confirm = async () => {
+      throw new Error("confirmation must not run");
+    };
+
+    await run(["start", "--dry-run", "--json"], harness.dependencies);
+
+    expect(applied).toBe(false);
+    expect(JSON.parse(harness.output().stdout)).toMatchObject({
+      ok: true,
+      data: { plan: { action: "start", state: "stopped" } },
+    });
+  });
+
+  it.each([
+    ["config", ["config", "apply", "--dry-run", "--json"]],
+    ["repair", ["repair", "argus", "--dry-run", "--json"]],
+    ["secrets", ["secrets", "set", "ARGUS_API_TOKEN", "--dry-run", "--json"]],
+  ])("dry-runs %s mutations without apply or prompts", async (_name, args) => {
+    let mutated = false;
+    const harness = createHarness({
+      async applyRepair() {
+        mutated = true;
+      },
+    });
+    harness.dependencies.config.apply = async () => {
+      mutated = true;
+      return {};
+    };
+    harness.dependencies.files.writeSecret = async () => {
+      mutated = true;
+    };
+    harness.dependencies.prompt.confirm = async () => {
+      throw new Error("confirmation must not run");
+    };
+    harness.dependencies.prompt.secret = async () => {
+      throw new Error("secret prompt must not run");
+    };
+
+    await run(args, harness.dependencies);
+
+    expect(mutated).toBe(false);
+    expect(JSON.parse(harness.output().stdout)).toMatchObject({
+      ok: true,
+      data: { plan: expect.any(Object) },
+    });
+  });
+
+  it("prints the inspected human plan before interactive confirmation", async () => {
+    const harness = createHarness();
+    harness.dependencies.interactive = true;
+    harness.dependencies.prompt.confirm = async () => {
+      expect(harness.output().stdout).toContain("Plan:");
+      expect(harness.output().stdout).toContain('"action": "start"');
+      return true;
+    };
+
+    await run(["start"], harness.dependencies);
+
+    expect(harness.output().stdout).toContain("completed and was verified");
+  });
+
+  it("renders useful human status and doctor recovery details", async () => {
+    const statusHarness = createHarness();
+    await run(["status"], statusHarness.dependencies);
+    expect(statusHarness.output().stdout).toContain("Argus: running");
+    expect(statusHarness.output().stdout).toContain("argus: healthy");
+
+    const doctorHarness = createHarness({
+      async doctor() {
+        return {
+          contractVersion: 1,
+          healthy: false,
+          checks: [
+            {
+              component: "argus",
+              status: "unhealthy",
+              code: "ARGUS_DOWN",
+              message: "Argus is down.",
+              recovery: "Run argus repair argus.",
+            },
+          ],
+        };
+      },
+    });
+    await run(["doctor"], doctorHarness.dependencies);
+    expect(doctorHarness.output().stdout).toContain("Argus is down.");
+    expect(doctorHarness.output().stdout).toContain(
+      "recovery: Run argus repair argus.",
     );
   });
 });

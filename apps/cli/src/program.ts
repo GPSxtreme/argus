@@ -1,5 +1,6 @@
 import {
   chmod,
+  lstat,
   mkdir,
   open,
   readFile,
@@ -7,6 +8,7 @@ import {
   stat,
   unlink,
 } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { openRepository, startRuntime } from "@argus/app";
 import {
@@ -31,10 +33,11 @@ import {
   type CommandExecutor,
 } from "@argus/deployment";
 import { targetsFromConfig } from "@argus/scheduler";
-import { Command } from "commander";
+import { Command, CommanderError } from "commander";
 import { parse } from "yaml";
 import { z } from "zod";
 import {
+  CliExitError,
   type CliIO,
   redactValue,
   replaceSecrets,
@@ -67,11 +70,54 @@ export interface DeploymentCliAdapter {
   applyOnboarding(
     answers: OnboardingAnswersV1,
     secrets: Readonly<Record<string, string>>,
+    inspection: unknown,
   ): Promise<unknown>;
   verifyOnboarding(
     answers: OnboardingAnswersV1,
     applied?: unknown,
   ): Promise<unknown>;
+}
+
+export interface VerifiedOnboardingRelease {
+  version: string;
+  manifestSha256: string;
+  images: {
+    argus: `${string}@sha256:${string}`;
+    postgres: `${string}@sha256:${string}`;
+    searxng: `${string}@sha256:${string}`;
+  };
+  fxembed?: {
+    bundleSha256: string;
+    compatibilityDate: string;
+  };
+}
+
+export interface ReleaseOnboardingInspection {
+  plan: unknown;
+  release: VerifiedOnboardingRelease;
+}
+
+export interface ReleaseOnboardingApplication {
+  receipt: unknown;
+  release: VerifiedOnboardingRelease;
+  stateWritten: boolean;
+}
+
+/** Signed-release integration supplied by release Tasks 1–5. */
+export interface ProductionOnboardingIntegration {
+  inspect(input: {
+    answers: OnboardingAnswersV1;
+    secrets: Readonly<Record<string, string>>;
+  }): Promise<ReleaseOnboardingInspection>;
+  apply(input: {
+    answers: OnboardingAnswersV1;
+    secrets: Readonly<Record<string, string>>;
+    inspection: ReleaseOnboardingInspection;
+  }): Promise<ReleaseOnboardingApplication>;
+  verify(input: {
+    answers: OnboardingAnswersV1;
+    application: ReleaseOnboardingApplication;
+  }): Promise<{ healthy: boolean; status: unknown }>;
 }
 
 export interface CliFiles {
@@ -94,6 +140,7 @@ export interface CliDependencies {
   files: CliFiles;
   config: ConfigCliAdapter;
   root: string;
+  interactive?: boolean;
   secretValues(): Promise<Record<string, string>>;
 }
 
@@ -103,6 +150,7 @@ interface CommonOptions {
 
 interface MutationOptions extends CommonOptions {
   yes?: boolean;
+  dryRun?: boolean;
 }
 
 const secretKeyPattern =
@@ -188,16 +236,31 @@ const confirmationRequired = (): DeploymentError =>
   new DeploymentError(
     "CONFIRMATION_REQUIRED",
     "This command changes the Argus instance and requires confirmation.",
-    { recovery: "Review the plan, then rerun with --yes." },
+    {
+      recovery:
+        "Rerun the same command with --dry-run to inspect its plan, then rerun with --yes.",
+    },
   );
 
 const confirmMutation = async (
+  dependencies: CliDependencies,
   prompt: PromptAdapter,
   options: MutationOptions,
   message: string,
+  plan: unknown,
+  additionalSecrets: readonly string[] = [],
 ): Promise<void> => {
   if (options.yes) return;
-  if (options.json) throw confirmationRequired();
+  if (options.json || dependencies.interactive !== true) {
+    throw confirmationRequired();
+  }
+  const secrets = [
+    ...(await secretList(dependencies).catch(() => [])),
+    ...additionalSecrets,
+  ];
+  dependencies.io.stdout(
+    `${renderHumanPlan(redactValue(plan, secrets))}\n`,
+  );
   if (!(await prompt.confirm({ message, initialValue: false }))) {
     throw confirmationRequired();
   }
@@ -210,10 +273,14 @@ const execute = async (
   dependencies: CliDependencies,
   options: CommonOptions,
   operation: () => Promise<{ data: unknown; human: string }>,
+  additionalSecrets: () => readonly string[] = () => [],
 ): Promise<void> => {
   try {
     const result = await operation();
-    const secrets = await secretList(dependencies);
+    const secrets = [
+      ...(await secretList(dependencies)),
+      ...additionalSecrets(),
+    ];
     writeSuccess(
       dependencies.io,
       options.json === true,
@@ -221,7 +288,10 @@ const execute = async (
       replaceSecrets(result.human, secrets),
     );
   } catch (error) {
-    const secrets = await secretList(dependencies).catch(() => []);
+    const secrets = [
+      ...(await secretList(dependencies).catch(() => [])),
+      ...additionalSecrets(),
+    ];
     throw writeFailure(
       dependencies.io,
       options.json === true,
@@ -238,7 +308,81 @@ const mutationOptions = (command: Command): Command =>
   commonOptions(command).option(
     "-y, --yes",
     "apply the inspected plan without an interactive confirmation",
-  );
+  ).option("--dry-run", "inspect and print the plan without applying changes");
+
+const renderHumanPlan = (plan: unknown): string =>
+  `Plan:\n${JSON.stringify(plan, null, 2)}`;
+
+const renderHumanStatus = (status: unknown): string => {
+  if (!status || typeof status !== "object") return "Argus status unavailable.";
+  const value = status as {
+    state?: unknown;
+    services?: unknown;
+  };
+  const lines = [`Argus: ${String(value.state ?? "unknown")}`];
+  if (value.services && typeof value.services === "object") {
+    for (const [service, state] of Object.entries(value.services)) {
+      lines.push(`${service}: ${String(state)}`);
+    }
+  }
+  return lines.join("\n");
+};
+
+const renderHumanDoctor = (report: DiagnosticReport): string =>
+  [
+    `Argus diagnostics: ${report.healthy ? "healthy" : "unhealthy"}`,
+    ...report.checks.map(
+      (check) =>
+        `${check.component}: ${check.status} — ${check.message}${
+          check.recovery ? `\n  recovery: ${check.recovery}` : ""
+        }`,
+    ),
+  ].join("\n");
+
+export const onboardingJsonSchema = (): Record<string, unknown> => {
+  const base = z.toJSONSchema(onboardingAnswersSchema) as Record<
+    string,
+    unknown
+  >;
+  const managedEquals = (property: "searxng" | "fxembed", value: string) => ({
+    properties: {
+      managed: {
+        properties: { [property]: { const: value } },
+        required: [property],
+      },
+    },
+    required: ["managed"],
+  });
+  const conditional = (condition: unknown, consequence: unknown) =>
+    Object.fromEntries([
+      ["if", condition],
+      // biome-ignore lint/suspicious/noThenProperty: JSON Schema requires the standard `then` keyword.
+      ["then", consequence],
+    ]);
+  return {
+    ...base,
+    allOf: [
+      conditional(managedEquals("fxembed", "managed"), {
+          required: ["cloudflare"],
+          properties: {
+            cloudflare: { required: ["accountId"] },
+          },
+        }),
+      conditional(managedEquals("searxng", "external"), {
+          required: ["external"],
+          properties: {
+            external: { required: ["searxngEndpoint"] },
+          },
+        }),
+      conditional(managedEquals("fxembed", "external"), {
+          required: ["external"],
+          properties: {
+            external: { required: ["fxembedEndpoint"] },
+          },
+        }),
+    ],
+  };
+};
 
 const lifecycleCommand = (
   program: Command,
@@ -250,10 +394,15 @@ const lifecycleCommand = (
   ).action(async (options: MutationOptions) => {
     await execute(dependencies, options, async () => {
       const plan = await dependencies.deployment.inspectLifecycle(action);
+      if (options.dryRun) {
+        return { data: { plan }, human: renderHumanPlan(plan) };
+      }
       await confirmMutation(
+        dependencies,
         dependencies.prompt,
         options,
         `${action} Argus using the inspected plan?`,
+        plan,
       );
       await dependencies.deployment.applyLifecycle(action);
       const verified = await dependencies.deployment.verifyLifecycle(action);
@@ -278,10 +427,10 @@ const registerConfig = (
       .command("schema")
       .description("Print the versioned onboarding answers JSON Schema"),
   ).action(async (options: CommonOptions) => {
-    await execute(dependencies, options, async () => ({
-      data: z.toJSONSchema(onboardingAnswersSchema),
-      human: JSON.stringify(z.toJSONSchema(onboardingAnswersSchema), null, 2),
-    }));
+    await execute(dependencies, options, async () => {
+      const schema = onboardingJsonSchema();
+      return { data: schema, human: JSON.stringify(schema, null, 2) };
+    });
   });
 
   commonOptions(
@@ -305,10 +454,16 @@ const registerConfig = (
     async (path: string | undefined, options: MutationOptions) => {
       await execute(dependencies, options, async () => {
         const inspected = await dependencies.config.validate(path);
+        const plan = { action: "apply", configuration: inspected };
+        if (options.dryRun) {
+          return { data: { plan }, human: renderHumanPlan(plan) };
+        }
         await confirmMutation(
+          dependencies,
           dependencies.prompt,
           options,
           "Apply the validated configuration?",
+          plan,
         );
         const applied = await dependencies.config.apply(path);
         return {
@@ -348,6 +503,7 @@ const registerSecrets = (
       .argument("<name>", "environment-style secret name")
       .description("Set one secret using a hidden prompt"),
   ).action(async (name: string, options: MutationOptions) => {
+    let ephemeralSecret = "";
     await execute(dependencies, options, async () => {
       if (!/^[A-Z][A-Z0-9_]*$/u.test(name) || !secretKeyPattern.test(name)) {
         throw new DeploymentError(
@@ -359,14 +515,21 @@ const registerSecrets = (
         await dependencies.secretValues(),
         name,
       );
+      const plan = { name, action: exists ? "update" : "create" };
+      if (options.dryRun) {
+        return { data: { plan }, human: renderHumanPlan(plan) };
+      }
       await confirmMutation(
+        dependencies,
         dependencies.prompt,
         options,
         `${exists ? "Update" : "Create"} ${name} in the owner-only instance secrets file?`,
+        plan,
       );
       const value = await dependencies.prompt.secret({
         message: `Value for ${name}`,
       });
+      ephemeralSecret = value;
       await dependencies.files.writeSecret(name, value);
       const verified = (await dependencies.secretValues())[name] === value;
       if (!verified) {
@@ -379,23 +542,36 @@ const registerSecrets = (
       return {
         data: {
           plan: {
-            name,
-            action: exists ? "update" : "create",
+            ...plan,
           },
           result: { name, updated: true },
         },
         human: `${name} was stored securely.`,
       };
-    });
+    }, () => [ephemeralSecret]);
   });
 };
 
 export const createProgram = (dependencies: CliDependencies): Command => {
+  let capturedOutput = "";
   const program = new Command()
     .name("argus")
     .description("Self-hosted data layer for X, Telegram, and the Web")
     .version("0.1.0")
-    .showHelpAfterError();
+    .option("--json", "emit the stable versioned JSON contract")
+    .showHelpAfterError()
+    .exitOverride()
+    .configureOutput({
+      writeOut(value) {
+        capturedOutput += value;
+      },
+      writeErr() {
+        // Parser errors are rendered through the stable boundary below.
+      },
+    });
+  program.hook("preAction", (_root, action) => {
+    if (program.opts().json === true) action.setOptionValue("json", true);
+  });
 
   mutationOptions(
     program
@@ -406,6 +582,7 @@ export const createProgram = (dependencies: CliDependencies): Command => {
     async (
       options: MutationOptions & { from?: string },
     ): Promise<void> => {
+      let ephemeralSecrets: string[] = [];
       await execute(dependencies, options, async () => {
         const collected =
           options.from === undefined
@@ -420,21 +597,50 @@ export const createProgram = (dependencies: CliDependencies): Command => {
         const answers = onboardingAnswersSchema.parse(
           collected.answers,
         ) as OnboardingAnswersV1;
-        const secrets =
-          collected.secrets ??
-          (await collectRequiredSecrets(answers, dependencies.prompt));
+        let secrets = collected.secrets;
+        if (secrets === undefined) {
+          if (
+            options.dryRun ||
+            (options.json && !options.yes) ||
+            (dependencies.interactive !== true && !options.yes)
+          ) {
+            secrets = {};
+          } else if (dependencies.interactive !== true) {
+            throw new DeploymentError(
+              "SECRET_INPUT_REQUIRED",
+              "Required onboarding secrets must be entered from an interactive terminal.",
+              {
+                recovery:
+                  "Run onboarding from a TTY and enter secrets through hidden prompts.",
+              },
+            );
+          } else {
+            secrets = await collectRequiredSecrets(
+              answers,
+              dependencies.prompt,
+            );
+          }
+        }
+        ephemeralSecrets = Object.values(secrets);
         const plan = await dependencies.deployment.inspectOnboarding(
           answers,
           secrets,
         );
+        if (options.dryRun) {
+          return { data: { plan }, human: renderHumanPlan(plan) };
+        }
         await confirmMutation(
+          dependencies,
           dependencies.prompt,
           options,
           "Apply and verify this Argus VPS plan?",
+          plan,
+          Object.values(secrets),
         );
         const applied = await dependencies.deployment.applyOnboarding(
           answers,
           secrets,
+          plan,
         );
         const verified = await dependencies.deployment.verifyOnboarding(
           answers,
@@ -445,7 +651,7 @@ export const createProgram = (dependencies: CliDependencies): Command => {
           human:
             "Argus onboarding completed. Secrets remain in /opt/argus/secrets.env.",
         };
-      });
+      }, () => ephemeralSecrets);
     },
   );
 
@@ -456,10 +662,10 @@ export const createProgram = (dependencies: CliDependencies): Command => {
   commonOptions(
     program.command("status").description("Inspect Argus service status"),
   ).action(async (options: CommonOptions) => {
-    await execute(dependencies, options, async () => ({
-      data: await dependencies.deployment.status(),
-      human: "Argus status inspected.",
-    }));
+    await execute(dependencies, options, async () => {
+      const status = await dependencies.deployment.status();
+      return { data: status, human: renderHumanStatus(status) };
+    });
   });
 
   commonOptions(
@@ -474,10 +680,19 @@ export const createProgram = (dependencies: CliDependencies): Command => {
       options: CommonOptions & { tail: string },
     ) => {
       await execute(dependencies, options, async () => {
-        const parsed = Number.parseInt(options.tail, 10);
-        const tail = Number.isFinite(parsed)
-          ? Math.min(Math.max(parsed, 1), 10_000)
-          : 200;
+        if (!/^[1-9]\d*$/u.test(options.tail)) {
+          throw new DeploymentError(
+            "LOG_TAIL_INVALID",
+            "Log tail must be a positive integer no greater than 10000.",
+          );
+        }
+        const tail = Number(options.tail);
+        if (!Number.isSafeInteger(tail) || tail > 10_000) {
+          throw new DeploymentError(
+            "LOG_TAIL_INVALID",
+            "Log tail must be a positive integer no greater than 10000.",
+          );
+        }
         const logs = await dependencies.deployment.logs(service, {
           tail,
           timeoutMs: 30_000,
@@ -494,9 +709,7 @@ export const createProgram = (dependencies: CliDependencies): Command => {
       const report = await dependencies.deployment.doctor();
       return {
         data: report,
-        human: report.healthy
-          ? "Argus diagnostics are healthy."
-          : "Argus diagnostics found unhealthy components.",
+        human: renderHumanDoctor(report),
       };
     });
   });
@@ -515,10 +728,15 @@ export const createProgram = (dependencies: CliDependencies): Command => {
         );
       }
       const plan = await dependencies.deployment.inspectRepair(service);
+      if (options.dryRun) {
+        return { data: { plan }, human: renderHumanPlan(plan) };
+      }
       await confirmMutation(
+        dependencies,
         dependencies.prompt,
         options,
         `Apply the targeted ${service} repair?`,
+        plan,
       );
       const applied = await dependencies.deployment.applyRepair(service);
       const verified = await dependencies.deployment.verifyRepair(
@@ -547,6 +765,47 @@ export const createProgram = (dependencies: CliDependencies): Command => {
       }
       await dependencies.config.run(path);
     });
+
+  const commanderParseAsync = program.parseAsync.bind(program);
+  program.parseAsync = async (argv, parseOptions) => {
+    const argumentsList = argv ?? process.argv;
+    const json = argumentsList.includes("--json");
+    const normalized = json
+      ? [
+          ...argumentsList.slice(0, 2),
+          "--json",
+          ...argumentsList.slice(2).filter((entry) => entry !== "--json"),
+        ]
+      : argumentsList;
+    capturedOutput = "";
+    try {
+      return await commanderParseAsync(normalized, parseOptions);
+    } catch (error) {
+      if (error instanceof CliExitError) throw error;
+      const secrets = await secretList(dependencies).catch(() => []);
+      if (
+        error instanceof CommanderError &&
+        error.code === "commander.helpDisplayed"
+      ) {
+        writeSuccess(
+          dependencies.io,
+          json,
+          { help: capturedOutput.trimEnd() },
+          capturedOutput.trimEnd(),
+        );
+        return program;
+      }
+      const stable =
+        error instanceof DeploymentError
+          ? error
+          : new DeploymentError(
+              "CLI_USAGE_ERROR",
+              "The command arguments are invalid.",
+              { recovery: "Run 'argus --help' to inspect valid commands." },
+            );
+      throw writeFailure(dependencies.io, json, stable, secrets);
+    }
+  };
   return program;
 };
 
@@ -563,10 +822,51 @@ const parseSecrets = (contents: string): Record<string, string> =>
 const readSecretsFile = async (
   root: string,
 ): Promise<Record<string, string>> => {
+  const path = join(root, "secrets.env");
   try {
-    return parseSecrets(await readFile(join(root, "secrets.env"), "utf8"));
+    const linkMetadata = await lstat(path);
+    const handle = await open(
+      path,
+      fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW,
+    );
+    let contents = "";
+    try {
+      const metadata = await handle.stat();
+      const expectedOwner = process.geteuid?.();
+      if (
+        linkMetadata.isSymbolicLink() ||
+        !metadata.isFile() ||
+        linkMetadata.dev !== metadata.dev ||
+        linkMetadata.ino !== metadata.ino ||
+        (metadata.mode & 0o777) !== 0o600 ||
+        (expectedOwner !== undefined && metadata.uid !== expectedOwner)
+      ) {
+        throw new DeploymentError(
+          "SECRETS_FILE_UNSAFE",
+          "The instance secrets file must be a regular owner-owned file with mode 0600.",
+          {
+            recovery:
+              "Replace the secrets file with a regular owner-owned mode-0600 file, then retry.",
+          },
+        );
+      }
+      contents = await handle.readFile("utf8");
+    } finally {
+      await handle.close();
+    }
+    return parseSecrets(contents);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+    if ((error as NodeJS.ErrnoException).code === "ELOOP") {
+      throw new DeploymentError(
+        "SECRETS_FILE_UNSAFE",
+        "The instance secrets file must be a regular owner-owned file with mode 0600.",
+        {
+          recovery:
+            "Replace the secrets file with a regular owner-owned mode-0600 file, then retry.",
+        },
+      );
+    }
     throw error;
   }
 };
@@ -614,24 +914,103 @@ const atomicSecretWrite = async (
   }
 };
 
+const installedConfigPath = (root: string, path?: string): string =>
+  path === undefined ? join(root, "argus.yaml") : resolveConfigPath({ explicitPath: path });
+
+const referencedEnvironment = async (
+  path: string,
+  environment: Record<string, string | undefined>,
+): Promise<Record<string, string>> => {
+  const contents = await readFile(path, "utf8");
+  const names = new Set(
+    [...contents.matchAll(/\$\{([A-Z][A-Z0-9_]*)\}/gu)].map(
+      (match) => match[1] as string,
+    ),
+  );
+  return Object.fromEntries(
+    [...names].flatMap((name) => {
+      const value = environment[name];
+      return value ? [[name, value]] : [];
+    }),
+  );
+};
+
+const loadInstalledConfig = async (root: string, path?: string) => {
+  const resolved = installedConfigPath(root, path);
+  const fileSecrets = await readSecretsFile(root);
+  const environment = { ...process.env, ...fileSecrets };
+  const referenced = await referencedEnvironment(resolved, environment);
+  return {
+    path: resolved,
+    config: await loadConfig(resolved, environment),
+    secretEnvironment: { ...fileSecrets, ...referenced },
+  };
+};
+
+const structurallyRedactConfig = (
+  config: Awaited<ReturnType<typeof loadInstalledConfig>>["config"],
+  secrets: readonly string[],
+): unknown => {
+  const redacted = redactValue(structuredClone(config), secrets) as typeof config;
+  const redactCredentials = (value: string): string => {
+    try {
+      const url = new URL(value);
+      if (url.username) url.username = "[REDACTED]";
+      if (url.password) url.password = "[REDACTED]";
+      return url.toString();
+    } catch {
+      return value;
+    }
+  };
+  if (redacted.api.token !== undefined) redacted.api.token = "[REDACTED]";
+  if (redacted.intelligence.apiKey !== undefined) {
+    redacted.intelligence.apiKey = "[REDACTED]";
+  }
+  redacted.storage.url = redactCredentials(redacted.storage.url);
+  redacted.sources.x.endpoint = redactCredentials(
+    redacted.sources.x.endpoint,
+  );
+  if (redacted.sources.web.searchEndpoint !== undefined) {
+    redacted.sources.web.searchEndpoint = redactCredentials(
+      redacted.sources.web.searchEndpoint,
+    );
+  }
+  return redacted;
+};
+
 export interface NodeCliDependenciesOptions {
   root: string;
   executor: CommandExecutor;
   prompt: PromptAdapter;
   io: CliIO;
+  onboardingIntegration?: ProductionOnboardingIntegration;
 }
+
+export const MANAGEMENT_HOST_PATHS = {
+  osRelease: "/host/etc/os-release",
+  meminfo: "/host/proc/meminfo",
+  diskRoot: "/opt/argus",
+} as const;
+
+export const MANAGEMENT_WRAPPER_REQUIREMENTS = {
+  mounts: [
+    "/etc/os-release:/host/etc/os-release:ro",
+    "/proc/meminfo:/host/proc/meminfo:ro",
+    "/opt/argus:/opt/argus",
+    "/var/run/docker.sock:/var/run/docker.sock",
+  ],
+  environment: ["ARGUS_INSTALL_ROOT=/opt/argus", "ARGUS_HOST_ARCH"],
+  hostNetwork: true,
+} as const;
 
 const createDeploymentAdapter = (
   root: string,
   executor: CommandExecutor,
+  onboardingIntegration?: ProductionOnboardingIntegration,
 ): DeploymentCliAdapter => {
   const context = { root, executor };
   const doctorContext = async () => {
-    const secrets = await readSecretsFile(root);
-    const config = await loadConfig(join(root, "argus.yaml"), {
-      ...process.env,
-      ...secrets,
-    });
+    const { config } = await loadInstalledConfig(root);
     const state = await loadDeploymentState(root);
     const targets = targetsFromConfig(config);
     const diagnosticTargetIds = Object.fromEntries(
@@ -791,10 +1170,14 @@ const createDeploymentAdapter = (
       }
       return report;
     },
-    async inspectOnboarding(answers) {
+    async inspectOnboarding(answers, secrets) {
       const preflight = await inspectHost(executor, {
         apiPort: answers.deployment.apiPort,
         searxngEnabled: answers.managed.searxng === "managed",
+        ...(process.env.ARGUS_HOST_ARCH === undefined
+          ? {}
+          : { hostArchitecture: process.env.ARGUS_HOST_ARCH }),
+        hostPaths: MANAGEMENT_HOST_PATHS,
       });
       if (preflight.failures.length > 0) {
         throw new DeploymentError(
@@ -806,6 +1189,12 @@ const createDeploymentAdapter = (
           },
         );
       }
+      if (onboardingIntegration !== undefined) {
+        return onboardingIntegration.inspect({
+          answers,
+          secrets,
+        });
+      }
       throw new DeploymentError(
         "RELEASE_MANIFEST_REQUIRED",
         "A verified release manifest is required before onboarding can plan mutations.",
@@ -815,13 +1204,26 @@ const createDeploymentAdapter = (
         },
       );
     },
-    async applyOnboarding() {
+    async applyOnboarding(answers, secrets, inspection) {
+      if (onboardingIntegration !== undefined) {
+        return onboardingIntegration.apply({
+          answers,
+          secrets,
+          inspection: inspection as ReleaseOnboardingInspection,
+        });
+      }
       throw new DeploymentError(
         "RELEASE_MANIFEST_REQUIRED",
         "A verified release manifest is required before onboarding can mutate the instance.",
       );
     },
-    async verifyOnboarding() {
+    async verifyOnboarding(answers, applied) {
+      if (onboardingIntegration !== undefined) {
+        return onboardingIntegration.verify({
+          answers,
+          application: applied as ReleaseOnboardingApplication,
+        });
+      }
       return getDeploymentStatus(context);
     },
   };
@@ -832,22 +1234,34 @@ export const createNodeCliDependencies = ({
   executor,
   prompt,
   io,
+  onboardingIntegration,
 }: NodeCliDependenciesOptions): CliDependencies => ({
   root,
   prompt,
   io,
-  deployment: createDeploymentAdapter(root, executor),
+  deployment: createDeploymentAdapter(root, executor, onboardingIntegration),
   files: {
     readText: (path) => readFile(path, "utf8"),
     stat: async (path) => ({ mode: (await stat(path)).mode }),
     writeSecret: (name, value) => atomicSecretWrite(root, name, value),
   },
-  secretValues: () => readSecretsFile(root),
+  interactive: process.stdin.isTTY === true && process.stdout.isTTY === true,
+  secretValues: async () => {
+    const fileSecrets = await readSecretsFile(root);
+    try {
+      const referenced = await referencedEnvironment(
+        installedConfigPath(root),
+        { ...process.env, ...fileSecrets },
+      );
+      return { ...fileSecrets, ...referenced };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return fileSecrets;
+      throw error;
+    }
+  },
   config: {
     async validate(path) {
-      const loaded = await loadConfig(
-        resolveConfigPath(path ? { explicitPath: path } : {}),
-      );
+      const { config: loaded } = await loadInstalledConfig(root, path);
       return {
         valid: true,
         version: loaded.version,
@@ -856,32 +1270,39 @@ export const createNodeCliDependencies = ({
       };
     },
     async apply(path) {
-      const loaded = await loadConfig(
-        resolveConfigPath(path ? { explicitPath: path } : {}),
-      );
+      const { config: loaded } = await loadInstalledConfig(root, path);
       const handle = await openRepository(loaded);
       try {
+        const reconciled = await reconcileConfig(handle.repository, loaded);
+        const verified = await handle.repository.getAppliedConfig();
+        if (verified?.contentHash !== reconciled.contentHash) {
+          throw new DeploymentError(
+            "CONFIG_APPLY_VERIFY_FAILED",
+            "The applied configuration could not be verified.",
+          );
+        }
         return {
           applied: true,
-          ...(await reconcileConfig(handle.repository, loaded)),
+          ...reconciled,
+          verified: true,
         };
       } finally {
         await handle.close();
       }
     },
     async show(path) {
-      const secrets = await readSecretsFile(root);
-      return loadConfig(
-        resolveConfigPath(
-          path
-            ? { explicitPath: path }
-            : { explicitPath: join(root, "argus.yaml") },
-        ),
-        { ...process.env, ...secrets },
+      const loaded = await loadInstalledConfig(root, path);
+      return structurallyRedactConfig(
+        loaded.config,
+        Object.values(loaded.secretEnvironment),
       );
     },
     async run(path) {
-      await startRuntime(resolveConfigPath(path ? { explicitPath: path } : {}));
+      const loaded = await loadInstalledConfig(root, path);
+      await startRuntime(loaded.path, {
+        ...process.env,
+        ...loaded.secretEnvironment,
+      });
     },
   },
 });

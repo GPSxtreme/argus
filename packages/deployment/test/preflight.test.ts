@@ -30,13 +30,11 @@ const result = (stdout: string, exitCode = 0, stderr = ""): CommandResult => ({
 
 const hostFixtures = (overrides: Record<string, CommandResult> = {}) => ({
   "cat /etc/os-release": result('ID=ubuntu\nVERSION_ID="24.04"\n'),
-  "uname -m": result("aarch64\n"),
+  "docker info --format {{.Architecture}}": result("aarch64\n"),
   "docker --version": result("Docker version 28.0.0, build deadbeef\n"),
   "docker compose version": result("Docker Compose version v2.35.1\n"),
   "docker info": result("Server: Docker Engine\n"),
-  "free -b": result(
-    "              total        used        free\nMem:     2147483648           0  2147483648\n",
-  ),
+  "cat /proc/meminfo": result("MemTotal:       2097152 kB\n"),
   "df -B1 /": result(
     "Filesystem     1B-blocks      Used Available Use% Mounted on\n/dev/vda1 21474836480 100000000 21474836480 1% /\n",
   ),
@@ -77,7 +75,7 @@ describe("inspectHost", () => {
       new FixtureExecutor(
         hostFixtures({
           "cat /etc/os-release": result("", 1, "permission denied"),
-          "uname -m": result("riscv64\n"),
+          "docker info --format {{.Architecture}}": result("riscv64\n"),
         }),
       ),
     );
@@ -125,7 +123,7 @@ describe("inspectHost", () => {
     const report = await inspectHost(
       new FixtureExecutor(
         hostFixtures({
-          "free -b": result("Mem:     1610612736           0  1610612736\n"),
+          "cat /proc/meminfo": result("MemTotal:       1572864 kB\n"),
           "df -B1 /": result(
             "Filesystem     1B-blocks      Used Available Use% Mounted on\n/dev/vda1 21474836480 100000000 4294967296 1% /\n",
           ),
@@ -148,7 +146,7 @@ describe("inspectHost", () => {
     const report = await inspectHost(
       new FixtureExecutor(
         hostFixtures({
-          "free -b": result("Mem: unavailable\n"),
+          "cat /proc/meminfo": result("MemTotal: unavailable\n"),
           "df -B1 /": result("Filesystem unavailable\n"),
           "ss -ltn": result("LISTEN malformed\n"),
         }),
@@ -162,5 +160,26 @@ describe("inspectHost", () => {
       "DISK_INSPECTION_FAILED",
       "PORT_INSPECTION_FAILED",
     ]);
+  });
+
+  it("reads mounted host identity and resources instead of container paths", async () => {
+    const fixtures = hostFixtures({
+      "cat /etc/os-release": result('ID=ubuntu\nVERSION_ID="24.04"\n'),
+      "cat /host/etc/os-release": result('ID=fedora\nVERSION_ID="42"\n'),
+      "cat /host/proc/meminfo": result("MemTotal:       2097152 kB\n"),
+      "df -B1 /host": result(
+        "Filesystem 1B-blocks Used Available Use% Mounted on\n/dev/vda1 21474836480 1 21474836480 1% /host\n",
+      ),
+    });
+    const report = await inspectHost(new FixtureExecutor(fixtures), {
+      hostPaths: {
+        osRelease: "/host/etc/os-release",
+        meminfo: "/host/proc/meminfo",
+        diskRoot: "/host",
+      },
+    });
+
+    expect(report.supported).toBe(false);
+    expect(report.os.id).toBe("fedora");
   });
 });

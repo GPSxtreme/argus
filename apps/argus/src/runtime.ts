@@ -128,8 +128,11 @@ export interface RuntimeHandle {
   stop(): Promise<void>;
 }
 
-export const startRuntime = async (configPath: string): Promise<RuntimeHandle> => {
-  const loaded = await loadConfig(configPath);
+export const startRuntime = async (
+  configPath: string,
+  environment: Record<string, string | undefined> = process.env,
+): Promise<RuntimeHandle> => {
+  const loaded = await loadConfig(configPath, environment);
   const config = resolveRuntimeRole(loaded, process.env.ARGUS_ROLE);
   const adapterFactory =
     config.runtime.role === "all" || config.runtime.role === "worker"
