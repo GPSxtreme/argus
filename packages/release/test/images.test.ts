@@ -674,6 +674,27 @@ api: { host: 0.0.0.0, port: 8788 }
       docker(["run", "--rm", "--entrypoint", "docker", cliImage, "--version"]),
     ).toMatch(/^Docker version /u);
     expect(
+      docker([
+        "run",
+        "--rm",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--read-only",
+        "--tmpfs",
+        "/tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777",
+        "--volume",
+        "/var/run/docker.sock:/var/run/docker.sock:rw",
+        "--entrypoint",
+        "docker",
+        cliImage,
+        "version",
+        "--format",
+        "{{.Server.Version}}",
+      ]),
+    ).toMatch(/^\d+\.\d+\.\d+/u);
+    expect(
       docker(["run", "--rm", "--entrypoint", "docker", cliImage, "compose", "version"]),
     ).toMatch(/^Docker Compose version v2\./u);
     expect(

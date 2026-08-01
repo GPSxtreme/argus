@@ -33,6 +33,7 @@ import {
   repairService,
   restartDeployment,
   runDoctor,
+  MANAGEMENT_WRAPPER_REQUIREMENTS as SHARED_MANAGEMENT_WRAPPER_REQUIREMENTS,
   startDeployment,
   stopDeployment,
   type DiagnosticReport,
@@ -1052,21 +1053,8 @@ export const MANAGEMENT_HOST_PATHS = {
   diskRoot: "/opt/argus",
 } as const;
 
-export const MANAGEMENT_WRAPPER_REQUIREMENTS = {
-  mounts: [
-    "/etc/os-release:/host/etc/os-release:ro",
-    "/proc/meminfo:/host/proc/meminfo:ro",
-    "/opt/argus:/opt/argus",
-    "/var/run/docker.sock:/var/run/docker.sock",
-  ],
-  environment: ["ARGUS_INSTALL_ROOT=/opt/argus", "ARGUS_HOST_ARCH"],
-  cliImagePackages: ["iproute2"],
-  compositionRoot: [
-    "ProductionOnboardingIntegration",
-    "InstalledConfigIntegration",
-  ],
-  hostNetwork: true,
-} as const;
+export const MANAGEMENT_WRAPPER_REQUIREMENTS =
+  SHARED_MANAGEMENT_WRAPPER_REQUIREMENTS;
 
 export const resolveCliBuildVersion = (
   environment: Record<string, string | undefined> = process.env,

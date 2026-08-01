@@ -1,3 +1,4 @@
+export { MANAGEMENT_WRAPPER_REQUIREMENTS } from "@argus/contracts";
 export * from "./contracts.js";
 export * from "./config.js";
 export * from "./errors.js";
