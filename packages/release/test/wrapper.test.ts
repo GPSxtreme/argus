@@ -38,6 +38,20 @@ const executable = (path: string, contents: string): void => {
 const shellQuote = (value: string): string =>
   `'${value.replaceAll("'", `'\\''`)}'`;
 
+const runInPty = (
+  command: string,
+  environment: NodeJS.ProcessEnv,
+): ReturnType<typeof spawnSync> => {
+  const arguments_ =
+    process.platform === "darwin"
+      ? ["-q", "/dev/null", "/bin/sh", "-c", command]
+      : ["-qec", command, "/dev/null"];
+  return spawnSync("script", arguments_, {
+    env: environment,
+    stdio: "ignore",
+  });
+};
+
 interface WrapperFixture {
   directory: string;
   script: string;
@@ -120,7 +134,8 @@ describe("renderArgusWrapper", () => {
     expect(first).toContain("--security-opt no-new-privileges");
     expect(first).toContain("--read-only");
     expect(first).toContain("--tmpfs '/tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777'");
-    expect(first).toMatch(/\[ -t 0 \] && \[ -t 1 \]/u);
+    expect(first).toMatch(/if \[ -t 1 \]; then/u);
+    expect(first).not.toMatch(/\[ -t 0 \]/u);
     expect(first).toMatch(/\bexec docker run\b/u);
   });
 
@@ -186,20 +201,29 @@ describe("renderArgusWrapper", () => {
   });
 
   it.skipIf(spawnSync("sh", ["-c", "command -v script"]).status !== 0)(
-    "adds -t only when both wrapper streams are attached to a TTY",
+    "adds -t exactly when stdout is a TTY, independent of stdin",
     () => {
       const harness = createWrapperFixture();
-      const command = `${shellQuote(harness.script)} status`;
-      const arguments_ =
-        process.platform === "darwin"
-          ? ["-q", "/dev/null", harness.script, "status"]
-          : ["-qec", command, "/dev/null"];
-      const ttyResult = spawnSync("script", arguments_, {
-        env: harness.environment,
-        stdio: "ignore",
-      });
+      const wrapperCommand = `${shellQuote(harness.script)} status`;
+
+      const ttyResult = runInPty(wrapperCommand, harness.environment);
       expect(ttyResult.status).toBe(0);
       expect(recordedArguments(harness.record)).toContain("-t");
+
+      const terminalStdout = runInPty(
+        `printf x | ${wrapperCommand}`,
+        harness.environment,
+      );
+      expect(terminalStdout.status).toBe(0);
+      expect(recordedArguments(harness.record)).toContain("-t");
+
+      const captured = join(harness.directory, "captured");
+      const capturedStdout = runInPty(
+        `${wrapperCommand} > ${shellQuote(captured)}`,
+        harness.environment,
+      );
+      expect(capturedStdout.status).toBe(0);
+      expect(recordedArguments(harness.record)).not.toContain("-t");
 
       const nonTtyResult = spawnSync(harness.script, ["status"], {
         env: harness.environment,
@@ -274,7 +298,7 @@ describe("renderArgusWrapper", () => {
     expect(recordedArguments(harness.record).slice(-input.length)).toEqual(input);
   });
 
-  it("fails actionably when Docker, its socket, or the host architecture is unavailable", () => {
+  it("fails actionably when Docker or the host architecture is unavailable", () => {
     const missingDocker = createWrapperFixture({ docker: false });
     const dockerResult = spawnSync(missingDocker.script, [], {
       encoding: "utf8",

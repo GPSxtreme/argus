@@ -100,7 +100,7 @@ case "$(uname -m 2>/dev/null || true)" in
 esac
 
 argus_has_tty=0
-if [ -t 0 ] && [ -t 1 ]; then
+if [ -t 1 ]; then
   argus_has_tty=1
 fi
 

@@ -10,7 +10,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { arch, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -430,6 +430,7 @@ const cliImage = `argus-cli:image-test-${resourceSuffix}`;
 const containerName = `argus-image-test-${resourceSuffix}`;
 const dataVolume = `argus-image-test-data-${resourceSuffix}`;
 let fixtureDirectory: string | undefined;
+let wrapperFixtureDirectory: string | undefined;
 let appImageOwned = false;
 let cliImageOwned = false;
 let containerOwned = false;
@@ -503,6 +504,9 @@ live("built production images", () => {
     if (appImageOwned) cleanup(["image", "rm", appImage]);
     if (cliImageOwned) cleanup(["image", "rm", cliImage]);
     if (fixtureDirectory) rmSync(fixtureDirectory, { recursive: true });
+    if (wrapperFixtureDirectory) {
+      rmSync(wrapperFixtureDirectory, { recursive: true });
+    }
     if (cleanupErrors.length > 0) {
       throw new AggregateError(cleanupErrors, "owned Docker resource cleanup failed");
     }
@@ -673,10 +677,27 @@ api: { host: 0.0.0.0, port: 8788 }
     expect(
       docker(["run", "--rm", "--entrypoint", "docker", cliImage, "--version"]),
     ).toMatch(/^Docker version /u);
+    wrapperFixtureDirectory = mkdtempSync(
+      join(tmpdir(), "argus-wrapper-image-"),
+    );
+    chmodSync(wrapperFixtureDirectory, 0o755);
+    writeFileSync(
+      join(wrapperFixtureDirectory, "compose.yaml"),
+      `services:
+  probe:
+    image: example.invalid/argus-compose-probe:fixture
+    command: ["true"]
+`,
+      { mode: 0o644 },
+    );
+    const wrapperProject = `argus-wrapper-${resourceSuffix}`;
+    const hostArchitecture = arch() === "x64" ? "amd64" : "arm64";
     expect(
       docker([
         "run",
         "--rm",
+        "--network",
+        "host",
         "--cap-drop",
         "ALL",
         "--security-opt",
@@ -685,15 +706,34 @@ api: { host: 0.0.0.0, port: 8788 }
         "--tmpfs",
         "/tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777",
         "--volume",
+        "/etc/os-release:/host/etc/os-release:ro",
+        "--volume",
+        "/proc/meminfo:/host/proc/meminfo:ro",
+        "--volume",
+        `${wrapperFixtureDirectory}:/opt/argus:rw`,
+        "--volume",
         "/var/run/docker.sock:/var/run/docker.sock:rw",
+        "--env",
+        "ARGUS_INSTALL_ROOT=/opt/argus",
+        "--env",
+        `ARGUS_HOST_ARCH=${hostArchitecture}`,
+        "--env",
+        "ARGUS_VERSION=0.1.0-test",
         "--entrypoint",
-        "docker",
+        "sh",
         cliImage,
-        "version",
-        "--format",
-        "{{.Server.Version}}",
+        "-eu",
+        "-c",
+        `printf wrapper-write-ok > /opt/argus/write-proof
+docker version --format '{{.Server.Version}}'
+cd /opt/argus
+docker compose --project-name '${wrapperProject}' config --quiet
+docker compose --project-name '${wrapperProject}' down --remove-orphans >/dev/null 2>&1`,
       ]),
     ).toMatch(/^\d+\.\d+\.\d+/u);
+    expect(
+      readFileSync(join(wrapperFixtureDirectory, "write-proof"), "utf8"),
+    ).toBe("wrapper-write-ok");
     expect(
       docker(["run", "--rm", "--entrypoint", "docker", cliImage, "compose", "version"]),
     ).toMatch(/^Docker Compose version v2\./u);
