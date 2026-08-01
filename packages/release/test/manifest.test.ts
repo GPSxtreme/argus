@@ -1,0 +1,321 @@
+import {
+  createHash,
+  generateKeyPairSync,
+  sign,
+  type KeyObject,
+} from "node:crypto";
+import { describe, expect, it } from "vitest";
+import {
+  MAX_RELEASE_MANIFEST_BYTES,
+  ReleaseManifestError,
+  releaseManifestSha256,
+  verifyReleaseManifest,
+  verifyReleaseManifestWithIdentity,
+} from "../src/index.js";
+
+const sha = (character: string): string => character.repeat(64);
+
+const validManifest = {
+  schemaVersion: 1,
+  version: "1.2.3",
+  publishedAt: "2026-08-01T10:30:00.000Z",
+  images: {
+    app: {
+      reference: `ghcr.io/gpsxtreme/argus@sha256:${sha("a")}`,
+      digest: `sha256:${sha("a")}`,
+    },
+    cli: {
+      reference: `ghcr.io/gpsxtreme/argus-cli@sha256:${sha("b")}`,
+      digest: `sha256:${sha("b")}`,
+    },
+    searxng: {
+      reference: `docker.io/searxng/searxng@sha256:${sha("c")}`,
+      digest: `sha256:${sha("c")}`,
+    },
+    postgres: {
+      reference: `docker.io/library/postgres@sha256:${sha("d")}`,
+      digest: `sha256:${sha("d")}`,
+    },
+  },
+  assets: {
+    fxembed: {
+      url: "https://github.com/gpsxtreme/argus/releases/download/v1.2.3/fxembed.js",
+      sha256: sha("e"),
+      compatibilityDate: "2026-08-01",
+    },
+    wrapper: {
+      url: "https://github.com/gpsxtreme/argus/releases/download/v1.2.3/argus",
+      sha256: sha("f"),
+    },
+  },
+  minimumStateSchema: 1,
+} as const;
+
+const keys = () => generateKeyPairSync("ed25519");
+const bytesOf = (value: unknown): Uint8Array =>
+  Buffer.from(JSON.stringify(value), "utf8");
+const signatureOf = (bytes: Uint8Array, privateKey: KeyObject): Uint8Array =>
+  sign(null, bytes, privateKey);
+const publicPem = (publicKey: KeyObject): string =>
+  publicKey.export({ type: "spki", format: "pem" }).toString();
+
+const expectCode = (
+  operation: () => unknown,
+  code: string,
+): void => {
+  try {
+    operation();
+    throw new Error("Expected operation to fail");
+  } catch (error) {
+    expect(error).toBeInstanceOf(ReleaseManifestError);
+    expect((error as ReleaseManifestError).code).toBe(code);
+  }
+};
+
+describe("verifyReleaseManifest", () => {
+  it("verifies exact served bytes and returns a strict versioned manifest", () => {
+    const { privateKey, publicKey } = keys();
+    const bytes = bytesOf(validManifest);
+
+    expect(
+      verifyReleaseManifest(bytes, signatureOf(bytes, privateKey), publicPem(publicKey)),
+    ).toEqual(validManifest);
+  });
+
+  it("rejects a changed byte and a wrong key before parsing", () => {
+    const signer = keys();
+    const other = keys();
+    const bytes = bytesOf(validManifest);
+    const signature = signatureOf(bytes, signer.privateKey);
+    const tampered = Uint8Array.from(bytes);
+    const changedIndex = tampered.length - 2;
+    tampered[changedIndex] = (tampered[changedIndex] ?? 0) ^ 1;
+
+    expectCode(
+      () => verifyReleaseManifest(tampered, signature, publicPem(signer.publicKey)),
+      "RELEASE_SIGNATURE_INVALID",
+    );
+    expectCode(
+      () => verifyReleaseManifest(bytes, signature, publicPem(other.publicKey)),
+      "RELEASE_SIGNATURE_INVALID",
+    );
+  });
+
+  it("signs whitespace as part of the exact manifest identity", () => {
+    const { privateKey, publicKey } = keys();
+    const compact = bytesOf(validManifest);
+    const spaced = Buffer.from(`\n${JSON.stringify(validManifest, null, 2)}\n`);
+    const compactSignature = signatureOf(compact, privateKey);
+
+    expectCode(
+      () => verifyReleaseManifest(spaced, compactSignature, publicPem(publicKey)),
+      "RELEASE_SIGNATURE_INVALID",
+    );
+    expect(
+      verifyReleaseManifest(
+        spaced,
+        signatureOf(spaced, privateKey),
+        publicPem(publicKey),
+      ),
+    ).toEqual(validManifest);
+  });
+
+  it("only reports invalid JSON after the invalid bytes have a valid signature", () => {
+    const { privateKey, publicKey } = keys();
+    const invalidJson = Buffer.from("{");
+    const wrongSignature = signatureOf(bytesOf(validManifest), privateKey);
+
+    expectCode(
+      () => verifyReleaseManifest(invalidJson, wrongSignature, publicPem(publicKey)),
+      "RELEASE_SIGNATURE_INVALID",
+    );
+    expectCode(
+      () =>
+        verifyReleaseManifest(
+          invalidJson,
+          signatureOf(invalidJson, privateKey),
+          publicPem(publicKey),
+        ),
+      "RELEASE_MANIFEST_JSON_INVALID",
+    );
+  });
+
+  it.each([
+    ["short signature", new Uint8Array(63), publicPem(keys().publicKey)],
+    ["long signature", new Uint8Array(65), publicPem(keys().publicKey)],
+  ])("stably rejects an invalid %s", (_label, signature, pem) => {
+    expectCode(
+      () => verifyReleaseManifest(bytesOf(validManifest), signature, pem),
+      "RELEASE_SIGNATURE_INVALID",
+    );
+  });
+
+  it.each([
+    "",
+    "not a key",
+    publicPem(generateKeyPairSync("rsa", { modulusLength: 2048 }).publicKey),
+  ])(
+    "stably rejects an invalid Ed25519 public key",
+    (pem) => {
+      expectCode(
+        () =>
+          verifyReleaseManifest(
+            bytesOf(validManifest),
+            new Uint8Array(64),
+            pem,
+          ),
+        "RELEASE_PUBLIC_KEY_INVALID",
+      );
+    },
+  );
+
+  it("rejects manifests over the finite input size bound", () => {
+    const { publicKey } = keys();
+    expectCode(
+      () =>
+        verifyReleaseManifest(
+          new Uint8Array(MAX_RELEASE_MANIFEST_BYTES + 1),
+          new Uint8Array(64),
+          publicPem(publicKey),
+        ),
+      "RELEASE_MANIFEST_TOO_LARGE",
+    );
+  });
+
+  it.each([
+    ["unknown root field", { ...validManifest, surprise: true }],
+    ["unknown nested field", {
+      ...validManifest,
+      assets: {
+        ...validManifest.assets,
+        wrapper: { ...validManifest.assets.wrapper, surprise: true },
+      },
+    }],
+    ["unsupported schema", { ...validManifest, schemaVersion: 2 }],
+    ["unsupported minimum state schema", {
+      ...validManifest,
+      minimumStateSchema: 2,
+    }],
+    ["non-normalized version", { ...validManifest, version: "v1.2.3" }],
+    ["leading-zero version", { ...validManifest, version: "01.2.3" }],
+    ["impossible timestamp", {
+      ...validManifest,
+      publishedAt: "2026-02-30T10:30:00.000Z",
+    }],
+    ["non-canonical timestamp", {
+      ...validManifest,
+      publishedAt: "2026-08-01T10:30:00Z",
+    }],
+    ["impossible compatibility date", {
+      ...validManifest,
+      assets: {
+        ...validManifest.assets,
+        fxembed: {
+          ...validManifest.assets.fxembed,
+          compatibilityDate: "2026-02-30",
+        },
+      },
+    }],
+    ["non-HTTPS asset URL", {
+      ...validManifest,
+      assets: {
+        ...validManifest.assets,
+        wrapper: { ...validManifest.assets.wrapper, url: "http://example.com/argus" },
+      },
+    }],
+    ["asset URL userinfo", {
+      ...validManifest,
+      assets: {
+        ...validManifest.assets,
+        wrapper: {
+          ...validManifest.assets.wrapper,
+          url: "https://user:secret@example.com/argus",
+        },
+      },
+    }],
+    ["asset URL query credential", {
+      ...validManifest,
+      assets: {
+        ...validManifest.assets,
+        wrapper: {
+          ...validManifest.assets.wrapper,
+          url: "https://example.com/argus?token=secret",
+        },
+      },
+    }],
+    ["uppercase asset digest", {
+      ...validManifest,
+      assets: {
+        ...validManifest.assets,
+        wrapper: { ...validManifest.assets.wrapper, sha256: sha("A") },
+      },
+    }],
+    ["short image digest", {
+      ...validManifest,
+      images: {
+        ...validManifest.images,
+        app: { ...validManifest.images.app, digest: "sha256:abc" },
+      },
+    }],
+    ["tagged image reference", {
+      ...validManifest,
+      images: {
+        ...validManifest.images,
+        app: {
+          ...validManifest.images.app,
+          reference: "ghcr.io/gpsxtreme/argus:1.2.3",
+        },
+      },
+    }],
+    ["credentialed image reference", {
+      ...validManifest,
+      images: {
+        ...validManifest.images,
+        app: {
+          ...validManifest.images.app,
+          reference: `user:secret@ghcr.io/gpsxtreme/argus@sha256:${sha("a")}`,
+        },
+      },
+    }],
+    ["mismatched reference and digest", {
+      ...validManifest,
+      images: {
+        ...validManifest.images,
+        app: {
+          ...validManifest.images.app,
+          digest: `sha256:${sha("b")}`,
+        },
+      },
+    }],
+  ])("rejects invalid schema: %s", (_label, manifest) => {
+    const { privateKey, publicKey } = keys();
+    const bytes = bytesOf(manifest);
+    expectCode(
+      () =>
+        verifyReleaseManifest(
+          bytes,
+          signatureOf(bytes, privateKey),
+          publicPem(publicKey),
+        ),
+      "RELEASE_MANIFEST_SCHEMA_INVALID",
+    );
+  });
+
+  it("exposes the exact signed-byte SHA-256 identity", () => {
+    const { privateKey, publicKey } = keys();
+    const bytes = Buffer.from(`\n${JSON.stringify(validManifest)}\n`);
+    const expected = createHash("sha256").update(bytes).digest("hex");
+
+    expect(releaseManifestSha256(bytes)).toBe(expected);
+    expect(
+      verifyReleaseManifestWithIdentity(
+        bytes,
+        signatureOf(bytes, privateKey),
+        publicPem(publicKey),
+      ),
+    ).toEqual({
+      manifest: validManifest,
+      manifestSha256: expected,
+    });
+  });
+});
