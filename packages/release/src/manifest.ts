@@ -4,8 +4,13 @@ import {
   verify,
   type KeyObject,
 } from "node:crypto";
-import { pinnedImageReferenceSchema } from "@argus/deployment";
+import { isPinnedImageReference } from "@argus/contracts";
 import { z } from "zod";
+import {
+  assertJsonObjectKeysUnique,
+  DuplicateJsonKeyError,
+  UnsafeJsonKeyError,
+} from "./json.js";
 
 export const MAX_RELEASE_MANIFEST_BYTES = 1024 * 1024;
 const ED25519_SIGNATURE_BYTES = 64;
@@ -13,14 +18,13 @@ const MAX_PUBLIC_KEY_PEM_BYTES = 16 * 1024;
 const sha256Pattern = /^[a-f0-9]{64}$/;
 const digestPattern = /^sha256:[a-f0-9]{64}$/;
 const normalizedVersionPattern =
-  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?$/;
-const credentialQueryKeyPattern =
-  /^(?:access[_-]?key|api[_-]?key|auth|authorization|credential|key|password|secret|sig|signature|token)$/i;
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 
 export type ReleaseManifestErrorCode =
   | "RELEASE_MANIFEST_TOO_LARGE"
   | "RELEASE_PUBLIC_KEY_INVALID"
   | "RELEASE_SIGNATURE_INVALID"
+  | "RELEASE_MANIFEST_INVALID"
   | "RELEASE_MANIFEST_JSON_INVALID"
   | "RELEASE_MANIFEST_SCHEMA_INVALID";
 
@@ -56,19 +60,28 @@ const isSafeHttpsAssetUrl = (value: string): boolean => {
     return false;
   }
 
-  if (url.protocol !== "https:" || url.username !== "" || url.password !== "") {
+  if (
+    url.protocol !== "https:" ||
+    url.username !== "" ||
+    url.password !== "" ||
+    value.includes("?") ||
+    value.includes("#") ||
+    url.search !== "" ||
+    url.hash !== ""
+  ) {
     return false;
-  }
-
-  for (const key of url.searchParams.keys()) {
-    if (credentialQueryKeyPattern.test(key)) return false;
   }
   return true;
 };
 
 const imageSchema = z
   .object({
-    reference: pinnedImageReferenceSchema,
+    reference: z
+      .string()
+      .refine(
+        isPinnedImageReference,
+        "Expected a credential-free digest-pinned OCI image reference",
+      ),
     digest: z.string().regex(digestPattern),
   })
   .strict()
@@ -211,11 +224,42 @@ export function verifyReleaseManifestWithIdentity(
     );
   }
 
+  let decodedManifest: string;
+  try {
+    decodedManifest = new TextDecoder("utf-8", { fatal: true }).decode(manifestBytes);
+  } catch {
+    throw new ReleaseManifestError(
+      "RELEASE_MANIFEST_JSON_INVALID",
+      "Signed release manifest is not valid UTF-8 JSON.",
+    );
+  }
+
+  try {
+    assertJsonObjectKeysUnique(decodedManifest);
+  } catch (error) {
+    if (error instanceof DuplicateJsonKeyError) {
+      throw new ReleaseManifestError(
+        "RELEASE_MANIFEST_INVALID",
+        "Signed release manifest contains duplicate JSON object keys.",
+      );
+    }
+    if (error instanceof UnsafeJsonKeyError) {
+      throw new ReleaseManifestError(
+        "RELEASE_MANIFEST_SCHEMA_INVALID",
+        "Signed release manifest does not match the supported schema.",
+      );
+    }
+    throw new ReleaseManifestError(
+      "RELEASE_MANIFEST_JSON_INVALID",
+      "Signed release manifest is not valid UTF-8 JSON.",
+    );
+  }
+
+  // The scanner above validates the complete JSON grammar and duplicate-key
+  // policy before this native parse can materialize an object.
   let untrustedManifest: unknown;
   try {
-    untrustedManifest = JSON.parse(
-      new TextDecoder("utf-8", { fatal: true }).decode(manifestBytes),
-    );
+    untrustedManifest = JSON.parse(decodedManifest);
   } catch {
     throw new ReleaseManifestError(
       "RELEASE_MANIFEST_JSON_INVALID",

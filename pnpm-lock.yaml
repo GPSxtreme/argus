@@ -144,6 +144,9 @@ importers:
       '@argus/config':
         specifier: workspace:*
         version: link:../config
+      '@argus/contracts':
+        specifier: workspace:*
+        version: link:../contracts
       execa:
         specifier: ^10.0.1
         version: 10.0.1
@@ -179,9 +182,9 @@ importers:
 
   packages/release:
     dependencies:
-      '@argus/deployment':
+      '@argus/contracts':
         specifier: workspace:*
-        version: link:../deployment
+        version: link:../contracts
       zod:
         specifier: ^4.0.0
         version: 4.4.3

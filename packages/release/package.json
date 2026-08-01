@@ -9,7 +9,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@argus/deployment": "workspace:*",
+    "@argus/contracts": "workspace:*",
     "zod": "^4.0.0"
   }
 }

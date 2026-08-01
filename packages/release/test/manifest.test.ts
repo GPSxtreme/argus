@@ -82,6 +82,22 @@ describe("verifyReleaseManifest", () => {
     ).toEqual(validManifest);
   });
 
+  it.each([
+    "0.0.0",
+    "1.2.3-alpha",
+    "1.2.3-alpha.1",
+    "1.2.3-1alpha",
+    "1.2.3+build.001",
+    "1.2.3-rc.1+build.20260801",
+  ])("accepts normalized SemVer 2.0 release version %s", (version) => {
+    const { privateKey, publicKey } = keys();
+    const bytes = bytesOf({ ...validManifest, version });
+
+    expect(
+      verifyReleaseManifest(bytes, signatureOf(bytes, privateKey), publicPem(publicKey)),
+    ).toMatchObject({ version });
+  });
+
   it("rejects a changed byte and a wrong key before parsing", () => {
     const signer = keys();
     const other = keys();
@@ -198,6 +214,11 @@ describe("verifyReleaseManifest", () => {
     }],
     ["non-normalized version", { ...validManifest, version: "v1.2.3" }],
     ["leading-zero version", { ...validManifest, version: "01.2.3" }],
+    ["leading-zero prerelease identifier", {
+      ...validManifest,
+      version: "1.2.3-alpha.01",
+    }],
+    ["empty build identifier", { ...validManifest, version: "1.2.3+build..1" }],
     ["impossible timestamp", {
       ...validManifest,
       publishedAt: "2026-02-30T10:30:00.000Z",
@@ -240,6 +261,86 @@ describe("verifyReleaseManifest", () => {
         wrapper: {
           ...validManifest.assets.wrapper,
           url: "https://example.com/argus?token=secret",
+        },
+      },
+    }],
+    ["asset URL access_token", {
+      ...validManifest,
+      assets: {
+        ...validManifest.assets,
+        wrapper: {
+          ...validManifest.assets.wrapper,
+          url: "https://example.com/argus?access_token=secret",
+        },
+      },
+    }],
+    ["asset URL client_secret", {
+      ...validManifest,
+      assets: {
+        ...validManifest.assets,
+        wrapper: {
+          ...validManifest.assets.wrapper,
+          url: "https://example.com/argus?client_secret=secret",
+        },
+      },
+    }],
+    ["asset URL private_token", {
+      ...validManifest,
+      assets: {
+        ...validManifest.assets,
+        wrapper: {
+          ...validManifest.assets.wrapper,
+          url: "https://example.com/argus?private_token=secret",
+        },
+      },
+    }],
+    ["asset URL AWS signature", {
+      ...validManifest,
+      assets: {
+        ...validManifest.assets,
+        wrapper: {
+          ...validManifest.assets.wrapper,
+          url: "https://example.com/argus?X-Amz-Signature=secret",
+        },
+      },
+    }],
+    ["asset URL innocuous query", {
+      ...validManifest,
+      assets: {
+        ...validManifest.assets,
+        wrapper: {
+          ...validManifest.assets.wrapper,
+          url: "https://example.com/argus?download=1",
+        },
+      },
+    }],
+    ["asset URL fragment", {
+      ...validManifest,
+      assets: {
+        ...validManifest.assets,
+        wrapper: {
+          ...validManifest.assets.wrapper,
+          url: "https://example.com/argus#download",
+        },
+      },
+    }],
+    ["asset URL empty query", {
+      ...validManifest,
+      assets: {
+        ...validManifest.assets,
+        wrapper: {
+          ...validManifest.assets.wrapper,
+          url: "https://example.com/argus?",
+        },
+      },
+    }],
+    ["asset URL empty fragment", {
+      ...validManifest,
+      assets: {
+        ...validManifest.assets,
+        wrapper: {
+          ...validManifest.assets.wrapper,
+          url: "https://example.com/argus#",
         },
       },
     }],
@@ -318,4 +419,126 @@ describe("verifyReleaseManifest", () => {
       manifestSha256: expected,
     });
   });
+
+  it.each([
+    [
+      "duplicate root key",
+      `{"schemaVersion":1,"schemaVersion":1}`,
+    ],
+    [
+      "duplicate nested key",
+      `{"schemaVersion":1,"nested":{"value":1,"value":2}}`,
+    ],
+    [
+      "escaped-equivalent key",
+      `{"schemaVersion":1,"nested":{"a":1,"\\u0061":2}}`,
+    ],
+  ])("rejects %s before JSON.parse can overwrite data", (_label, json) => {
+    const { privateKey, publicKey } = keys();
+    const bytes = Buffer.from(json);
+
+    expectCode(
+      () =>
+        verifyReleaseManifest(
+          bytes,
+          signatureOf(bytes, privateKey),
+          publicPem(publicKey),
+        ),
+      "RELEASE_MANIFEST_INVALID",
+    );
+  });
+
+  it("allows the same key in different JSON objects", () => {
+    const { privateKey, publicKey } = keys();
+    const manifest = {
+      ...validManifest,
+      images: {
+        ...validManifest.images,
+        app: { ...validManifest.images.app },
+        cli: { ...validManifest.images.cli },
+      },
+    };
+    const bytes = bytesOf(manifest);
+
+    expect(
+      verifyReleaseManifest(bytes, signatureOf(bytes, privateKey), publicPem(publicKey)),
+    ).toEqual(manifest);
+  });
+
+  it("accepts complete JSON string, number, literal, object, and array grammar before schema validation", () => {
+    const { privateKey, publicKey } = keys();
+    const json =
+      String.raw`{"strings":["quote:\"","slash:\\","solidus:\/","unicode:\u0061"],` +
+      `"numbers":[0,-0,12,-12,1.5,1e3,-2.5E-2],` +
+      `"values":[true,false,null,{},[]]}`;
+    const bytes = Buffer.from(json);
+
+    expectCode(
+      () =>
+        verifyReleaseManifest(
+          bytes,
+          signatureOf(bytes, privateKey),
+          publicPem(publicKey),
+        ),
+      "RELEASE_MANIFEST_SCHEMA_INVALID",
+    );
+  });
+
+  it.each([
+    `{"value":01}`,
+    `{"value":1.}`,
+    `{"value":1e}`,
+    `{"value":NaN}`,
+    `{"value":"\\x20"}`,
+    `{"value":[1,]}`,
+    `{"value":true} trailing`,
+  ])("rejects malformed signed JSON grammar: %s", (json) => {
+    const { privateKey, publicKey } = keys();
+    const bytes = Buffer.from(json);
+
+    expectCode(
+      () =>
+        verifyReleaseManifest(
+          bytes,
+          signatureOf(bytes, privateKey),
+          publicPem(publicKey),
+        ),
+      "RELEASE_MANIFEST_JSON_INVALID",
+    );
+  });
+
+  it("fatally rejects signed invalid UTF-8", () => {
+    const { privateKey, publicKey } = keys();
+    const bytes = Uint8Array.from([0x7b, 0x22, 0xff, 0x22, 0x3a, 0x31, 0x7d]);
+
+    expectCode(
+      () =>
+        verifyReleaseManifest(
+          bytes,
+          signatureOf(bytes, privateKey),
+          publicPem(publicKey),
+        ),
+      "RELEASE_MANIFEST_JSON_INVALID",
+    );
+  });
+
+  it.each(["__proto__", "constructor", "prototype"])(
+    "strictly rejects prototype-like key %s without mutating prototypes",
+    (key) => {
+      const { privateKey, publicKey } = keys();
+      const json = JSON.stringify({ ...validManifest, [key]: { polluted: true } });
+      const bytes = Buffer.from(json);
+
+      expectCode(
+        () =>
+          verifyReleaseManifest(
+            bytes,
+            signatureOf(bytes, privateKey),
+            publicPem(publicKey),
+          ),
+        "RELEASE_MANIFEST_SCHEMA_INVALID",
+      );
+      expect(Object.prototype).not.toHaveProperty("polluted");
+    },
+  );
 });
