@@ -6,3 +6,4 @@ export * from "./files.js";
 export * from "./preflight.js";
 export * from "./compose.js";
 export * from "./reconciler.js";
+export * from "./searxng.js";
