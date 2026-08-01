@@ -129,4 +129,15 @@ describe("SQLite repository", () => {
       content: "A sourced summary",
     });
   });
+
+  it("owns diagnostic lifecycle rows separately and cleans only its target", async () => {
+    const repo = await createRepo();
+    const now = new Date().toISOString();
+    expect(await repo.createDiagnosticWatch({ id: "diagnostic-1", targetId: "__diagnostic:1", source: "web", target: { kind: "url", value: "https://example.test" }, status: "active", createdAt: now, updatedAt: now, job: { id: "diagnostic-job", targetId: "__diagnostic:1", source: "web", status: "queued", attempt: 0, runAt: now } })).toBe(true);
+    await repo.cancelDiagnosticWatch("__diagnostic:1");
+    expect((await repo.getDiagnosticWatch("__diagnostic:1"))?.status).toBe("cancelled");
+    await repo.cleanupDiagnosticWatch("__diagnostic:1");
+    await repo.cleanupDiagnosticWatch("__diagnostic:1");
+    expect(await repo.getDiagnosticWatch("__diagnostic:1")).toBeUndefined();
+  });
 });

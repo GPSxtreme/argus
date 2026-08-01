@@ -3,6 +3,7 @@ import { Pool } from "pg";
 import type {
   AppliedConfig,
   DerivedArtifact,
+  DiagnosticWatch,
   IngestionCommit,
   IngestionCommitResult,
   Job,
@@ -418,6 +419,10 @@ export class PostgresRepository implements StorageRepository {
       [JSON.stringify(snapshot.config), snapshot.contentHash, snapshot.appliedAt],
     );
   }
+  async createDiagnosticWatch(input: DiagnosticWatch & { job: Job }): Promise<boolean> { const c = await this.pool.connect(); try { await c.query("BEGIN"); const watch = await c.query("INSERT INTO diagnostic_watches(id,target_id,source,target_json,status,created_at,updated_at) VALUES($1,$2,$3,$4::jsonb,$5,$6,$7) ON CONFLICT DO NOTHING", [input.id,input.targetId,input.source,JSON.stringify(input.target),input.status,input.createdAt,input.updatedAt]); if (!watch.rowCount) { await c.query("ROLLBACK"); return false; } const job=await c.query("INSERT INTO jobs(id,target_id,source,status,attempt,run_at) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING",[input.job.id,input.job.targetId,input.job.source,input.job.status,input.job.attempt,input.job.runAt]); if (!job.rowCount) throw new Error("Diagnostic watch job could not be enqueued."); await c.query("COMMIT"); return true; } catch(e) { await c.query("ROLLBACK"); throw e; } finally { c.release(); } }
+  async getDiagnosticWatch(targetId: string): Promise<DiagnosticWatch | undefined> { const r=await this.pool.query<Row>("SELECT * FROM diagnostic_watches WHERE target_id=$1",[targetId]); const x=r.rows[0]; return x ? {id:x.id as string,targetId:x.target_id as string,source:x.source as DiagnosticWatch["source"],target:json(x.target_json),status:x.status as DiagnosticWatch["status"],createdAt:iso(x.created_at),updatedAt:iso(x.updated_at)}:undefined; }
+  async cancelDiagnosticWatch(targetId: string): Promise<void> { await this.pool.query("UPDATE diagnostic_watches SET status='cancelled',updated_at=now() WHERE target_id=$1 AND status='active'; UPDATE jobs SET status='complete',error='diagnostic cancelled',lease_owner=NULL,lease_expires_at=NULL WHERE target_id=$1 AND status IN ('queued','running')",[targetId]); }
+  async cleanupDiagnosticWatch(targetId: string): Promise<void> { const c=await this.pool.connect(); try { await c.query("BEGIN"); await c.query("DELETE FROM artifacts WHERE record_ids_json::text LIKE $1",[`%${targetId}%`]); await c.query("DELETE FROM records WHERE target_id=$1",[targetId]); await c.query("DELETE FROM checkpoints WHERE target_id=$1",[targetId]); await c.query("DELETE FROM jobs WHERE target_id=$1",[targetId]); await c.query("DELETE FROM diagnostic_watches WHERE target_id=$1",[targetId]); await c.query("COMMIT"); } catch(e) { await c.query("ROLLBACK"); throw e; } finally { c.release(); } }
 }
 
 export const createPool = (connectionString: string): Pool =>

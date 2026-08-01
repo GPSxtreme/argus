@@ -55,6 +55,10 @@ export interface Job {
   leaseExpiresAt?: string;
   error?: string;
 }
+export interface DiagnosticWatch {
+  id: string; targetId: string; source: SourceName; target: Record<string, unknown>;
+  status: "active" | "cancelled" | "complete"; createdAt: string; updatedAt: string;
+}
 
 export interface StorageRepository {
   upsertRecord(
@@ -73,4 +77,8 @@ export interface StorageRepository {
   queryArtifacts(input: QueryArtifactsInput): Promise<Page<DerivedArtifact>>;
   getAppliedConfig(): Promise<AppliedConfig | undefined>;
   applyConfig(snapshot: AppliedConfig): Promise<void>;
+  createDiagnosticWatch(input: DiagnosticWatch & { job: Job }): Promise<boolean>;
+  getDiagnosticWatch(targetId: string): Promise<DiagnosticWatch | undefined>;
+  cancelDiagnosticWatch(targetId: string): Promise<void>;
+  cleanupDiagnosticWatch(targetId: string): Promise<void>;
 }
