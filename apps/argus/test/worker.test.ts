@@ -3,7 +3,7 @@ import type { SourceItem } from "@argus/contracts";
 import type { ScheduledTarget } from "@argus/scheduler";
 import { createSqliteRepository } from "@argus/storage-sqlite";
 import { afterEach, describe, expect, it } from "vitest";
-import { runTarget } from "../src/worker.js";
+import { findDiagnosticTarget, runTarget } from "../src/worker.js";
 
 const repositories: Awaited<ReturnType<typeof createSqliteRepository>>[] = [];
 afterEach(() => {
@@ -60,5 +60,25 @@ describe("target worker", () => {
     release();
     expect(await running).toEqual({ inserted: 0, revised: 0, duplicates: 0 });
     expect((await repository.queryRecords({ targetIds: ["__argus_doctor:test"] })).items).toEqual([]);
+  });
+
+  it.each([
+    ["telegram", "channel", "argus-announcements"],
+    ["x", "account", "argus"],
+    ["x", "query", "argus release"],
+  ] as const)("resolves a persisted %s diagnostic snapshot", async (source, kind, value) => {
+    const repository = await createSqliteRepository({ filename: ":memory:" });
+    repositories.push(repository);
+    const now = new Date().toISOString();
+    await repository.createDiagnosticWatch({ id: `${source}-${kind}`, targetId: `__argus_doctor:${source}-${kind}`, source, target: { kind, value, watchId: "diagnostic", keywords: [] }, status: "active", createdAt: now, updatedAt: now, job: { id: `job-${source}-${kind}`, targetId: `__argus_doctor:${source}-${kind}`, source, status: "queued", attempt: 0, runAt: now } });
+    expect(await findDiagnosticTarget(repository, `__argus_doctor:${source}-${kind}`)).toMatchObject({ source, kind, value, watchId: "diagnostic" });
+  });
+
+  it("rejects a corrupted diagnostic snapshot without exposing its token field", async () => {
+    const repository = await createSqliteRepository({ filename: ":memory:" });
+    repositories.push(repository);
+    const now = new Date().toISOString();
+    await repository.createDiagnosticWatch({ id: "bad", targetId: "__argus_doctor:bad", source: "telegram", target: { kind: "channel", value: "public", watchId: "diagnostic", token: "secret" }, status: "active", createdAt: now, updatedAt: now, job: { id: "bad-job", targetId: "__argus_doctor:bad", source: "telegram", status: "queued", attempt: 0, runAt: now } });
+    expect(await findDiagnosticTarget(repository, "__argus_doctor:bad")).toBeUndefined();
   });
 });
