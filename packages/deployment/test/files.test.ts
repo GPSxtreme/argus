@@ -162,7 +162,7 @@ describe("instance files", () => {
       argusVersion: "0.1.0",
       composeProject: "argus",
       configHash: "abc123",
-      services: { argus: { image: "argus:latest", healthy: true } },
+      services: { argus: { image: `ghcr.io/gpsxtreme/argus@sha256:${"a".repeat(64)}`, healthy: true } },
       updatedAt: "2026-08-01T00:00:00.000Z",
     };
 

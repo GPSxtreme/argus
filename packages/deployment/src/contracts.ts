@@ -1,6 +1,15 @@
 import type { ArgusConfig } from "@argus/config";
 import { z } from "zod";
 
+const pinnedImageReferencePattern = /^(?=.{1,255}$)(?:(?:localhost(?::[0-9]{1,5})?|[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+(?::[0-9]{1,5})?)\/[a-z0-9]+(?:[._-][a-z0-9]+)*(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)*)@sha256:[a-f0-9]{64}$/;
+
+/** Accepts credential-free OCI references pinned to a SHA-256 manifest digest. */
+export const isPinnedImageReference = (value: string): boolean => pinnedImageReferencePattern.test(value);
+
+export const pinnedImageReferenceSchema = z
+  .string()
+  .refine(isPinnedImageReference, "Expected a credential-free digest-pinned OCI image reference");
+
 export interface OnboardingAnswersV1 {
   version: 1;
   deployment: {
@@ -196,7 +205,7 @@ export const deploymentStateSchema = z
     configHash: z.string().min(1),
     services: z.record(
       z.string(),
-      z.object({ image: z.string().min(1), healthy: z.boolean() }).strict(),
+      z.object({ image: pinnedImageReferenceSchema, healthy: z.boolean() }).strict(),
     ),
     compose: z
       .object({
@@ -206,9 +215,9 @@ export const deploymentStateSchema = z
         searxng: z.boolean(),
         images: z
           .object({
-            argus: z.string().min(1),
-            postgres: z.string().min(1),
-            searxng: z.string().min(1),
+            argus: pinnedImageReferenceSchema,
+            postgres: pinnedImageReferenceSchema,
+            searxng: pinnedImageReferenceSchema,
           })
           .strict(),
       })

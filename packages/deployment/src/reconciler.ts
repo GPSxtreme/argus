@@ -1,4 +1,8 @@
-import type { DeploymentPlan, DeploymentStateV1 } from "./contracts.js";
+import {
+  isPinnedImageReference,
+  type DeploymentPlan,
+  type DeploymentStateV1,
+} from "./contracts.js";
 import type { CommandExecutor } from "./executor.js";
 import { loadDeploymentState, saveDeploymentState } from "./files.js";
 
@@ -6,7 +10,6 @@ const composeProject = "argus";
 
 export interface ManifestImage {
   reference: string;
-  digest: `sha256:${string}`;
 }
 
 export interface DesiredDeployment {
@@ -65,27 +68,26 @@ const requiredServices = (desired: DesiredDeployment): Array<keyof DesiredDeploy
 };
 
 const imageReference = (image: ManifestImage): string => {
-  if (!image.reference || !/^sha256:[a-f0-9]{64}$/.test(image.digest)) {
+  if (!isPinnedImageReference(image.reference)) {
     throw new Error("A verified release-manifest image digest is required for deployment.");
   }
-  return `${image.reference}@${image.digest}`;
+  return image.reference;
 };
+
+const imageDigest = (image: ManifestImage): string => imageReference(image).slice(image.reference.lastIndexOf("@") + 1);
 
 const composeEnvironment = (desired: DesiredDeployment): Record<string, string> => ({
   ARGUS_API_PORT: String(desired.apiPort),
-  ARGUS_VERSION: `${desired.version}@${desired.images.argus.digest}`,
+  ARGUS_VERSION: `${desired.version}@${imageDigest(desired.images.argus)}`,
   POSTGRES_IMAGE: imageReference(desired.images.postgres),
   SEARXNG_IMAGE: imageReference(desired.images.searxng),
 });
 
 const splitImageReference = (image: string): ManifestImage => {
-  const separator = image.lastIndexOf("@");
-  const reference = image.slice(0, separator);
-  const digest = image.slice(separator + 1);
-  if (!reference || !/^sha256:[a-f0-9]{64}$/.test(digest)) {
+  if (!isPinnedImageReference(image)) {
     throw new Error("Persisted Compose inputs are missing a verified release-manifest image digest.");
   }
-  return { reference, digest: digest as ManifestImage["digest"] };
+  return { reference: image };
 };
 
 const desiredFromState = (state: DeploymentStateV1 | undefined): DesiredDeployment | undefined => {

@@ -8,6 +8,7 @@ import {
   inspectDeployment,
   loadDeploymentState,
   planDeployment,
+  isPinnedImageReference,
   restartDeployment,
   startDeployment,
   stopDeployment,
@@ -68,9 +69,9 @@ const desired: DesiredDeployment = {
   searxng: true,
   configHash: "config-v1",
   images: {
-    argus: { reference: "ghcr.io/gpsxtreme/argus", digest: `sha256:${"a".repeat(64)}` },
-    searxng: { reference: "docker.io/searxng/searxng", digest: `sha256:${"b".repeat(64)}` },
-    postgres: { reference: "docker.io/library/postgres", digest: `sha256:${"c".repeat(64)}` },
+    argus: { reference: `ghcr.io/gpsxtreme/argus@sha256:${"a".repeat(64)}` },
+    searxng: { reference: `docker.io/searxng/searxng@sha256:${"b".repeat(64)}` },
+    postgres: { reference: `docker.io/library/postgres@sha256:${"c".repeat(64)}` },
   },
 };
 
@@ -84,6 +85,28 @@ const contextFor = async (
 };
 
 describe("deployment reconciliation", () => {
+  it.each([
+    `ghcr.io/gpsxtreme/argus@sha256:${"a".repeat(64)}`,
+    `docker.io/library/postgres@sha256:${"b".repeat(64)}`,
+    `localhost:5000/argus/service@sha256:${"c".repeat(64)}`,
+  ])("accepts a restrictive digest-pinned OCI image reference: %s", (reference) => {
+    expect(isPinnedImageReference(reference)).toBe(true);
+  });
+
+  it.each([
+    "ghcr.io/gpsxtreme/argus:0.2.0",
+    `ghcr.io/gpsxtreme/argus@sha256:${"a".repeat(63)}`,
+    `https://ghcr.io/gpsxtreme/argus@sha256:${"a".repeat(64)}`,
+    `ghcr.io/user:token@gpsxtreme/argus@sha256:${"a".repeat(64)}`,
+    `ghcr.io/gpsxtreme/argus@sha256:${"A".repeat(64)}`,
+    `ghcr.io/gpsxtreme/argus@sha256:${"a".repeat(64)}?token=value`,
+    `ghcr.io/gpsxtreme/argus@sha256:${"a".repeat(64)}#fragment`,
+    `ghcr.io/gpsxtreme/argus@sha256:${"a".repeat(64)}\n`,
+    `argus@sha256:${"a".repeat(64)}`,
+  ])("rejects unsafe or malformed image reference: %s", (reference) => {
+    expect(isPinnedImageReference(reference)).toBe(false);
+  });
+
   it("is idempotent after applying the desired deployment", async () => {
     const { context, executor } = await contextFor();
     const first = planDeployment(await inspectDeployment(context), desired);
@@ -134,6 +157,8 @@ describe("deployment reconciliation", () => {
 
     await getDeploymentStatus(freshContext);
     await startDeployment(freshContext);
+    await stopDeployment(freshContext);
+    await restartDeployment(freshContext);
 
     expect(freshExecutor.calls.every((call) => call.env?.ARGUS_API_PORT === "8788")).toBe(true);
     expect(freshExecutor.calls[0]?.env).toMatchObject({
@@ -174,8 +199,8 @@ describe("deployment reconciliation", () => {
           composeProject: "argus",
           configHash: desired.configHash,
           services: {
-            argus: { image: `${desired.images.argus.reference}@${desired.images.argus.digest}`, healthy: true },
-            searxng: { image: `${desired.images.searxng.reference}@${desired.images.searxng.digest}`, healthy: true },
+            argus: { image: desired.images.argus.reference, healthy: true },
+            searxng: { image: desired.images.searxng.reference, healthy: true },
           },
           updatedAt: "2026-08-01T00:00:00.000Z",
         },
