@@ -197,6 +197,28 @@ Fix-round GREEN:
 - Typecheck and build: 15/15 packages each.
 - Lint: 162 files clean.
 
+## Formal review fix round 3
+
+Installed-config responses now use the same incremental bounded stream reader as
+release assets. Reading stops as soon as the one-megabyte cap is crossed,
+cancel is fire-and-forget so a non-cooperative stream cannot hold the failure,
+and the entire fetch plus body read remains inside the true hard deadline.
+Behavior tests cover early overflow without consuming an unbounded stream,
+abort-ignoring reads, deadline timer cleanup, and late body rejection safety.
+
+Compose env-file serialization now follows single-quoted value semantics:
+ordinary backslashes remain literal and only apostrophes are escaped. The test
+uses an independent decoder for that narrow grammar and proves runtime
+round-trip equality for backslashes, apostrophes, dollar signs, hashes, equals,
+spaces, and mixed values.
+
+Round-3 RED exposed an assertion-order unhandled rejection in the fake-timer
+deadline test; attaching the rejection observer before advancing time removed
+the warning and verified the intended late-rejection contract.
+
+Round-3 focused GREEN: 13/13 integration and config behavior tests; typecheck
+15/15 packages; lint 162 files clean.
+
 ## Concerns
 
 - The GitHub-hosted release, GHCR multi-architecture push, and credentialed

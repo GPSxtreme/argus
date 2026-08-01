@@ -17,6 +17,27 @@ const answers: OnboardingAnswersV1 = {
   intelligence: { enabled: false, model: "openai/gpt-4.1-mini" },
 };
 
+// Independent decoder for the Compose env-file single-quote grammar used here:
+// backslashes are literal except when escaping an apostrophe.
+const decodeComposeEnvLine = (line: string): string => {
+  const separator = line.indexOf("=");
+  const encoded = line.slice(separator + 1);
+  if (!encoded.startsWith("'") || !encoded.endsWith("'")) {
+    throw new TypeError("expected a single-quoted Compose env value");
+  }
+  const body = encoded.slice(1, -1);
+  let decoded = "";
+  for (let index = 0; index < body.length; index += 1) {
+    if (body[index] === "\\" && body[index + 1] === "'") {
+      decoded += "'";
+      index += 1;
+    } else {
+      decoded += body[index];
+    }
+  }
+  return decoded;
+};
+
 describe("renderInstanceConfig", () => {
   it("renders runtime config without secret values", () => {
     const rendered = renderInstanceConfig(answers, {
@@ -132,15 +153,23 @@ api:
   });
 
   it("quotes Compose env-file metacharacters without interpolation or truncation", () => {
-    const value = " $TOKEN # note = \"quoted\" 'single' \\\\ ";
-    const rendered = renderInstanceConfig(answers, {
-      searxng: "http://searxng:8080",
-      fxembed: "https://argus-fx.workers.dev/api",
-      apiToken: value,
-    });
-    expect(rendered.secrets).toBe(
-      "ARGUS_API_TOKEN=' $TOKEN # note = \"quoted\" \\'single\\' \\\\\\\\ '\n",
-    );
-    expect(rendered.secretEnvironment.ARGUS_API_TOKEN).toBe(value);
+    const values = [
+      String.raw`C:\argus\data`,
+      "apostrophe's value",
+      "$TOKEN",
+      "#not-a-comment",
+      "left=right",
+      " leading and trailing ",
+      String.raw`mix\path'$VALUE #tag=yes `,
+    ];
+    for (const value of values) {
+      const rendered = renderInstanceConfig(answers, {
+        searxng: "http://searxng:8080",
+        fxembed: "https://argus-fx.workers.dev/api",
+        apiToken: value,
+      });
+      expect(decodeComposeEnvLine(rendered.secrets.trimEnd())).toBe(value);
+      expect(rendered.secretEnvironment.ARGUS_API_TOKEN).toBe(value);
+    }
   });
 });

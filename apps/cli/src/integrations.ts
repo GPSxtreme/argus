@@ -137,8 +137,13 @@ export const createInstalledConfigIntegration = ({
           "The Argus configuration service request failed.",
         );
       }
-      const bytes = new Uint8Array(await response.arrayBuffer());
-      if (bytes.byteLength === 0 || bytes.byteLength > maximumResponseBytes) {
+      const bytes = await boundedBytes(
+        response,
+        maximumResponseBytes,
+        "CONFIG_SERVICE_RESPONSE_INVALID",
+        "The Argus configuration service response is invalid.",
+      );
+      if (bytes.byteLength === 0) {
         throw requestError(
           "CONFIG_SERVICE_RESPONSE_INVALID",
           "The Argus configuration service response is invalid.",
@@ -338,7 +343,7 @@ const boundedBytes = async (
       if (next.done) break;
       length += next.value.byteLength;
       if (length > maximumBytes) {
-        await reader.cancel();
+        void reader.cancel().catch(() => undefined);
         throw new DeploymentError(code, message);
       }
       chunks.push(next.value);

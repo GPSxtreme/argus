@@ -3,7 +3,7 @@ import { validateConfig } from "@argus/config";
 import type { CommandExecutor, OnboardingAnswersV1 } from "@argus/deployment";
 import { buildReleaseArtifacts } from "@argus/release";
 import { createSqliteRepository } from "@argus/storage-sqlite";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createInstalledConfigIntegration,
   createProductionOnboardingIntegration,
@@ -88,6 +88,70 @@ describe("installed config integration", () => {
         config,
       }),
     ).rejects.toMatchObject({ code: "CONFIG_SERVICE_UNAUTHORIZED" });
+  });
+
+  it("stops streaming immediately after the installed-config response exceeds its cap", async () => {
+    let pulls = 0;
+    let cancelled = false;
+    const integration = createInstalledConfigIntegration({
+      endpoint: "http://argus.local",
+      token: "secret",
+      timeoutMs: 100,
+      fetcher: async () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              pulls += 1;
+              controller.enqueue(new Uint8Array(600 * 1024));
+            },
+            cancel() {
+              cancelled = true;
+              return new Promise<void>(() => undefined);
+            },
+          }),
+        ),
+    });
+
+    await expect(
+      integration.inspect({ path: "/opt/argus/argus.yaml", config }),
+    ).rejects.toMatchObject({ code: "CONFIG_SERVICE_RESPONSE_INVALID" });
+    expect(pulls).toBeLessThanOrEqual(3);
+    expect(cancelled).toBe(true);
+  });
+
+  it("cleans up its deadline timer and absorbs a late body rejection", async () => {
+    vi.useFakeTimers();
+    try {
+      let rejectRead: ((reason?: unknown) => void) | undefined;
+      const integration = createInstalledConfigIntegration({
+        endpoint: "http://argus.local",
+        token: "secret",
+        timeoutMs: 5,
+        fetcher: async () =>
+          new Response(
+            new ReadableStream<Uint8Array>({
+              pull: () =>
+                new Promise<void>((_resolve, reject) => {
+                  rejectRead = reject;
+                }),
+            }),
+          ),
+      });
+      const inspection = integration.inspect({
+        path: "/opt/argus/argus.yaml",
+        config,
+      });
+      const rejection = expect(inspection).rejects.toMatchObject({
+        code: "CONFIG_SERVICE_REQUEST_FAILED",
+      });
+      await vi.advanceTimersByTimeAsync(5);
+      await rejection;
+      rejectRead?.(new Error("late body failure"));
+      await vi.runAllTimersAsync();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

@@ -17,7 +17,7 @@ export interface RenderedInstanceConfig {
 
 const environmentReference = (name: string): string => `\${${name}}`;
 const composeEnvValue = (value: string): string =>
-  `'${value.replaceAll("\\", "\\\\").replaceAll("'", "\\'")}'`;
+  `'${value.replaceAll("'", "\\'")}'`;
 
 export const renderInstanceConfig = (
   answers: OnboardingAnswersV1,
