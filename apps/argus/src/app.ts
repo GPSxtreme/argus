@@ -93,8 +93,11 @@ export const createApp = ({ config, repository, diagnosticResolver }: CreateAppI
   });
 
   app.post("/v1/diagnostics/smoke-watches", async (context) => {
-    const body: { source?: string; targetId?: string } = await context.req.json<{ source?: string; targetId?: string }>().catch(() => ({}));
-    const target = typeof body.targetId === "string" ? targetsFromConfig(config).find((candidate) => candidate.id === body.targetId && candidate.source === body.source) : undefined;
+    const body: unknown = await context.req.json().catch(() => undefined);
+    if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).length !== 2 || !Object.keys(body).every((key) => key === "source" || key === "targetId")) return context.json({ error: "invalid diagnostic watch request" }, 400);
+    const input = body as { source?: unknown; targetId?: unknown };
+    if ((input.source !== "telegram" && input.source !== "web" && input.source !== "x") || typeof input.targetId !== "string" || !input.targetId) return context.json({ error: "invalid diagnostic watch request" }, 400);
+    const target = targetsFromConfig(config).find((candidate) => candidate.id === input.targetId && candidate.source === input.source);
     if (!target) return context.json({ error: "configured enabled diagnostic target was not found" }, 404);
     if (target.source === "web" && target.kind === "url") {
       if (!(await safeDiagnosticWebTarget(target.value, diagnosticResolver))) return context.json({ error: "configured web diagnostic target is not permitted" }, 400);

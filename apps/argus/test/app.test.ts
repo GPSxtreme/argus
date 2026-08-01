@@ -95,6 +95,10 @@ describe("Argus API", () => {
     const diagnosticConfig = validateConfig({ version: 1, storage: { adapter: "sqlite", url: ":memory:" }, sources: { web: { enabled: true } }, watches: [{ id: "diagnostic-source", schedule: "* * * * *", inputs: { web: { urls: ["https://example.com/a"] } } }], api: { token: "secret" } });
     const app = createApp({ config: diagnosticConfig, repository });
     expect((await app.request("/v1/diagnostics/smoke-watches", { method: "POST" })).status).toBe(401);
+    const invalid = await app.request("/v1/diagnostics/smoke-watches", { method: "POST", headers: { authorization: "Bearer secret", "content-type": "application/json" }, body: JSON.stringify({ source: "web", targetId: targetsFromConfig(diagnosticConfig)[0]?.id, token: "do-not-echo" }) });
+    expect(invalid.status).toBe(400);
+    expect(await invalid.text()).not.toContain("do-not-echo");
+    expect((await app.request("/v1/diagnostics/smoke-watches", { method: "POST", headers: { authorization: "Bearer secret", "content-type": "application/json" }, body: JSON.stringify({ source: "telegram", targetId: targetsFromConfig(diagnosticConfig)[0]?.id }) })).status).toBe(404);
     const created = await app.request("/v1/diagnostics/smoke-watches", { method: "POST", headers: { authorization: "Bearer secret", "content-type": "application/json" }, body: JSON.stringify({ source: "web", targetId: targetsFromConfig(diagnosticConfig)[0]?.id }) });
     expect(created.status).toBe(202);
     const diagnostic = await created.json() as { id: string; targetId: string };
