@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import type {
   AppliedConfig,
+  CreateDiagnosticWatchInput,
   DerivedArtifact,
   DiagnosticWatch,
   IngestionCommit,
@@ -204,7 +205,12 @@ export class SqliteRepository implements StorageRepository {
   }
 
   async queryRecords(input: QueryRecordsInput): Promise<Page<RecordEnvelope>> {
-    const conditions: string[] = [];
+    const conditions: string[] = [
+      `NOT EXISTS (
+        SELECT 1 FROM diagnostic_watches
+        WHERE diagnostic_watches.target_id = records.target_id
+      )`,
+    ];
     const parameters: unknown[] = [];
     if (input.sources?.length) {
       conditions.push(`source IN (${input.sources.map(() => "?").join(",")})`);
@@ -369,6 +375,9 @@ export class SqliteRepository implements StorageRepository {
         SELECT 1
         FROM json_each(artifacts.record_ids_json) AS artifact_record
         JOIN records ON records.id = artifact_record.value
+        LEFT JOIN diagnostic_watches
+          ON diagnostic_watches.target_id = records.target_id
+        WHERE diagnostic_watches.target_id IS NULL
       )`,
     ];
     const parameters: unknown[] = [];
@@ -385,19 +394,32 @@ export class SqliteRepository implements StorageRepository {
       Record<string, unknown>
     >;
     return {
-      items: rows.map((row) => ({
-        id: row.id as string,
-        recordIds: JSON.parse(row.record_ids_json as string) as string[],
-        kind: row.kind as string,
-        content: row.content as string,
-        ...(row.provider ? { provider: row.provider as string } : {}),
-        ...(row.model ? { model: row.model as string } : {}),
-        provenance: JSON.parse(row.provenance_json as string) as Record<
-          string,
-          unknown
-        >,
-        createdAt: row.created_at as string,
-      })),
+      items: rows.map((row) => {
+        const recordIds = JSON.parse(row.record_ids_json as string) as string[];
+        const visibleRecordIds = recordIds.filter((recordId) =>
+          this.database
+            .prepare(
+              `SELECT 1 FROM records
+               LEFT JOIN diagnostic_watches
+                 ON diagnostic_watches.target_id = records.target_id
+               WHERE records.id=? AND diagnostic_watches.target_id IS NULL`,
+            )
+            .get(recordId),
+        );
+        return {
+          id: row.id as string,
+          recordIds: visibleRecordIds,
+          kind: row.kind as string,
+          content: row.content as string,
+          ...(row.provider ? { provider: row.provider as string } : {}),
+          ...(row.model ? { model: row.model as string } : {}),
+          provenance: JSON.parse(row.provenance_json as string) as Record<
+            string,
+            unknown
+          >,
+          createdAt: row.created_at as string,
+        };
+      }),
     };
   }
 
@@ -433,9 +455,12 @@ export class SqliteRepository implements StorageRepository {
     })();
   }
 
-  async createDiagnosticWatch(input: DiagnosticWatch & { job: Job }): Promise<boolean> {
+  async createDiagnosticWatch(input: CreateDiagnosticWatchInput): Promise<boolean> {
     return this.database.transaction(() => {
-      const created = this.database.prepare("INSERT INTO diagnostic_watches(id,target_id,source,target_json,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?)").run(input.id, input.targetId, input.source, JSON.stringify(input.target), input.status, input.createdAt, input.updatedAt).changes === 1;
+      const expiresAt =
+        input.expiresAt ??
+        new Date(new Date(input.createdAt).getTime() + 15 * 60_000).toISOString();
+      const created = this.database.prepare("INSERT INTO diagnostic_watches(id,target_id,source,target_json,status,created_at,updated_at,expires_at) VALUES(?,?,?,?,?,?,?,?)").run(input.id, input.targetId, input.source, JSON.stringify(input.target), input.status, input.createdAt, input.updatedAt, expiresAt).changes === 1;
       if (!created) return false;
       const queued = this.database.prepare("INSERT INTO jobs(id,target_id,source,status,attempt,run_at,lease_owner,lease_expires_at,error) VALUES(?,?,?,?,?,?,?,?,?)").run(input.job.id, input.job.targetId, input.job.source, input.job.status, input.job.attempt, input.job.runAt, null, null, null).changes === 1;
       if (!queued) throw new Error("Diagnostic watch job could not be enqueued.");
@@ -443,40 +468,139 @@ export class SqliteRepository implements StorageRepository {
     })();
   }
   async getDiagnosticWatch(targetId: string): Promise<DiagnosticWatch | undefined> {
-    const row = this.database.prepare("SELECT * FROM diagnostic_watches WHERE target_id=?").get(targetId) as { id: string; target_id: string; source: string; target_json: string; status: string; created_at: string; updated_at: string } | undefined;
-    return row ? { id: row.id, targetId: row.target_id, source: row.source as DiagnosticWatch["source"], target: JSON.parse(row.target_json) as Record<string, unknown>, status: row.status as DiagnosticWatch["status"], createdAt: row.created_at, updatedAt: row.updated_at } : undefined;
+    const row = this.database.prepare("SELECT * FROM diagnostic_watches WHERE target_id=?").get(targetId) as { id: string; target_id: string; source: string; target_json: string; status: string; created_at: string; updated_at: string; expires_at: string } | undefined;
+    return row ? { id: row.id, targetId: row.target_id, source: row.source as DiagnosticWatch["source"], target: JSON.parse(row.target_json) as Record<string, unknown>, status: row.status as DiagnosticWatch["status"], createdAt: row.created_at, updatedAt: row.updated_at, expiresAt: row.expires_at } : undefined;
+  }
+  async queryDiagnosticRecords(targetId: string): Promise<RecordEnvelope[]> {
+    const rows = this.database
+      .prepare(
+        `SELECT records.* FROM records
+         JOIN diagnostic_watches
+           ON diagnostic_watches.target_id = records.target_id
+         WHERE records.target_id=?
+         ORDER BY records.ingested_at DESC, records.id`,
+      )
+      .all(targetId) as RecordRow[];
+    return rows.map(mapRecord);
+  }
+  async commitDiagnosticIngestion(
+    input: IngestionCommit & { jobId: string },
+  ): Promise<IngestionCommitResult | undefined> {
+    return this.database.transaction(() => {
+      const watch = this.database
+        .prepare(
+          "SELECT status FROM diagnostic_watches WHERE target_id=? AND expires_at>?",
+        )
+        .get(input.targetId, new Date().toISOString()) as
+        | { status: string }
+        | undefined;
+      if (watch?.status !== "active") {
+        this.database
+          .prepare(
+            `UPDATE jobs SET status='complete',error='diagnostic cancelled',
+             lease_owner=NULL,lease_expires_at=NULL
+             WHERE id=? AND target_id=? AND status IN ('queued','running')`,
+          )
+          .run(input.jobId, input.targetId);
+        return undefined;
+      }
+      const result: IngestionCommitResult = {
+        inserted: 0,
+        revised: 0,
+        duplicates: 0,
+      };
+      for (const record of input.records) {
+        const write = this.upsertRecordSync(record);
+        if (write.created) result.inserted += 1;
+        else if (write.revision) result.revised += 1;
+        else result.duplicates += 1;
+      }
+      this.database
+        .prepare(
+          `INSERT INTO checkpoints(target_id,value_json,updated_at)
+           VALUES(?,?,?) ON CONFLICT(target_id) DO UPDATE SET
+           value_json=excluded.value_json,updated_at=excluded.updated_at`,
+        )
+        .run(
+          input.targetId,
+          JSON.stringify(input.checkpoint),
+          new Date().toISOString(),
+        );
+      this.database
+        .prepare(
+          `UPDATE jobs SET status='complete',error=NULL,lease_owner=NULL,
+           lease_expires_at=NULL WHERE id=? AND target_id=? AND status='running'`,
+        )
+        .run(input.jobId, input.targetId);
+      this.database
+        .prepare(
+          "UPDATE diagnostic_watches SET status='complete',updated_at=? WHERE target_id=? AND status='active'",
+        )
+        .run(new Date().toISOString(), input.targetId);
+      return result;
+    })();
   }
   async cancelDiagnosticWatch(targetId: string): Promise<void> { this.database.transaction(() => { this.database.prepare("UPDATE diagnostic_watches SET status='cancelled',updated_at=? WHERE target_id=? AND status='active'").run(new Date().toISOString(), targetId); this.database.prepare("UPDATE jobs SET status='complete',error='diagnostic cancelled',lease_owner=NULL,lease_expires_at=NULL WHERE target_id=? AND status IN ('queued','running')").run(targetId); })(); }
   async cleanupDiagnosticWatch(targetId: string): Promise<void> {
     this.database.transaction(() => {
-      const diagnosticRecordIds = new Set(
-        (
-          this.database
-            .prepare("SELECT id FROM records WHERE target_id=?")
-            .all(targetId) as Array<{ id: string }>
-        ).map(({ id }) => id),
+      this.cleanupDiagnosticWatchSync(targetId);
+    })();
+  }
+
+  private cleanupDiagnosticWatchSync(targetId: string): void {
+    const diagnosticRecordIds = new Set(
+      (
+        this.database
+          .prepare("SELECT id FROM records WHERE target_id=?")
+          .all(targetId) as Array<{ id: string }>
+      ).map(({ id }) => id),
+    );
+    if (diagnosticRecordIds.size > 0) {
+      const artifacts = this.database
+        .prepare("SELECT id, record_ids_json FROM artifacts")
+        .all() as Array<{ id: string; record_ids_json: string }>;
+      const removeArtifact = this.database.prepare(
+        "DELETE FROM artifacts WHERE id=?",
       );
-      if (diagnosticRecordIds.size > 0) {
-        const artifacts = this.database
-          .prepare("SELECT id, record_ids_json FROM artifacts")
-          .all() as Array<{ id: string; record_ids_json: string }>;
-        const removeArtifact = this.database.prepare(
-          "DELETE FROM artifacts WHERE id=?",
+      const updateArtifact = this.database.prepare(
+        "UPDATE artifacts SET record_ids_json=? WHERE id=?",
+      );
+      for (const artifact of artifacts) {
+        const recordIds = JSON.parse(artifact.record_ids_json) as string[];
+        const remaining = recordIds.filter(
+          (recordId) => !diagnosticRecordIds.has(recordId),
         );
-        for (const artifact of artifacts) {
-          const recordIds = JSON.parse(artifact.record_ids_json) as string[];
-          if (
-            recordIds.length > 0 &&
-            recordIds.every((recordId) => diagnosticRecordIds.has(recordId))
-          ) {
-            removeArtifact.run(artifact.id);
-          }
+        if (remaining.length === 0 && remaining.length !== recordIds.length) {
+          removeArtifact.run(artifact.id);
+        } else if (remaining.length !== recordIds.length) {
+          updateArtifact.run(JSON.stringify(remaining), artifact.id);
         }
       }
-      this.database.prepare("DELETE FROM records WHERE target_id=?").run(targetId);
-      this.database.prepare("DELETE FROM checkpoints WHERE target_id=?").run(targetId);
-      this.database.prepare("DELETE FROM jobs WHERE target_id=?").run(targetId);
-      this.database.prepare("DELETE FROM diagnostic_watches WHERE target_id=?").run(targetId);
+    }
+    this.database.prepare("DELETE FROM records WHERE target_id=?").run(targetId);
+    this.database.prepare("DELETE FROM checkpoints WHERE target_id=?").run(targetId);
+    this.database.prepare("DELETE FROM jobs WHERE target_id=?").run(targetId);
+    this.database.prepare("DELETE FROM diagnostic_watches WHERE target_id=?").run(targetId);
+  }
+
+  async reapExpiredDiagnosticWatches(
+    now = new Date().toISOString(),
+  ): Promise<number> {
+    return this.database.transaction(() => {
+      const expired = this.database
+        .prepare("SELECT target_id FROM diagnostic_watches WHERE expires_at<=?")
+        .all(now) as Array<{ target_id: string }>;
+      for (const { target_id: targetId } of expired) {
+        this.database
+          .prepare(
+            `UPDATE jobs SET status='complete',error='diagnostic expired',
+             lease_owner=NULL,lease_expires_at=NULL
+             WHERE target_id=? AND status IN ('queued','running')`,
+          )
+          .run(targetId);
+        this.cleanupDiagnosticWatchSync(targetId);
+      }
+      return expired.length;
     })();
   }
 }

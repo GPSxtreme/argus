@@ -34,6 +34,7 @@ export interface DoctorArgusApi {
     configuredTargetId: string;
   }>;
   pollRecords(input: {
+    id: string;
     targetId: string;
     signal: AbortSignal;
   }): Promise<DiagnosticRecord[]>;
@@ -153,9 +154,9 @@ export const createArgusDoctorApi = ({
         configuredTargetId: targetId,
       };
     },
-    async pollRecords({ targetId, signal }) {
+    async pollRecords({ id, signal }) {
       const response = await request(
-        `/v1/records?target=${encodeURIComponent(targetId)}&limit=50`,
+        `/v1/diagnostics/smoke-watches/${encodeURIComponent(id)}/records`,
         signal,
       );
       const payload = (await response.json()) as unknown;
@@ -367,6 +368,7 @@ const smokeCheck = async (
     });
     while (!deadline.signal.aborted) {
       const records = await context.api.pollRecords({
+        id: smoke.id,
         targetId: smoke.targetId,
         signal: deadline.signal,
       });

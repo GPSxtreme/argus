@@ -15,6 +15,7 @@ export interface IngestItemsInput {
   items: AsyncIterable<SourceItem>;
   checkpoint: unknown;
   repository: StorageRepository;
+  diagnosticJobId?: string;
   now?: () => string;
 }
 
@@ -40,9 +41,18 @@ export const ingestItems = async (
       }),
     );
   }
-  return input.repository.commitIngestion({
+  const commit = {
     records,
     targetId: input.targetId,
     checkpoint: input.checkpoint,
-  });
+  };
+  if (input.diagnosticJobId) {
+    return (
+      (await input.repository.commitDiagnosticIngestion({
+        ...commit,
+        jobId: input.diagnosticJobId,
+      })) ?? { inserted: 0, revised: 0, duplicates: 0 }
+    );
+  }
+  return input.repository.commitIngestion(commit);
 };

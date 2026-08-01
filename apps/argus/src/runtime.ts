@@ -44,16 +44,17 @@ export const processNextJob = async (
 ): Promise<{ status: "idle" | "complete" | "failed" | "cancelled" }> => {
   const job = (await repository.claimJobs(workerId, 1, 60_000))[0];
   if (!job) return { status: "idle" };
+  const isDiagnostic = job.targetId.startsWith("__argus_doctor:");
   const diagnostic = await repository.getDiagnosticWatch(job.targetId);
+  if (isDiagnostic && diagnostic?.status !== "active") {
+    await repository.completeJob(job.id);
+    return { status: "cancelled" };
+  }
   try {
     const target =
       findTarget(config, job.targetId) ??
       (await findDiagnosticTarget(repository, job.targetId));
     if (!target) throw new Error(`Unknown target: ${job.targetId}`);
-    if (diagnostic && diagnostic.status !== "active") {
-      await repository.completeJob(job.id);
-      return { status: "cancelled" };
-    }
     const result = await execute(
       target,
       config,
@@ -64,15 +65,22 @@ export const processNextJob = async (
             (await repository.getDiagnosticWatch(job.targetId))?.status ===
             "active"
         : undefined,
+      isDiagnostic ? job.id : undefined,
     );
+    if (diagnostic && result.diagnosticCommitted === false) {
+      return { status: "cancelled" };
+    }
     if (
-      diagnostic &&
+      isDiagnostic &&
+      result.diagnosticCommitted === undefined &&
       (await repository.getDiagnosticWatch(job.targetId))?.status !== "active"
     ) {
       await repository.completeJob(job.id);
       return { status: "cancelled" };
     }
-    await repository.completeJob(job.id);
+    if (!isDiagnostic || result.diagnosticCommitted === undefined) {
+      await repository.completeJob(job.id);
+    }
     logger.info(
       { jobId: job.id, targetId: job.targetId, ...result },
       "job complete",
@@ -80,7 +88,7 @@ export const processNextJob = async (
     return { status: "complete" };
   } catch (error) {
     if (
-      diagnostic &&
+      isDiagnostic &&
       (await repository.getDiagnosticWatch(job.targetId))?.status !== "active"
     ) {
       await repository.completeJob(job.id);
@@ -104,6 +112,7 @@ export const processNextJob = async (
 };
 
 const processJobs = async (config: ArgusConfig, repository: StorageRepository): Promise<void> => {
+  await repository.reapExpiredDiagnosticWatches();
   for (let index = 0; index < 10; index += 1) if ((await processNextJob(config, repository)).status === "idle") return;
 };
 
@@ -119,6 +128,7 @@ export const startRuntime = async (configPath: string): Promise<RuntimeHandle> =
   const config = resolveRuntimeRole(loaded, process.env.ARGUS_ROLE);
   const repository = await openRepository(config);
   await reconcileConfig(repository.repository, config);
+  await repository.repository.reapExpiredDiagnosticWatches();
   const timers: NodeJS.Timeout[] = [];
   const processorJobs: Cron[] = [];
   let server: ServerType | undefined;

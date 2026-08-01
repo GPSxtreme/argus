@@ -52,8 +52,17 @@ CREATE TABLE IF NOT EXISTS jobs (
 CREATE INDEX IF NOT EXISTS jobs_due_idx ON jobs(status, run_at, lease_expires_at);
 CREATE TABLE IF NOT EXISTS diagnostic_watches (
  id text PRIMARY KEY, target_id text NOT NULL UNIQUE, source text NOT NULL, target_json jsonb NOT NULL,
- status text NOT NULL, created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL
+ status text NOT NULL, created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL,
+ expires_at timestamptz NOT NULL
 );
+ALTER TABLE diagnostic_watches
+  ADD COLUMN IF NOT EXISTS expires_at timestamptz;
+UPDATE diagnostic_watches
+  SET expires_at = created_at + interval '15 minutes'
+  WHERE expires_at IS NULL;
+ALTER TABLE diagnostic_watches
+  ALTER COLUMN expires_at SET NOT NULL;
+CREATE INDEX IF NOT EXISTS diagnostic_watches_expiry_idx ON diagnostic_watches(expires_at);
 
 CREATE TABLE IF NOT EXISTS artifacts (
   id text PRIMARY KEY,

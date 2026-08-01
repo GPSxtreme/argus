@@ -46,7 +46,13 @@ export const runTarget = async (
   repository: StorageRepository,
   adapter: AnyAdapter = adapterFor(target),
   isActive: (() => Promise<boolean>) | undefined = undefined,
-): Promise<{ inserted: number; revised: number; duplicates: number }> => {
+  diagnosticJobId?: string,
+): Promise<{
+  inserted: number;
+  revised: number;
+  duplicates: number;
+  diagnosticCommitted?: boolean;
+}> => {
   if (isActive && !(await isActive())) return { inserted: 0, revised: 0, duplicates: 0 };
   const checkpoint = await repository.getCheckpoint<{ lastId?: string }>(
     target.id,
@@ -63,7 +69,7 @@ export const runTarget = async (
     yield* items;
   }
   if (isActive && !(await isActive())) return { inserted: 0, revised: 0, duplicates: 0 };
-  return ingestItems({
+  const result = await ingestItems({
     source: target.source,
     targetId: target.id,
     watchIds: [target.watchId],
@@ -81,7 +87,14 @@ export const runTarget = async (
       observedAt: new Date().toISOString(),
     },
     repository,
+    ...(diagnosticJobId ? { diagnosticJobId } : {}),
   });
+  if (!diagnosticJobId) return result;
+  return {
+    ...result,
+    diagnosticCommitted:
+      (await repository.getDiagnosticWatch(target.id))?.status === "complete",
+  };
 };
 
 export const findTarget = (

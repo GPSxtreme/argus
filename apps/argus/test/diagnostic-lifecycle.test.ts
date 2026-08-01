@@ -112,10 +112,21 @@ describe("diagnostic watch lifecycle", () => {
       }),
     ).toEqual({ status: "complete" });
 
-    const diagnosticRecords = (
-      await repository.queryRecords({ targetIds: [diagnostic.targetId] })
-    ).items;
+    const diagnosticRecords = await repository.queryDiagnosticRecords(
+      diagnostic.targetId,
+    );
     expect(diagnosticRecords).toHaveLength(1);
+    expect(diagnosticRecords[0]?.watchIds).toEqual([diagnostic.targetId]);
+    const ordinaryResponse = await app.request(
+      `/v1/records?target=${encodeURIComponent(diagnostic.targetId)}`,
+      { headers: auth },
+    );
+    expect((await ordinaryResponse.json()).items).toEqual([]);
+    const diagnosticResponse = await app.request(
+      `/v1/diagnostics/smoke-watches/${diagnostic.id}/records`,
+      { headers: auth },
+    );
+    expect((await diagnosticResponse.json()).items).toHaveLength(1);
     expect(await repository.getCheckpoint(diagnostic.targetId)).toMatchObject({
       lastId: "diagnostic-1",
     });
@@ -145,9 +156,9 @@ describe("diagnostic watch lifecycle", () => {
     );
     expect(deleted.status).toBe(204);
     expect(await repository.getDiagnosticWatch(diagnostic.targetId)).toBeUndefined();
-    expect(
-      (await repository.queryRecords({ targetIds: [diagnostic.targetId] })).items,
-    ).toEqual([]);
+    expect(await repository.queryDiagnosticRecords(diagnostic.targetId)).toEqual(
+      [],
+    );
     expect(await repository.getCheckpoint(diagnostic.targetId)).toBeUndefined();
     expect(await processNextJob(config, repository)).toEqual({ status: "idle" });
 
@@ -241,11 +252,61 @@ describe("diagnostic watch lifecycle", () => {
     release();
 
     expect(await processing).toEqual({ status: "cancelled" });
-    expect(
-      (await repository.queryRecords({ targetIds: [diagnostic.targetId] })).items,
-    ).toEqual([]);
+    expect(await repository.queryDiagnosticRecords(diagnostic.targetId)).toEqual(
+      [],
+    );
     expect(await repository.getCheckpoint(diagnostic.targetId)).toBeUndefined();
     expect(await repository.getDiagnosticWatch(diagnostic.targetId)).toBeUndefined();
     expect(await processNextJob(config, repository)).toEqual({ status: "idle" });
+  });
+
+  it("does not recreate diagnostic data when cancelled at the commit boundary", async () => {
+    const repository = await createSqliteRepository({ filename: ":memory:" });
+    repositories.push(repository);
+    const app = createApp({ config, repository });
+    const diagnostic = await createDiagnostic(app);
+    const originalCommit = repository.commitDiagnosticIngestion.bind(repository);
+    let releaseCommit!: () => void;
+    let enteredCommit!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      releaseCommit = resolve;
+    });
+    const entered = new Promise<void>((resolve) => {
+      enteredCommit = resolve;
+    });
+    repository.commitDiagnosticIngestion = async (input) => {
+      enteredCommit();
+      await blocked;
+      return originalCommit(input);
+    };
+    const adapter = fakeWebAdapter(async function* () {
+      yield {
+        externalId: "late-boundary",
+        url: "https://example.com/releases",
+        text: "must not commit",
+        raw: {},
+      };
+    });
+
+    const processing = processNextJob(config, repository, {
+      adapterFactory: () => adapter,
+      workerId: "boundary-worker",
+    });
+    await entered;
+    expect(
+      (
+        await app.request(
+          `/v1/diagnostics/smoke-watches/${diagnostic.id}`,
+          { method: "DELETE", headers: auth },
+        )
+      ).status,
+    ).toBe(204);
+    releaseCommit();
+
+    expect(await processing).toEqual({ status: "cancelled" });
+    expect(await repository.queryDiagnosticRecords(diagnostic.targetId)).toEqual(
+      [],
+    );
+    expect(await repository.getCheckpoint(diagnostic.targetId)).toBeUndefined();
   });
 });

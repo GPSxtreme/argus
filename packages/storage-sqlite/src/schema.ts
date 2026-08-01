@@ -51,8 +51,10 @@ CREATE TABLE IF NOT EXISTS jobs (
 CREATE INDEX IF NOT EXISTS jobs_due_idx ON jobs(status, run_at, lease_expires_at);
 CREATE TABLE IF NOT EXISTS diagnostic_watches (
  id TEXT PRIMARY KEY, target_id TEXT NOT NULL UNIQUE, source TEXT NOT NULL, target_json TEXT NOT NULL,
- status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+ status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+ expires_at TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS diagnostic_watches_expiry_idx ON diagnostic_watches(expires_at);
 
 CREATE TABLE IF NOT EXISTS artifacts (
   id TEXT PRIMARY KEY,

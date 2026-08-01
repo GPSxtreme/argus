@@ -58,7 +58,12 @@ export interface Job {
 export interface DiagnosticWatch {
   id: string; targetId: string; source: SourceName; target: Record<string, unknown>;
   status: "active" | "cancelled" | "complete"; createdAt: string; updatedAt: string;
+  expiresAt: string;
 }
+export type CreateDiagnosticWatchInput = Omit<DiagnosticWatch, "expiresAt"> & {
+  expiresAt?: string;
+  job: Job;
+};
 
 export interface StorageRepository {
   upsertRecord(
@@ -77,8 +82,13 @@ export interface StorageRepository {
   queryArtifacts(input: QueryArtifactsInput): Promise<Page<DerivedArtifact>>;
   getAppliedConfig(): Promise<AppliedConfig | undefined>;
   applyConfig(snapshot: AppliedConfig): Promise<void>;
-  createDiagnosticWatch(input: DiagnosticWatch & { job: Job }): Promise<boolean>;
+  createDiagnosticWatch(input: CreateDiagnosticWatchInput): Promise<boolean>;
   getDiagnosticWatch(targetId: string): Promise<DiagnosticWatch | undefined>;
+  queryDiagnosticRecords(targetId: string): Promise<RecordEnvelope[]>;
+  commitDiagnosticIngestion(
+    input: IngestionCommit & { jobId: string },
+  ): Promise<IngestionCommitResult | undefined>;
   cancelDiagnosticWatch(targetId: string): Promise<void>;
   cleanupDiagnosticWatch(targetId: string): Promise<void>;
+  reapExpiredDiagnosticWatches(now?: string): Promise<number>;
 }

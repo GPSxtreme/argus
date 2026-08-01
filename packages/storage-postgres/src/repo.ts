@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { Pool } from "pg";
+import { Pool, type PoolClient } from "pg";
 import type {
   AppliedConfig,
+  CreateDiagnosticWatchInput,
   DerivedArtifact,
   DiagnosticWatch,
   IngestionCommit,
@@ -235,7 +236,12 @@ export class PostgresRepository implements StorageRepository {
   }
 
   async queryRecords(input: QueryRecordsInput): Promise<Page<RecordEnvelope>> {
-    const clauses: string[] = [];
+    const clauses: string[] = [
+      `NOT EXISTS (
+        SELECT 1 FROM diagnostic_watches
+        WHERE diagnostic_watches.target_id = records.target_id
+      )`,
+    ];
     const values: unknown[] = [];
     const bind = (value: unknown): string => {
       values.push(value);
@@ -382,17 +388,38 @@ export class PostgresRepository implements StorageRepository {
        ORDER BY created_at DESC,id LIMIT $${input.kind ? 2 : 1}`,
       [...(input.kind ? [input.kind] : []), input.limit ?? 50],
     );
+    const ids = result.rows.flatMap((row) =>
+      json<string[]>(row.record_ids_json),
+    );
+    const visible = ids.length
+      ? new Set(
+          (
+            await this.pool.query<Row>(
+              `SELECT records.id FROM records
+               LEFT JOIN diagnostic_watches
+                 ON diagnostic_watches.target_id=records.target_id
+               WHERE records.id=ANY($1::text[])
+                 AND diagnostic_watches.target_id IS NULL`,
+              [ids],
+            )
+          ).rows.map((row) => row.id as string),
+        )
+      : new Set<string>();
     return {
-      items: result.rows.map((row) => ({
-        id: row.id as string,
-        recordIds: json<string[]>(row.record_ids_json),
-        kind: row.kind as string,
-        content: row.content as string,
-        ...(row.provider == null ? {} : { provider: row.provider as string }),
-        ...(row.model == null ? {} : { model: row.model as string }),
-        provenance: json<Record<string, unknown>>(row.provenance_json),
-        createdAt: iso(row.created_at),
-      })),
+      items: result.rows
+        .map((row) => ({
+          id: row.id as string,
+          recordIds: json<string[]>(row.record_ids_json).filter((id) =>
+            visible.has(id),
+          ),
+          kind: row.kind as string,
+          content: row.content as string,
+          ...(row.provider == null ? {} : { provider: row.provider as string }),
+          ...(row.model == null ? {} : { model: row.model as string }),
+          provenance: json<Record<string, unknown>>(row.provenance_json),
+          createdAt: iso(row.created_at),
+        }))
+        .filter(({ recordIds }) => recordIds.length > 0),
     };
   }
 
@@ -419,10 +446,312 @@ export class PostgresRepository implements StorageRepository {
       [JSON.stringify(snapshot.config), snapshot.contentHash, snapshot.appliedAt],
     );
   }
-  async createDiagnosticWatch(input: DiagnosticWatch & { job: Job }): Promise<boolean> { const c = await this.pool.connect(); try { await c.query("BEGIN"); const watch = await c.query("INSERT INTO diagnostic_watches(id,target_id,source,target_json,status,created_at,updated_at) VALUES($1,$2,$3,$4::jsonb,$5,$6,$7) ON CONFLICT DO NOTHING", [input.id,input.targetId,input.source,JSON.stringify(input.target),input.status,input.createdAt,input.updatedAt]); if (!watch.rowCount) { await c.query("ROLLBACK"); return false; } const job=await c.query("INSERT INTO jobs(id,target_id,source,status,attempt,run_at) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING",[input.job.id,input.job.targetId,input.job.source,input.job.status,input.job.attempt,input.job.runAt]); if (!job.rowCount) throw new Error("Diagnostic watch job could not be enqueued."); await c.query("COMMIT"); return true; } catch(e) { await c.query("ROLLBACK"); throw e; } finally { c.release(); } }
-  async getDiagnosticWatch(targetId: string): Promise<DiagnosticWatch | undefined> { const r=await this.pool.query<Row>("SELECT * FROM diagnostic_watches WHERE target_id=$1",[targetId]); const x=r.rows[0]; return x ? {id:x.id as string,targetId:x.target_id as string,source:x.source as DiagnosticWatch["source"],target:json(x.target_json),status:x.status as DiagnosticWatch["status"],createdAt:iso(x.created_at),updatedAt:iso(x.updated_at)}:undefined; }
-  async cancelDiagnosticWatch(targetId: string): Promise<void> { await this.pool.query("UPDATE diagnostic_watches SET status='cancelled',updated_at=now() WHERE target_id=$1 AND status='active'; UPDATE jobs SET status='complete',error='diagnostic cancelled',lease_owner=NULL,lease_expires_at=NULL WHERE target_id=$1 AND status IN ('queued','running')",[targetId]); }
-  async cleanupDiagnosticWatch(targetId: string): Promise<void> { const c=await this.pool.connect(); try { await c.query("BEGIN"); /* Preserve artifacts: a stored artifact may reference both user and diagnostic records. */ await c.query("DELETE FROM records WHERE target_id=$1",[targetId]); await c.query("DELETE FROM checkpoints WHERE target_id=$1",[targetId]); await c.query("DELETE FROM jobs WHERE target_id=$1",[targetId]); await c.query("DELETE FROM diagnostic_watches WHERE target_id=$1",[targetId]); await c.query("COMMIT"); } catch(e) { await c.query("ROLLBACK"); throw e; } finally { c.release(); } }
+  async createDiagnosticWatch(input: CreateDiagnosticWatchInput): Promise<boolean> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const expiresAt =
+        input.expiresAt ??
+        new Date(new Date(input.createdAt).getTime() + 15 * 60_000).toISOString();
+      const watch = await client.query(
+        `INSERT INTO diagnostic_watches
+         (id,target_id,source,target_json,status,created_at,updated_at,expires_at)
+         VALUES($1,$2,$3,$4::jsonb,$5,$6,$7,$8) ON CONFLICT DO NOTHING`,
+        [
+          input.id,
+          input.targetId,
+          input.source,
+          JSON.stringify(input.target),
+          input.status,
+          input.createdAt,
+          input.updatedAt,
+          expiresAt,
+        ],
+      );
+      if (!watch.rowCount) {
+        await client.query("ROLLBACK");
+        return false;
+      }
+      const job = await client.query(
+        `INSERT INTO jobs(id,target_id,source,status,attempt,run_at)
+         VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`,
+        [
+          input.job.id,
+          input.job.targetId,
+          input.job.source,
+          input.job.status,
+          input.job.attempt,
+          input.job.runAt,
+        ],
+      );
+      if (!job.rowCount) {
+        throw new Error("Diagnostic watch job could not be enqueued.");
+      }
+      await client.query("COMMIT");
+      return true;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async getDiagnosticWatch(
+    targetId: string,
+  ): Promise<DiagnosticWatch | undefined> {
+    const result = await this.pool.query<Row>(
+      "SELECT * FROM diagnostic_watches WHERE target_id=$1",
+      [targetId],
+    );
+    const row = result.rows[0];
+    return row
+      ? {
+          id: row.id as string,
+          targetId: row.target_id as string,
+          source: row.source as DiagnosticWatch["source"],
+          target: json(row.target_json),
+          status: row.status as DiagnosticWatch["status"],
+          createdAt: iso(row.created_at),
+          updatedAt: iso(row.updated_at),
+          expiresAt: iso(row.expires_at),
+        }
+      : undefined;
+  }
+
+  async queryDiagnosticRecords(targetId: string): Promise<RecordEnvelope[]> {
+    const result = await this.pool.query<Row>(
+      `SELECT records.* FROM records
+       JOIN diagnostic_watches
+         ON diagnostic_watches.target_id=records.target_id
+       WHERE records.target_id=$1
+       ORDER BY records.ingested_at DESC,records.id`,
+      [targetId],
+    );
+    return result.rows.map(mapRecord);
+  }
+
+  async commitDiagnosticIngestion(
+    input: IngestionCommit & { jobId: string },
+  ): Promise<IngestionCommitResult | undefined> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const watch = (
+        await client.query<Row>(
+          `SELECT status FROM diagnostic_watches
+           WHERE target_id=$1 AND expires_at>now() FOR UPDATE`,
+          [input.targetId],
+        )
+      ).rows[0];
+      if (watch?.status !== "active") {
+        await client.query(
+          `UPDATE jobs SET status='complete',error='diagnostic cancelled',
+           lease_owner=NULL,lease_expires_at=NULL
+           WHERE id=$1 AND target_id=$2 AND status IN ('queued','running')`,
+          [input.jobId, input.targetId],
+        );
+        await client.query("COMMIT");
+        return undefined;
+      }
+      const result = await this.commitRecords(client, input);
+      await client.query(
+        `UPDATE jobs SET status='complete',error=NULL,lease_owner=NULL,
+         lease_expires_at=NULL
+         WHERE id=$1 AND target_id=$2 AND status='running'`,
+        [input.jobId, input.targetId],
+      );
+      await client.query(
+        `UPDATE diagnostic_watches SET status='complete',updated_at=now()
+         WHERE target_id=$1 AND status='active'`,
+        [input.targetId],
+      );
+      await client.query("COMMIT");
+      return result;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  private async commitRecords(
+    client: PoolClient,
+    input: IngestionCommit,
+  ): Promise<IngestionCommitResult> {
+    const result: IngestionCommitResult = {
+      inserted: 0,
+      revised: 0,
+      duplicates: 0,
+    };
+    for (const record of input.records) {
+      const current = (
+        await client.query<Row>(
+          "SELECT content_hash FROM records WHERE id=$1 FOR UPDATE",
+          [record.id],
+        )
+      ).rows[0];
+      if (current?.content_hash === record.contentHash) {
+        result.duplicates += 1;
+        continue;
+      }
+      await client.query(
+        `INSERT INTO records (
+          id,source,target_id,external_id,url,title,text,author,published_at,
+          raw_json,metadata_json,watch_ids_json,content_hash,ingested_at
+        ) VALUES (
+          $1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,$12::jsonb,$13,$14
+        ) ON CONFLICT(id) DO UPDATE SET
+          url=excluded.url,title=excluded.title,text=excluded.text,
+          author=excluded.author,published_at=excluded.published_at,
+          raw_json=excluded.raw_json,metadata_json=excluded.metadata_json,
+          watch_ids_json=excluded.watch_ids_json,
+          content_hash=excluded.content_hash,ingested_at=excluded.ingested_at`,
+        [
+          record.id,
+          record.source,
+          record.targetId,
+          record.externalId,
+          record.url,
+          record.title ?? null,
+          record.text,
+          record.author ?? null,
+          record.publishedAt ?? null,
+          JSON.stringify(record.raw),
+          record.metadata === undefined ? null : JSON.stringify(record.metadata),
+          JSON.stringify(record.watchIds),
+          record.contentHash,
+          record.ingestedAt,
+        ],
+      );
+      await client.query(
+        `INSERT INTO revisions
+         (id,record_id,content_hash,title,text,raw_json,created_at)
+         VALUES($1,$2,$3,$4,$5,$6::jsonb,$7) ON CONFLICT DO NOTHING`,
+        [
+          randomUUID(),
+          record.id,
+          record.contentHash,
+          record.title ?? null,
+          record.text,
+          JSON.stringify(record.raw),
+          record.ingestedAt,
+        ],
+      );
+      if (current) result.revised += 1;
+      else result.inserted += 1;
+    }
+    await client.query(
+      `INSERT INTO checkpoints(target_id,value_json,updated_at)
+       VALUES($1,$2::jsonb,now()) ON CONFLICT(target_id) DO UPDATE SET
+       value_json=excluded.value_json,updated_at=excluded.updated_at`,
+      [input.targetId, JSON.stringify(input.checkpoint)],
+    );
+    return result;
+  }
+
+  async cancelDiagnosticWatch(targetId: string): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        `UPDATE diagnostic_watches SET status='cancelled',updated_at=now()
+         WHERE target_id=$1 AND status='active'`,
+        [targetId],
+      );
+      await client.query(
+        `UPDATE jobs SET status='complete',error='diagnostic cancelled',
+         lease_owner=NULL,lease_expires_at=NULL
+         WHERE target_id=$1 AND status IN ('queued','running')`,
+        [targetId],
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  private async cleanupDiagnosticWatchWithClient(
+    client: PoolClient,
+    targetId: string,
+  ): Promise<void> {
+    const diagnosticRecordIds = (
+      await client.query<Row>("SELECT id FROM records WHERE target_id=$1", [
+        targetId,
+      ])
+    ).rows.map((row) => row.id as string);
+    if (diagnosticRecordIds.length > 0) {
+      const artifacts = await client.query<Row>(
+        "SELECT id,record_ids_json FROM artifacts FOR UPDATE",
+      );
+      const owned = new Set(diagnosticRecordIds);
+      for (const artifact of artifacts.rows) {
+        const recordIds = json<string[]>(artifact.record_ids_json);
+        const remaining = recordIds.filter((recordId) => !owned.has(recordId));
+        if (remaining.length === 0 && remaining.length !== recordIds.length) {
+          await client.query("DELETE FROM artifacts WHERE id=$1", [artifact.id]);
+        } else if (remaining.length !== recordIds.length) {
+          await client.query(
+            "UPDATE artifacts SET record_ids_json=$1::jsonb WHERE id=$2",
+            [JSON.stringify(remaining), artifact.id],
+          );
+        }
+      }
+    }
+    await client.query("DELETE FROM records WHERE target_id=$1", [targetId]);
+    await client.query("DELETE FROM checkpoints WHERE target_id=$1", [targetId]);
+    await client.query("DELETE FROM jobs WHERE target_id=$1", [targetId]);
+    await client.query("DELETE FROM diagnostic_watches WHERE target_id=$1", [
+      targetId,
+    ]);
+  }
+
+  async cleanupDiagnosticWatch(targetId: string): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await this.cleanupDiagnosticWatchWithClient(client, targetId);
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async reapExpiredDiagnosticWatches(now = new Date().toISOString()): Promise<number> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const expired = await client.query<Row>(
+        `SELECT target_id FROM diagnostic_watches
+         WHERE expires_at<=$1 FOR UPDATE`,
+        [now],
+      );
+      for (const row of expired.rows) {
+        const targetId = row.target_id as string;
+        await client.query(
+          `UPDATE jobs SET status='complete',error='diagnostic expired',
+           lease_owner=NULL,lease_expires_at=NULL
+           WHERE target_id=$1 AND status IN ('queued','running')`,
+          [targetId],
+        );
+        await this.cleanupDiagnosticWatchWithClient(client, targetId);
+      }
+      await client.query("COMMIT");
+      return expired.rows.length;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
 }
 
 export const createPool = (connectionString: string): Pool =>

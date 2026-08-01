@@ -97,6 +97,12 @@ export const createApp = ({ config, repository, diagnosticResolver }: CreateAppI
     if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).length !== 2 || !Object.keys(body).every((key) => key === "source" || key === "targetId")) return context.json({ error: "invalid diagnostic watch request" }, 400);
     const input = body as { source?: unknown; targetId?: unknown };
     if ((input.source !== "telegram" && input.source !== "web" && input.source !== "x") || typeof input.targetId !== "string" || !input.targetId) return context.json({ error: "invalid diagnostic watch request" }, 400);
+    if (!config.sources[input.source].enabled) {
+      return context.json(
+        { error: "configured enabled diagnostic target was not found" },
+        404,
+      );
+    }
     const target = targetsFromConfig(config).find((candidate) => candidate.id === input.targetId && candidate.source === input.source);
     if (!target) return context.json({ error: "configured enabled diagnostic target was not found" }, 404);
     if (target.source === "web" && target.kind === "url") {
@@ -105,10 +111,20 @@ export const createApp = ({ config, repository, diagnosticResolver }: CreateAppI
     const id = randomUUID();
     const targetId = `__argus_doctor:${id}`;
     const now = new Date().toISOString();
-    const snapshot = { kind: target.kind, value: target.value, keywords: target.keywords, watchId: target.watchId };
-    const created = await repository.createDiagnosticWatch({ id, targetId, source: target.source, target: snapshot, status: "active", createdAt: now, updatedAt: now, job: { id: randomUUID(), targetId, source: target.source, status: "queued", attempt: 0, runAt: now } });
+    await repository.reapExpiredDiagnosticWatches(now);
+    const snapshot = { kind: target.kind, value: target.value, keywords: target.keywords, watchId: targetId };
+    const created = await repository.createDiagnosticWatch({ id, targetId, source: target.source, target: snapshot, status: "active", createdAt: now, updatedAt: now, expiresAt: new Date(Date.now() + 15 * 60_000).toISOString(), job: { id: randomUUID(), targetId, source: target.source, status: "queued", attempt: 0, runAt: now } });
     if (!created) return context.json({ error: "diagnostic watch could not be created" }, 409);
     return context.json({ id, targetId }, 202);
+  });
+
+  app.get("/v1/diagnostics/smoke-watches/:id/records", async (context) => {
+    const targetId = `__argus_doctor:${context.req.param("id")}`;
+    const state = await repository.getDiagnosticWatch(targetId);
+    if (!state) return context.json({ error: "diagnostic watch not found" }, 404);
+    return context.json({
+      items: await repository.queryDiagnosticRecords(targetId),
+    });
   });
 
   app.delete("/v1/diagnostics/smoke-watches/:id", async (context) => {

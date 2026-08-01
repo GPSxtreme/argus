@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import type { RecordEnvelope } from "@argus/contracts";
 import {
@@ -49,6 +50,39 @@ describe("SQLite repository", () => {
     });
     repositories.push(repo);
     await expect(repo.queryRecords({})).resolves.toMatchObject({ items: [] });
+  });
+
+  it("adds diagnostic expiry to an existing database", () => {
+    const directory = mkdtempSync(join(tmpdir(), "argus-sqlite-migration-"));
+    temporaryDirectories.push(directory);
+    const filename = join(directory, "argus.db");
+    const legacy = new Database(filename);
+    legacy.exec(`
+      CREATE TABLE diagnostic_watches (
+        id TEXT PRIMARY KEY,
+        target_id TEXT NOT NULL UNIQUE,
+        source TEXT NOT NULL,
+        target_json TEXT NOT NULL,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      INSERT INTO diagnostic_watches
+        (id,target_id,source,target_json,status,created_at,updated_at)
+      VALUES
+        ('legacy','__argus_doctor:legacy','web','{}','active',
+         '2026-08-01T00:00:00.000Z','2026-08-01T00:00:00.000Z');
+    `);
+    legacy.close();
+
+    const migrated = openSqlite(filename);
+    const row = migrated
+      .prepare(
+        "SELECT expires_at FROM diagnostic_watches WHERE id='legacy'",
+      )
+      .get() as { expires_at: string };
+    expect(row.expires_at).toBe("2026-08-01T00:15:00.000Z");
+    migrated.close();
   });
 
   it("deduplicates records and preserves revisions when content changes", async () => {
@@ -220,5 +254,142 @@ describe("SQLite repository", () => {
     expect(
       database.prepare("SELECT id FROM jobs WHERE id=?").get("claimed-job"),
     ).toBeUndefined();
+  });
+
+  it("atomically rejects a diagnostic ingestion after cancellation", async () => {
+    const repo = await createRepo();
+    const now = new Date().toISOString();
+    const targetId = "__argus_doctor:atomic";
+    await repo.createDiagnosticWatch({
+      id: "atomic",
+      targetId,
+      source: "web",
+      target: {
+        kind: "url",
+        value: "https://example.test",
+        watchId: targetId,
+      },
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      job: {
+        id: "atomic-job",
+        targetId,
+        source: "web",
+        status: "queued",
+        attempt: 0,
+        runAt: now,
+      },
+    });
+    await repo.cancelDiagnosticWatch(targetId);
+
+    expect(
+      await repo.commitDiagnosticIngestion({
+        jobId: "atomic-job",
+        targetId,
+        records: [{ ...record("diagnostic"), id: "diagnostic", targetId }],
+        checkpoint: { lastId: "post-9" },
+      }),
+    ).toBeUndefined();
+    expect(await repo.queryDiagnosticRecords(targetId)).toEqual([]);
+    expect(await repo.getCheckpoint(targetId)).toBeUndefined();
+  });
+
+  it("hides diagnostic records and strips their IDs from mixed artifacts", async () => {
+    const repo = await createRepo();
+    const now = new Date().toISOString();
+    const targetId = "__argus_doctor:isolation";
+    await repo.createDiagnosticWatch({
+      id: "isolation",
+      targetId,
+      source: "web",
+      target: {
+        kind: "url",
+        value: "https://example.test",
+        watchId: targetId,
+      },
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      job: {
+        id: "isolation-job",
+        targetId,
+        source: "web",
+        status: "queued",
+        attempt: 0,
+        runAt: now,
+      },
+    });
+    await repo.commitDiagnosticIngestion({
+      jobId: "isolation-job",
+      targetId,
+      records: [{ ...record("diagnostic"), id: "diagnostic", targetId }],
+      checkpoint: {},
+    });
+    await repo.upsertRecord(record("user"));
+    await repo.saveArtifact({
+      id: "mixed",
+      recordIds: ["x:target-1:post-9", "diagnostic"],
+      kind: "summary",
+      content: "mixed",
+      provenance: {},
+      createdAt: now,
+    });
+
+    expect((await repo.queryRecords({})).items.map(({ id }) => id)).toEqual([
+      "x:target-1:post-9",
+    ]);
+    expect((await repo.queryRecords({ targetIds: [targetId] })).items).toEqual(
+      [],
+    );
+    expect((await repo.queryDiagnosticRecords(targetId)).map(({ id }) => id)).toEqual([
+      "diagnostic",
+    ]);
+
+    await repo.cleanupDiagnosticWatch(targetId);
+    expect((await repo.queryArtifacts({})).items[0]?.recordIds).toEqual([
+      "x:target-1:post-9",
+    ]);
+  });
+
+  it("reaps expired diagnostics idempotently without touching user data", async () => {
+    const repo = await createRepo();
+    const targetId = "__argus_doctor:expired";
+    await repo.upsertRecord(record("user"));
+    await repo.createDiagnosticWatch({
+      id: "expired",
+      targetId,
+      source: "web",
+      target: {
+        kind: "url",
+        value: "https://example.test",
+        watchId: targetId,
+      },
+      status: "active",
+      createdAt: "2026-08-01T00:00:00.000Z",
+      updatedAt: "2026-08-01T00:00:00.000Z",
+      expiresAt: "2026-08-01T00:01:00.000Z",
+      job: {
+        id: "expired-job",
+        targetId,
+        source: "web",
+        status: "queued",
+        attempt: 0,
+        runAt: "2026-08-01T00:00:00.000Z",
+      },
+    });
+
+    expect(
+      await repo.reapExpiredDiagnosticWatches("2026-08-01T00:02:00.000Z"),
+    ).toBe(1);
+    expect(
+      await repo.reapExpiredDiagnosticWatches("2026-08-01T00:02:00.000Z"),
+    ).toBe(0);
+    expect(await repo.getDiagnosticWatch(targetId)).toBeUndefined();
+    expect((await repo.queryRecords({})).items.map(({ id }) => id)).toEqual([
+      "x:target-1:post-9",
+    ]);
   });
 });

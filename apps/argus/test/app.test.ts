@@ -107,4 +107,35 @@ describe("Argus API", () => {
     expect(await repository.getDiagnosticWatch(diagnostic.targetId)).toBeUndefined();
     expect(diagnosticConfig.watches).toHaveLength(1);
   });
+
+  it("rejects diagnostics when the source is globally disabled", async () => {
+    const repository = await createSqliteRepository({ filename: ":memory:" });
+    repositories.push(repository);
+    const disabledConfig = validateConfig({
+      version: 1,
+      storage: { adapter: "sqlite", url: ":memory:" },
+      sources: { web: { enabled: false } },
+      watches: [
+        {
+          id: "disabled-source",
+          schedule: "* * * * *",
+          inputs: { web: { urls: ["https://example.com/a"] } },
+        },
+      ],
+      api: { token: "secret" },
+    });
+    const target = targetsFromConfig(disabledConfig)[0];
+    const response = await createApp({
+      config: disabledConfig,
+      repository,
+    }).request("/v1/diagnostics/smoke-watches", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ source: "web", targetId: target?.id }),
+    });
+    expect(response.status).toBe(404);
+  });
 });
