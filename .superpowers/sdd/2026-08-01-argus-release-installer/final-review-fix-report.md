@@ -133,3 +133,39 @@ TDD and verification:
   the persisted URL retained only safe parameters, and the live URL was
   unchanged.
 - Node 24 typecheck/build: 15/15 packages; lint and diff checks clean.
+
+### Canonical PostgreSQL URL validation follow-up
+
+Verified that installed `pg` 8.22 / `pg-connection-string` 2.14 accepts
+fallback-only inputs such as `postgres://user:password@/database` by retrying
+with a dummy host. Configuration now validates PostgreSQL connection strings
+before validation completes, before credential projection or persistence,
+before reconciliation, and immediately before the runtime opens the driver.
+
+The shared fail-closed parser:
+
+- accepts only WHATWG-parseable `postgres://` and `postgresql://` network URLs
+  with a nonempty hostname;
+- accepts hostname, IPv4, IPv6, authority credentials, effective query
+  credentials, and network host/port query overrides;
+- rejects missing or wrong schemes, opaque and empty-host forms, fragments,
+  malformed percent escapes, undecodable driver components, unsupported Unix
+  socket query overrides, and malformed query ports; and
+- throws one static error that never contains the raw, encoded, or decoded URL
+  or credentials.
+
+TDD and verification:
+
+- Initial RED: schema validation, redacted serialization, reconciliation
+  without an API-token pepper, and direct runtime opening all admitted the
+  invalid empty-host form. A second RED reproduced Unix-socket host override
+  and malformed query-port bypasses.
+- Focused config/runtime suite: 25/25 passed.
+- Broader config/runtime/storage security matrix: 46 passed; 9 opt-in
+  PostgreSQL tests skipped.
+- Real PostgreSQL 17 query-credential probe: reserved-character query
+  credentials connected successfully, first reconciliation changed, the second
+  was idempotent, persisted state retained only safe query parameters, and the
+  live URL remained byte-for-byte unchanged.
+- Fresh Node 24 typecheck/build: 15/15 packages. Lint checked 166 files with no
+  warnings; `git diff --check` was clean.

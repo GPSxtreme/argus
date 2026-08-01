@@ -1,3 +1,67 @@
+export const POSTGRES_URL_ERROR =
+  "PostgreSQL URL must use postgres:// or postgresql:// with a nonempty host and valid percent encoding.";
+
+const invalidPercentEncoding = /%(?![0-9a-f]{2})/iu;
+
+export const parseCanonicalPostgresUrl = (value: string): URL => {
+  if (invalidPercentEncoding.test(value)) {
+    throw new Error(POSTGRES_URL_ERROR);
+  }
+
+  let url: URL;
+  try {
+    url = new URL(value);
+    if (
+      (url.protocol !== "postgres:" && url.protocol !== "postgresql:") ||
+      !url.hostname ||
+      url.hash
+    ) {
+      throw new Error(POSTGRES_URL_ERROR);
+    }
+
+    // pg decodes these components again while opening the connection. Validate
+    // them here so its parser cannot surface a credential-bearing URIError.
+    decodeURIComponent(url.username);
+    decodeURIComponent(url.password);
+    decodeURIComponent(url.hostname);
+    decodeURI(url.pathname);
+
+    let queryHost: string | undefined;
+    let queryPort: string | undefined;
+    for (const [key, entry] of url.searchParams.entries()) {
+      if (key === "host") queryHost = entry;
+      if (key === "port") queryPort = entry;
+    }
+    if (
+      queryHost?.startsWith("/") ||
+      (queryPort !== undefined &&
+        queryPort !== "" &&
+        (!/^\d+$/u.test(queryPort) ||
+          Number(queryPort) < 1 ||
+          Number(queryPort) > 65_535))
+    ) {
+      throw new Error(POSTGRES_URL_ERROR);
+    }
+  } catch {
+    throw new Error(POSTGRES_URL_ERROR);
+  }
+
+  return url;
+};
+
+export const isCanonicalPostgresUrl = (value: string): boolean => {
+  try {
+    parseCanonicalPostgresUrl(value);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+export const assertCanonicalPostgresUrl = (value: string): void => {
+  parseCanonicalPostgresUrl(value);
+};
+
 export const withoutUrlCredentials = (value: string): string => {
   try {
     const url = new URL(value);
@@ -17,12 +81,7 @@ export interface PostgresUrlCredentialProjection {
 export const projectPostgresUrlCredentials = (
   value: string,
 ): PostgresUrlCredentialProjection => {
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    return { safeUrl: value };
-  }
+  const url = parseCanonicalPostgresUrl(value);
 
   let queryUser: string | undefined;
   let queryPassword: string | undefined;

@@ -1,5 +1,5 @@
-import { validateConfig } from "@argus/config";
-import { describe, expect, it, vi } from "vitest";
+import { type ArgusConfig, validateConfig } from "@argus/config";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const postgres = vi.hoisted(() => ({
   create: vi.fn(async () => ({
@@ -15,6 +15,10 @@ vi.mock("@argus/storage-postgres", () => ({
 const { openRepository } = await import("../src/repository.js");
 
 describe("runtime repository", () => {
+  beforeEach(() => {
+    postgres.create.mockClear();
+  });
+
   it("opens PostgreSQL with the complete live resolved URL", async () => {
     const password = "Argus-Runtime@:/?#[]% secret";
     const liveUrl =
@@ -35,5 +39,33 @@ describe("runtime repository", () => {
       connectionString: liveUrl,
     });
     expect(config.storage.url).toBe(liveUrl);
+  });
+
+  it("rejects fallback-only PostgreSQL URLs before opening the driver", async () => {
+    const invalidUrl = "postgres://user:Runtime-Secret@/argus";
+    const unsafe = {
+      ...validateConfig({
+        version: 1,
+        runtime: { role: "api" },
+        storage: { adapter: "postgres", url: "postgres://localhost/argus" },
+        sources: {},
+        watches: [],
+        api: { token: "independent-pepper" },
+      }),
+      storage: { adapter: "postgres", url: invalidUrl },
+    } as ArgusConfig;
+
+    let thrown: unknown;
+    try {
+      await openRepository(unsafe);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(String(thrown)).toContain(
+      "PostgreSQL URL must use postgres:// or postgresql:// with a nonempty host and valid percent encoding.",
+    );
+    expect(String(thrown)).not.toContain(invalidUrl);
+    expect(String(thrown)).not.toContain("Runtime-Secret");
+    expect(postgres.create).not.toHaveBeenCalled();
   });
 });

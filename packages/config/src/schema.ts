@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { isCanonicalPostgresUrl, POSTGRES_URL_ERROR } from "./sanitize.js";
+
 const cronSchema = z.string().refine(
   (value) => value.trim().split(/\s+/u).length === 5,
   "Schedule must be a five-field cron expression",
@@ -23,7 +25,7 @@ const sqliteStorageSchema = z
 const postgresStorageSchema = z
   .object({
     adapter: z.literal("postgres"),
-    url: z.string().min(1),
+    url: z.string().refine(isCanonicalPostgresUrl, POSTGRES_URL_ERROR),
   })
   .strict();
 

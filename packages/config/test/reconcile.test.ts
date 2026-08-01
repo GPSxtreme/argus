@@ -303,4 +303,28 @@ describe("configuration reconciliation", () => {
     );
     expect(emptyPlan.desiredContentHash).toBe(authorityPlan.desiredContentHash);
   });
+
+  it("rejects an invalid PostgreSQL URL before reconciliation even without a pepper", async () => {
+    const repository = await createSqliteRepository({ filename: ":memory:" });
+    repositories.push(repository);
+    const invalidUrl = "postgres://user:Reconcile-Secret@/argus";
+    const unsafe = {
+      ...postgresConfig,
+      storage: { adapter: "postgres", url: invalidUrl },
+      api: {},
+    } as typeof postgresConfig;
+
+    let thrown: unknown;
+    try {
+      await planConfigReconciliation(repository, unsafe);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(String(thrown)).toContain(
+      "PostgreSQL URL must use postgres:// or postgresql:// with a nonempty host and valid percent encoding.",
+    );
+    expect(String(thrown)).not.toContain(invalidUrl);
+    expect(String(thrown)).not.toContain("Reconcile-Secret");
+    expect(await repository.getAppliedConfig()).toBeUndefined();
+  });
 });

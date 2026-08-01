@@ -5,6 +5,7 @@ import {
   resolveConfigPath,
   resolveSecretReference,
   serializeRedactedConfig,
+  validateConfig,
 } from "../src/index.js";
 
 const fixture = (name: string): string =>
@@ -147,5 +148,114 @@ describe("loadConfig", () => {
       expect(serialized).not.toContain(secret);
     }
     expect(config.storage.url).toBe(liveUrl);
+  });
+
+  it("rejects fallback-only or malformed PostgreSQL URLs without echoing them", () => {
+    const invalid = [
+      "postgres://user:EmptyHost-Secret@/argus",
+      "postgres://user:Malformed%ZZ-Secret@localhost/argus",
+      "localhost/argus?password=MissingScheme-Secret",
+      "postgres:Opaque-Secret",
+      "postgres:///argus?password=MissingHost-Secret",
+      "https://user:WrongScheme-Secret@localhost/argus",
+      "postgres://user:Fragment-Secret@localhost/argus#ignored",
+      "postgres://localhost/argus?host=%2Fvar%2Frun%2Fpostgresql&password=Socket-Secret",
+      "postgres://localhost/argus?port=not-a-port&password=Port-Secret",
+    ];
+    for (const url of invalid) {
+      let thrown: unknown;
+      try {
+        validateConfig({
+          version: 1,
+          runtime: { role: "api" },
+          storage: { adapter: "postgres", url },
+          sources: {},
+          watches: [],
+          api: { token: "independent-pepper" },
+        });
+      } catch (error) {
+        thrown = error;
+      }
+      expect(String(thrown)).toContain(
+        "PostgreSQL URL must use postgres:// or postgresql:// with a nonempty host and valid percent encoding.",
+      );
+      expect(String(thrown)).not.toContain(url);
+      for (const secret of [
+        "EmptyHost-Secret",
+        "Malformed%ZZ-Secret",
+        "MissingScheme-Secret",
+        "Opaque-Secret",
+        "MissingHost-Secret",
+        "WrongScheme-Secret",
+        "Fragment-Secret",
+        "Socket-Secret",
+        "Port-Secret",
+      ]) {
+        expect(String(thrown)).not.toContain(secret);
+      }
+    }
+  });
+
+  it("accepts canonical PostgreSQL network URLs", () => {
+    for (const url of [
+      "postgres://db.example/argus",
+      "postgresql://127.0.0.1:5432/argus?sslmode=disable",
+      "postgres://user:secret@[::1]:5432/argus",
+      "postgres://:@localhost/argus?password=&user=&application_name=argus",
+      "postgres://localhost/argus?password=query-secret&user=query-user",
+      "postgres://fallback.example/argus?host=db.internal&port=5432",
+    ]) {
+      expect(
+        validateConfig({
+          version: 1,
+          runtime: { role: "api" },
+          storage: { adapter: "postgres", url },
+          sources: {},
+          watches: [],
+          api: { token: "independent-pepper" },
+        }).storage.url,
+      ).toBe(url);
+    }
+  });
+
+  it("never returns an invalid credential-bearing PostgreSQL URL from redaction", () => {
+    const invalidUrl = "postgres://user:Projection-Secret@/argus";
+    const unsafe = {
+      version: 1 as const,
+      runtime: { role: "api" as const },
+      storage: { adapter: "postgres" as const, url: invalidUrl },
+      sources: {
+        x: { enabled: false, endpoint: "http://localhost:8787/api" },
+        telegram: { enabled: false, adapter: "public-web" as const },
+        web: {
+          enabled: false,
+          userAgent: "Argus/0.1",
+          browserFallback: false,
+        },
+      },
+      watches: [],
+      intelligence: {
+        enabled: false,
+        provider: "openrouter" as const,
+        model: "openai/gpt-4.1-mini",
+        processors: [],
+      },
+      api: {
+        host: "0.0.0.0",
+        port: 8788,
+        token: "independent-pepper",
+      },
+    };
+    let thrown: unknown;
+    try {
+      serializeRedactedConfig(unsafe);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(String(thrown)).toContain(
+      "PostgreSQL URL must use postgres:// or postgresql:// with a nonempty host and valid percent encoding.",
+    );
+    expect(String(thrown)).not.toContain(invalidUrl);
+    expect(String(thrown)).not.toContain("Projection-Secret");
   });
 });
