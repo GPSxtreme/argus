@@ -194,9 +194,18 @@ describe("Argus API", () => {
     const repository = await createSqliteRepository({ filename: ":memory:" });
     repositories.push(repository);
     const app = createApp({ config, repository });
+    const postgresPassword = "Argus-Management@:/?#[]% secret";
+    const encodedPostgresPassword = encodeURIComponent(postgresPassword);
+    const postgresUrl = `postgres://argus-admin:${encodedPostgresPassword}@postgres:5432/argus`;
+    const credentialFragments = [
+      postgresPassword,
+      encodedPostgresPassword,
+      decodeURIComponent(encodedPostgresPassword),
+      postgresUrl,
+    ];
     const desired = {
       version: 1,
-      storage: { adapter: "sqlite", url: "/app/data/argus.db" },
+      storage: { adapter: "postgres", url: postgresUrl },
       sources: {},
       watches: [],
       api: { token: "secret" },
@@ -221,7 +230,11 @@ describe("Argus API", () => {
       body: JSON.stringify({ path: "/opt/argus/argus.yaml", config: desired }),
     });
     expect(planned.status).toBe(200);
-    const plan = (await planned.json()) as {
+    const plannedText = await planned.text();
+    for (const credential of credentialFragments) {
+      expect(plannedText).not.toContain(credential);
+    }
+    const plan = JSON.parse(plannedText) as {
       planId: string;
       desiredContentHash: string;
     };
@@ -241,6 +254,10 @@ describe("Argus API", () => {
       }),
     });
     expect(stale.status).toBe(409);
+    const staleText = await stale.text();
+    for (const credential of credentialFragments) {
+      expect(staleText).not.toContain(credential);
+    }
     expect(await repository.getAppliedConfig()).toBeUndefined();
 
     const applied = await app.request("/v1/management/config/apply", {
@@ -256,9 +273,24 @@ describe("Argus API", () => {
       }),
     });
     expect(applied.status).toBe(200);
-    expect(await repository.getAppliedConfig()).toMatchObject({
+    const appliedText = await applied.text();
+    for (const credential of credentialFragments) {
+      expect(appliedText).not.toContain(credential);
+    }
+    const persisted = await repository.getAppliedConfig();
+    expect(persisted).toMatchObject({
       contentHash: plan.desiredContentHash,
+      config: {
+        storage: {
+          adapter: "postgres",
+          url: "postgres://postgres:5432/argus",
+        },
+      },
     });
+    const persistedText = JSON.stringify(persisted);
+    for (const credential of credentialFragments) {
+      expect(persistedText).not.toContain(credential);
+    }
 
     const verified = await app.request("/v1/management/config/verify", {
       method: "POST",

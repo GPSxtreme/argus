@@ -1,0 +1,36 @@
+import { validateConfig } from "@argus/config";
+import { describe, expect, it, vi } from "vitest";
+
+const postgres = vi.hoisted(() => ({
+  create: vi.fn(async () => ({
+    migrate: vi.fn(),
+    close: vi.fn(async () => undefined),
+  })),
+}));
+
+vi.mock("@argus/storage-postgres", () => ({
+  createPostgresRepository: postgres.create,
+}));
+
+const { openRepository } = await import("../src/repository.js");
+
+describe("runtime repository", () => {
+  it("opens PostgreSQL with the complete live resolved URL", async () => {
+    const password = "Argus-Runtime@:/?#[]% secret";
+    const liveUrl = `postgres://argus-admin:${encodeURIComponent(password)}@postgres:5432/argus`;
+    const config = validateConfig({
+      version: 1,
+      runtime: { role: "api" },
+      storage: { adapter: "postgres", url: liveUrl },
+      sources: {},
+      watches: [],
+    });
+
+    await openRepository(config);
+
+    expect(postgres.create).toHaveBeenCalledWith({
+      connectionString: liveUrl,
+    });
+    expect(config.storage.url).toBe(liveUrl);
+  });
+});

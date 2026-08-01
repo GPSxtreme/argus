@@ -64,3 +64,42 @@ claim behavior, migration idempotency, stale owner/token rejection, retry caps,
 and diagnostic write fencing. Checked safe HTTP for duplicate closes, cleanup
 rejections, stalled abort/cancel behavior, late unhandled rejections, timeout
 clamping, and body limits. No unresolved Important finding remains.
+
+## Credential persistence follow-up
+
+Date: 2026-08-02
+
+Verified and fixed a narrow security follow-up in managed PostgreSQL config
+reconciliation:
+
+- The live resolved PostgreSQL URL remains unchanged and is passed in full to
+  the PostgreSQL repository.
+- Applied config and redacted YAML retain only the credential-free URL endpoint.
+  The same structural protection covers credential-bearing source URLs.
+- Credential changes remain detectable through a domain-separated HMAC-SHA256
+  fingerprint keyed by the live API token. The token and URL credentials are
+  absent from `applied_config`, public plan hashes, management responses, and
+  redacted serialization, so the public hash is not an offline password oracle.
+- A credential-bearing config without an independent API-token key fails closed
+  with a static error that contains no credential material.
+- SQLite and URLs without credentials retain their prior persistence and hash
+  behavior.
+
+TDD evidence:
+
+- Initial RED: 2 failures and 6 passes proved the percent-encoded reserved
+  password leaked through `reconcileConfig` persistence and
+  `serializeRedactedConfig`.
+- Oracle RED: different hidden API-token peppers produced the same public hash.
+  GREEN proves different peppers produce different hashes and missing peppers
+  fail closed without secret-bearing errors.
+- Focused config/runtime/management/storage matrix: 39 passed; 9 opt-in
+  PostgreSQL tests skipped.
+- Real PostgreSQL 17 reserved-credential probe: first reconcile changed, second
+  was idempotent, persisted URL was credential-free, and the live URL remained
+  unchanged.
+- Full suite: 451 passed and 14 skipped before four unrelated release-installer
+  timing failures under file-parallel load. Serial reruns passed 42/42 and
+  29/29 with one smoke test skipped.
+- Node 24 typecheck and build: 15/15 packages. Lint and `git diff --check`:
+  clean.

@@ -49,4 +49,48 @@ describe("loadConfig", () => {
     });
     expect(serializeRedactedConfig(config)).not.toContain("secret");
   });
+
+  it("redacts PostgreSQL URL credentials without changing the live config", () => {
+    const password = "Argus-Serialize@:/?#[]% secret";
+    const encodedPassword = encodeURIComponent(password);
+    const liveUrl = `postgres://argus-admin:${encodedPassword}@postgres:5432/argus`;
+    const config = {
+      version: 1 as const,
+      runtime: { role: "api" as const },
+      storage: { adapter: "postgres" as const, url: liveUrl },
+      sources: {
+        x: {
+          enabled: false,
+          endpoint: "http://localhost:8787/api",
+        },
+        telegram: { enabled: false, adapter: "public-web" as const },
+        web: {
+          enabled: false,
+          userAgent: "Argus/0.1",
+          browserFallback: false,
+        },
+      },
+      watches: [],
+      intelligence: {
+        enabled: false,
+        provider: "openrouter" as const,
+        model: "openai/gpt-4.1-mini",
+        processors: [],
+      },
+      api: { host: "0.0.0.0", port: 8788 },
+    };
+
+    const serialized = serializeRedactedConfig(config);
+    for (const secret of [
+      password,
+      encodedPassword,
+      decodeURIComponent(encodedPassword),
+      liveUrl,
+      "argus-admin",
+    ]) {
+      expect(serialized).not.toContain(secret);
+    }
+    expect(serialized).toContain("postgres://postgres:5432/argus");
+    expect(config.storage.url).toBe(liveUrl);
+  });
 });
