@@ -4,3 +4,5 @@ export * from "./errors.js";
 export * from "./executor.js";
 export * from "./files.js";
 export * from "./preflight.js";
+export * from "./compose.js";
+export * from "./reconciler.js";
