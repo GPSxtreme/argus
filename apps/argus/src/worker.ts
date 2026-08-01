@@ -99,5 +99,7 @@ export const findDiagnosticTarget = async (
   if (state?.status !== "active") return undefined;
   const target = state.target;
   if (typeof target.kind !== "string" || typeof target.value !== "string" || typeof target.watchId !== "string") return undefined;
+  const allowed = state.source === "telegram" ? ["channel"] : state.source === "x" ? ["account", "query"] : ["url", "feed", "query"];
+  if (!allowed.includes(target.kind) || Object.keys(target).some((key) => !["kind", "value", "keywords", "watchId"].includes(key))) return undefined;
   return { id: targetId, source: state.source, kind: target.kind as ScheduledTarget["kind"], value: target.value, watchId: target.watchId, schedule: "* * * * *", keywords: Array.isArray(target.keywords) ? target.keywords.filter((x): x is string => typeof x === "string") : [] };
 };
