@@ -1,0 +1,13 @@
+{
+  "success": true,
+  "errors": [],
+  "messages": [],
+  "result": {
+    "annotations": {
+      "workers/tag": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "workers/triggered_by": "upload"
+    },
+    "compatibility_date": "2026-07-31",
+    "main_module": "index.js"
+  }
+}

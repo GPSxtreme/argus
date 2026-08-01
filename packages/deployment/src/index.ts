@@ -7,3 +7,4 @@ export * from "./preflight.js";
 export * from "./compose.js";
 export * from "./reconciler.js";
 export * from "./searxng.js";
+export * from "./fxembed.js";
