@@ -12,6 +12,7 @@ on:
         type: string
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -20,7 +21,6 @@ concurrency:
 
 jobs:
   candidate:
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-24.04
     outputs:
       installer_url: ${{ steps.candidate.outputs.installer_url }}
@@ -29,16 +29,54 @@ jobs:
       wrapper_sha256: ${{ steps.candidate.outputs.wrapper_sha256 }}
       source_ref: ${{ steps.candidate.outputs.source_ref }}
     steps:
+      - name: Check out trusted resolver
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          ref: ${{ github.workflow_sha }}
+          sparse-checkout: scripts/e2e/resolve-installer-source.mjs
+          sparse-checkout-cone-mode: false
+
       - name: Resolve immutable published candidate
         id: candidate
         env:
+          EVENT_NAME: ${{ github.event_name }}
           RELEASE_TAG: ${{ github.event.workflow_run.head_branch || inputs.release_tag }}
           WORKFLOW_SHA: ${{ github.event.workflow_run.head_sha }}
+          WORKFLOW_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
           REPOSITORY: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
           [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$ ]]
+          if [ "$EVENT_NAME" = workflow_run ]; then
+            source_ref="$(
+              node scripts/e2e/resolve-installer-source.mjs \
+                --workflow-run-sha "$WORKFLOW_SHA" \
+                --workflow-run-conclusion "$WORKFLOW_CONCLUSION"
+            )"
+          else
+            gh api "repos/${REPOSITORY}/releases/tags/${RELEASE_TAG}" \
+              > release-metadata.json
+            gh api --method GET \
+              -f branch="$RELEASE_TAG" \
+              -f event=push \
+              -f status=success \
+              -f per_page=100 \
+              "repos/${REPOSITORY}/actions/workflows/release.yml/runs" \
+              > release-runs.json
+            gh api "repos/${REPOSITORY}/commits/${RELEASE_TAG}" \
+              > tag-commit.json
+            source_ref="$(
+              node scripts/e2e/resolve-installer-source.mjs \
+                --tag "$RELEASE_TAG" \
+                --release release-metadata.json \
+                --runs release-runs.json \
+                --tag-commit tag-commit.json
+            )"
+          fi
+          [[ "$source_ref" =~ ^[a-f0-9]{40}$ ]]
           version="${RELEASE_TAG#v}"
           base="https://github.com/${REPOSITORY}/releases/download/${RELEASE_TAG}"
           curl --fail --location --proto '=https' --tlsv1.2 \
@@ -47,8 +85,6 @@ jobs:
           test "$(jq -er '.version' manifest.json)" = "$version"
           wrapper_sha256="$(jq -er '.assets.wrapper.sha256' manifest.json)"
           [[ "$wrapper_sha256" =~ ^[a-f0-9]{64}$ ]]
-          source_ref="${WORKFLOW_SHA:-$RELEASE_TAG}"
-          [[ "$source_ref" =~ ^[a-f0-9]{40}$ || "$source_ref" = "$RELEASE_TAG" ]]
           printf 'installer_url=%s\nmanifest_url=%s\nversion=%s\nwrapper_sha256=%s\nsource_ref=%s\n' \
             "${base}/install.sh" "${base}/manifest.json" "$version" "$wrapper_sha256" \
             "$source_ref" \

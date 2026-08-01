@@ -1,6 +1,15 @@
-import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import { afterEach, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
 const root = resolve(import.meta.dirname, "../../..");
@@ -8,7 +17,193 @@ const root = resolve(import.meta.dirname, "../../..");
 const read = (path: string): Promise<string> =>
   readFile(resolve(root, path), "utf8");
 
+const temporaryDirectories: string[] = [];
+afterEach(async () => {
+  await Promise.all(
+    temporaryDirectories.splice(0).map((path) => rm(path, { recursive: true })),
+  );
+});
+
+const releaseSha = "a".repeat(40);
+const writeJson = async (
+  directory: string,
+  name: string,
+  value: unknown,
+): Promise<string> => {
+  const path = join(directory, name);
+  await writeFile(path, JSON.stringify(value));
+  return path;
+};
+
+const resolveSource = async (overrides?: {
+  releaseTag?: string;
+  runTag?: string;
+  runSha?: string;
+  tagSha?: string;
+}) => {
+  const directory = await mkdtemp(join(tmpdir(), "argus-smoke-source-"));
+  temporaryDirectories.push(directory);
+  const publishedAt = "2026-08-01T12:00:00Z";
+  const releasePath = await writeJson(directory, "release.json", {
+    tag_name: overrides?.releaseTag ?? "v1.2.3",
+    draft: false,
+    published_at: publishedAt,
+  });
+  const runsPath = await writeJson(directory, "runs.json", {
+    workflow_runs: [
+      {
+        path: ".github/workflows/release.yml",
+        event: "push",
+        conclusion: "success",
+        head_branch: overrides?.runTag ?? "v1.2.3",
+        head_sha: overrides?.runSha ?? releaseSha,
+        created_at: "2026-08-01T11:55:00Z",
+        updated_at: "2026-08-01T12:05:00Z",
+      },
+    ],
+  });
+  const commitPath = await writeJson(directory, "commit.json", {
+    sha: overrides?.tagSha ?? releaseSha,
+  });
+  return spawnSync(
+    process.execPath,
+    [
+      resolve(root, "scripts/e2e/resolve-installer-source.mjs"),
+      "--tag",
+      "v1.2.3",
+      "--release",
+      releasePath,
+      "--runs",
+      runsPath,
+      "--tag-commit",
+      commitPath,
+    ],
+    { encoding: "utf8" },
+  );
+};
+
+const resolveWorkflowRun = (conclusion: string) =>
+  spawnSync(
+    process.execPath,
+    [
+      resolve(root, "scripts/e2e/resolve-installer-source.mjs"),
+      "--workflow-run-sha",
+      releaseSha,
+      "--workflow-run-conclusion",
+      conclusion,
+    ],
+    { encoding: "utf8" },
+  );
+
 describe("clean-host installer smoke contract", () => {
+  it("fails evidence when the upstream signed release did not succeed", () => {
+    expect(resolveWorkflowRun("success")).toMatchObject({
+      status: 0,
+      stdout: `${releaseSha}\n`,
+      stderr: "",
+    });
+    const failed = resolveWorkflowRun("failure");
+    expect(failed.status).not.toBe(0);
+    expect(failed.stdout).toBe("");
+    expect(failed.stderr).toContain("signed release workflow did not succeed");
+  });
+
+  it("binds manual dispatch to the exact commit of the successful signed release", async () => {
+    const result = await resolveSource();
+    expect(result).toMatchObject({ status: 0, stderr: "" });
+    expect(result.stdout).toBe(`${releaseSha}\n`);
+  });
+
+  it.each([
+    [
+      "moved tag",
+      { tagSha: "b".repeat(40) },
+      "tag commit does not match",
+    ],
+    [
+      "mismatched release",
+      { releaseTag: "v9.9.9" },
+      "release tag does not match",
+    ],
+    [
+      "mismatched workflow run",
+      { runTag: "v9.9.9" },
+      "no unique successful signed release run",
+    ],
+  ] as const)("rejects %s before checkout", async (_name, overrides, message) => {
+    const result = await resolveSource(overrides);
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain(message);
+  });
+
+  it("inspects the clean host before the first mutating installer run", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "argus-smoke-inspect-"));
+    temporaryDirectories.push(directory);
+    const bin = join(directory, "bin");
+    const artifacts = join(directory, "artifacts");
+    const sequence = join(directory, "sequence");
+    await mkdir(bin, { recursive: true });
+    const command = async (name: string, source: string) => {
+      const path = join(bin, name);
+      await writeFile(path, `#!/bin/sh\n${source}\n`);
+      await chmod(path, 0o755);
+    };
+    await command("id", 'test "$1" = -u && printf "0\\n"');
+    await command(
+      "curl",
+      `while [ "$#" -gt 0 ]; do
+  if [ "$1" = --output ]; then output=$2; shift 2; continue; fi
+  shift
+done
+cp "$ARGUS_FAKE_INSTALLER" "$output"`,
+    );
+    for (const name of ["expect", "jq", "openssl", "sha256sum"]) {
+      await command(name, "exit 99");
+    }
+    const fakeInstaller = join(directory, "install.sh");
+    await writeFile(
+      fakeInstaller,
+      `#!/bin/sh
+if [ "\${ARGUS_INSTALL_INSPECT:-0}" = 1 ]; then
+  printf 'inspect\\n' >> "$ARGUS_INSPECT_SEQUENCE"
+  printf '%s\\n' \
+    'Argus installer inspection' \
+    '  signed manifest: https://example.com/release/manifest.json' \
+    '  target: /usr/local/bin/argus' \
+    'No files were downloaded or changed.'
+  exit 0
+fi
+printf 'mutation\\n' >> "$ARGUS_INSPECT_SEQUENCE"
+exit 42
+`,
+      { mode: 0o755 },
+    );
+    const result = spawnSync(
+      "/bin/sh",
+      [resolve(root, "scripts/e2e/installer-smoke.sh")],
+      {
+        encoding: "utf8",
+        env: {
+          PATH: `${bin}:/usr/bin:/bin`,
+          TMPDIR: directory,
+          ARGUS_FAKE_INSTALLER: fakeInstaller,
+          ARGUS_INSPECT_SEQUENCE: sequence,
+          ARGUS_INSTALLER_URL: "https://example.com/release/install.sh",
+          ARGUS_MANIFEST_URL: "https://example.com/release/manifest.json",
+          ARGUS_EXPECTED_VERSION: "1.2.3",
+          ARGUS_EXPECTED_WRAPPER_SHA256: "a".repeat(64),
+          ARGUS_SMOKE_ARTIFACT_DIR: artifacts,
+        },
+      },
+    );
+    expect(result.status).toBe(42);
+    expect(await readFile(sequence, "utf8")).toBe("inspect\nmutation\n");
+    expect(await readFile(join(artifacts, "installer.log"), "utf8")).toContain(
+      "No files were downloaded or changed.",
+    );
+  });
+
   it("installs the exact signed wrapper twice and verifies onboarding health", async () => {
     const smoke = await read("scripts/e2e/installer-smoke.sh");
 
@@ -21,7 +216,11 @@ describe("clean-host installer smoke contract", () => {
     ]) {
       expect(smoke).toContain(required);
     }
-    expect(smoke.match(/sh "\$argus_installer"/gu)).toHaveLength(2);
+    expect(
+      smoke.match(/ARGUS_INSTALL_INSPECT=0 sh "\$argus_installer"/gu),
+    ).toHaveLength(2);
+    expect(smoke).toContain("ARGUS_INSTALL_INSPECT=1");
+    expect(smoke).toContain("No files were downloaded or changed.");
     expect(smoke).toContain("sha256sum");
     expect(smoke).toContain("cmp -s");
     expect(smoke).toContain("argus --version");
@@ -87,6 +286,13 @@ describe("clean-host installer smoke contract", () => {
     );
     expect(source).toContain("workflow_run:");
     expect(source).toContain('workflows: ["Signed release"]');
+    expect(source).toContain("resolve-installer-source.mjs");
+    expect(source).not.toContain(
+      'source_ref="$' + '{WORKFLOW_SHA:-$RELEASE_TAG}"',
+    );
+    expect(source).toContain(
+      "ref: $" + "{{ needs.candidate.outputs.source_ref }}",
+    );
     expect(source).toContain("install -m 0600 /dev/null");
     expect(source).toContain("sudo chown");
     expect(source).toContain("if: failure()");

@@ -95,12 +95,20 @@ on fixed native amd64 and arm64 runners. Separate jobs cover a usable existing
 Docker installation and the installer's explicit `ARGUS_INSTALL_DOCKER=1` path
 on a systemd clean host.
 
-The smoke installs the wrapper twice, verifies its signed-manifest checksum,
-byte identity, and version after both installs, then applies a strict Web-only
-answers file. Its API token is generated inside the disposable host and is not
-a user or repository secret. Success requires `/opt/argus/state.json` to name
-the expected release and `argus doctor --json` to report both `ok: true` and
+The smoke first runs the installer's mutation-free inspection and proves the
+wrapper, install root, installer lock, and Docker availability did not change.
+It then installs the wrapper twice, verifies its signed-manifest checksum, byte
+identity, and version after both installs, and applies a strict Web-only answers
+file. Its API token is generated inside the disposable host and is not a user
+or repository secret. Success requires `/opt/argus/state.json` to name the
+expected release and `argus doctor --json` to report both `ok: true` and
 `healthy: true`.
+
+Manual workflow runs resolve the selected tag back to the unique successful
+signed-release workflow that published it, require the tag to still resolve to
+that exact commit, and check out only the resulting commit SHA. A moved tag,
+mismatched release, or failed upstream release stops the workflow without
+running privileged candidate code.
 
 To run `scripts/e2e/installer-smoke.sh` directly, use an isolated supported
 Linux host as root. The script may install Docker and writes `/usr/local/bin/argus`

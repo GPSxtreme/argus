@@ -48,6 +48,7 @@ argus_first_wrapper=$argus_work/argus.first
 argus_answers=/opt/argus/.installer-smoke-onboard.yaml
 argus_expect=$argus_work/onboard.exp
 argus_doctor=$argus_work/doctor.json
+argus_inspection=$argus_work/inspection.log
 argus_token=
 mkdir -p "$argus_artifacts"
 chmod 700 "$argus_artifacts"
@@ -118,15 +119,47 @@ chmod 700 "$argus_installer"
 export ARGUS_MANIFEST_URL ARGUS_EXPECTED_VERSION
 export ARGUS_VERSION="$ARGUS_EXPECTED_VERSION"
 export ARGUS_INSTALL_DOCKER="${ARGUS_INSTALL_DOCKER:-0}"
+export ARGUS_INSTALL_TARGET=/usr/local/bin/argus
 
-sh "$argus_installer" >> "$argus_artifacts/installer.log" 2>&1
+argus_docker_state() {
+  if command -v docker >/dev/null 2>&1 &&
+    docker info >/dev/null 2>&1 &&
+    docker compose version >/dev/null 2>&1
+  then
+    printf '%s\n' usable
+  else
+    printf '%s\n' absent
+  fi
+}
+argus_docker_before=$(argus_docker_state)
+if ! ARGUS_INSTALL_INSPECT=1 sh "$argus_installer" > "$argus_inspection" 2>&1; then
+  cat "$argus_inspection" >> "$argus_artifacts/installer.log"
+  argus_die "installer inspection failed"
+fi
+cat "$argus_inspection" >> "$argus_artifacts/installer.log"
+grep -Fx "  signed manifest: $ARGUS_MANIFEST_URL" "$argus_inspection" >/dev/null ||
+  argus_die "installer inspection reported the wrong manifest"
+grep -Fx "  target: /usr/local/bin/argus" "$argus_inspection" >/dev/null ||
+  argus_die "installer inspection reported the wrong target"
+grep -Fx "No files were downloaded or changed." "$argus_inspection" >/dev/null ||
+  argus_die "installer inspection did not confirm a mutation-free plan"
+[ ! -e /usr/local/bin/argus ] &&
+  [ ! -e /opt/argus/state.json ] &&
+  [ ! -e /opt/argus/secrets.env ] &&
+  [ ! -e /opt/argus/compose.yaml ] &&
+  [ ! -e "${ARGUS_INSTALL_LOCK:-${TMPDIR:-/tmp}/argus-installer.lock}" ] ||
+  argus_die "installer inspection mutated the clean host"
+[ "$(argus_docker_state)" = "$argus_docker_before" ] ||
+  argus_die "installer inspection changed Docker availability"
+
+ARGUS_INSTALL_INSPECT=0 sh "$argus_installer" >> "$argus_artifacts/installer.log" 2>&1
 printf '%s  %s\n' "$ARGUS_EXPECTED_WRAPPER_SHA256" /usr/local/bin/argus |
   sha256sum --check --strict
 [ "$(/usr/local/bin/argus --version)" = "$ARGUS_EXPECTED_VERSION" ] ||
   argus_die "first installation reported the wrong release version"
 cp /usr/local/bin/argus "$argus_first_wrapper"
 
-sh "$argus_installer" >> "$argus_artifacts/installer.log" 2>&1
+ARGUS_INSTALL_INSPECT=0 sh "$argus_installer" >> "$argus_artifacts/installer.log" 2>&1
 printf '%s  %s\n' "$ARGUS_EXPECTED_WRAPPER_SHA256" /usr/local/bin/argus |
   sha256sum --check --strict
 cmp -s "$argus_first_wrapper" /usr/local/bin/argus ||
