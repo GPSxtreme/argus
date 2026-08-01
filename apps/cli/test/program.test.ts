@@ -88,8 +88,14 @@ const createHarness = (
       async validate() {
         return { valid: true };
       },
+      async inspectApply() {
+        return { contractVersion: 1, operations: [] };
+      },
       async apply() {
         return { applied: true };
+      },
+      async verifyApply() {
+        return { healthy: true };
       },
       async show() {
         return {};

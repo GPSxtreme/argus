@@ -1,4 +1,10 @@
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import {
+  access,
+  chmod,
+  mkdtemp,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -53,6 +59,28 @@ const runProcess = async (
   });
 
 describe("direct CLI process contracts", () => {
+  it("renders injected build version in human and JSON modes", async () => {
+    const human = await runProcess(["--version"], {
+      environment: { ARGUS_VERSION: "9.8.7-test" },
+    });
+    expect(human).toEqual({
+      exitCode: 0,
+      stdout: "9.8.7-test\n",
+      stderr: "",
+    });
+
+    const json = await runProcess(["--version", "--json"], {
+      environment: { ARGUS_VERSION: "9.8.7-test" },
+    });
+    expect(json.exitCode).toBe(0);
+    expect(json.stderr).toBe("");
+    expect(JSON.parse(json.stdout)).toEqual({
+      contractVersion: 1,
+      ok: true,
+      data: { version: "9.8.7-test" },
+    });
+  });
+
   it.each([
     ["unknown option", ["status", "--unknown", "--json"]],
     ["missing argument", ["repair", "--json"]],
@@ -160,7 +188,7 @@ api:
     expect(validated.exitCode).toBe(0);
     expect(JSON.parse(validated.stdout).data.valid).toBe(true);
 
-    const applied = await runProcess(
+    const refusedInstalledApply = await runProcess(
       ["config", "apply", "--yes", "--json"],
       {
         installRoot,
@@ -171,11 +199,61 @@ api:
         },
       },
     );
+    expect(refusedInstalledApply.exitCode).toBe(1);
+    expect(refusedInstalledApply.stderr).toBe("");
+    expect(JSON.parse(refusedInstalledApply.stdout).error.code).toBe(
+      "INSTALLED_CONFIG_INTEGRATION_REQUIRED",
+    );
+    await expect(access(join(installRoot, "argus.db"))).rejects.toThrow();
+
+    const explicitPath = join(installRoot, "argus.yaml");
+    const firstPlan = await runProcess(
+      ["config", "apply", explicitPath, "--dry-run", "--json"],
+      {
+        installRoot,
+        cwd: freshCwd,
+        environment: {
+          OPENROUTER_API_KEY: "openrouter-process-sentinel",
+          CREDENTIAL_URL: credentialUrl,
+        },
+      },
+    );
+    expect(JSON.parse(firstPlan.stdout).data.plan.operations).toEqual([
+      expect.objectContaining({ action: "create" }),
+    ]);
+
+    const applied = await runProcess(
+      ["config", "apply", explicitPath, "--yes", "--json"],
+      {
+        installRoot,
+        cwd: freshCwd,
+        environment: {
+          OPENROUTER_API_KEY: "openrouter-process-sentinel",
+          CREDENTIAL_URL: credentialUrl,
+        },
+      },
+    );
     expect(applied.exitCode).toBe(0);
-    expect(applied.stderr).toBe("");
     expect(JSON.parse(applied.stdout)).toMatchObject({
       ok: true,
-      data: { result: { applied: true, verified: true } },
+      data: {
+        plan: { operations: [expect.objectContaining({ action: "create" })] },
+        result: { changed: true },
+        verification: { healthy: true },
+      },
     });
+
+    const secondPlan = await runProcess(
+      ["config", "apply", explicitPath, "--dry-run", "--json"],
+      {
+        installRoot,
+        cwd: freshCwd,
+        environment: {
+          OPENROUTER_API_KEY: "openrouter-process-sentinel",
+          CREDENTIAL_URL: credentialUrl,
+        },
+      },
+    );
+    expect(JSON.parse(secondPlan.stdout).data.plan.operations).toEqual([]);
   });
 });

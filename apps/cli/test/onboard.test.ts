@@ -1,5 +1,6 @@
 import {
   chmod,
+  access,
   mkdtemp,
   readFile,
   readdir,
@@ -21,7 +22,14 @@ import {
   createProgram,
   type CliDependencies,
   type DeploymentCliAdapter,
+  type InstalledConfigApplication,
+  type InstalledConfigPlan,
+  type ProductionOnboardingIntegration,
+  type ReleaseOnboardingApplication,
+  type ReleaseOnboardingInspection,
+  type VerifiedOnboardingRelease,
 } from "../src/program.js";
+import type { OnboardingAnswersV1 } from "@argus/deployment";
 
 const temporaryDirectories: string[] = [];
 const onboardingFixture = await readFile(
@@ -229,8 +237,14 @@ intelligence:
         async validate() {
           return {};
         },
+        async inspectApply() {
+          return { operations: [] };
+        },
         async apply() {
           return {};
+        },
+        async verifyApply() {
+          return { healthy: true };
         },
         async show() {
           return {};
@@ -287,8 +301,14 @@ intelligence:
         async validate() {
           return {};
         },
+        async inspectApply() {
+          return { operations: [] };
+        },
         async apply() {
           return {};
+        },
+        async verifyApply() {
+          return { healthy: true };
         },
         async show() {
           return {};
@@ -344,8 +364,14 @@ intelligence:
         async validate() {
           return {};
         },
+        async inspectApply() {
+          return { operations: [] };
+        },
         async apply() {
           return {};
+        },
+        async verifyApply() {
+          return { healthy: true };
         },
         async show() {
           return {};
@@ -392,8 +418,14 @@ intelligence:
         async validate() {
           return {};
         },
+        async inspectApply() {
+          return { operations: [] };
+        },
         async apply() {
           return {};
+        },
+        async verifyApply() {
+          return { healthy: true };
         },
         async show() {
           return {};
@@ -462,8 +494,14 @@ intelligence:
         async validate() {
           return {};
         },
+        async inspectApply() {
+          return { operations: [] };
+        },
         async apply() {
           return {};
+        },
+        async verifyApply() {
+          return { healthy: true };
         },
         async show() {
           return {
@@ -537,8 +575,14 @@ apiToken: forbidden
         async validate() {
           return {};
         },
+        async inspectApply() {
+          return { operations: [] };
+        },
         async apply() {
           return {};
+        },
+        async verifyApply() {
+          return { healthy: true };
         },
         async show() {
           return {};
@@ -682,5 +726,250 @@ apiToken: forbidden
 
     expect(JSON.parse(stdout).error.code).toBe("RELEASE_MANIFEST_REQUIRED");
     expect(await readdir(directory)).toEqual(["setup.yaml"]);
+  });
+
+  it("applies installed config through the service integration using the exact inspected plan", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "argus-config-service-"));
+    temporaryDirectories.push(directory);
+    const database = join(directory, "must-not-open.db");
+    await writeFile(
+      join(directory, "argus.yaml"),
+      `version: 1
+storage: { adapter: sqlite, url: "${database}" }
+sources: {}
+watches: []
+`,
+      { mode: 0o644 },
+    );
+    const plan: InstalledConfigPlan = {
+      contractVersion: 1,
+      planId: "plan-1",
+      operations: [
+        {
+          resource: "applied-config",
+          action: "create",
+          summary: "Create the installed service configuration.",
+        },
+      ],
+    };
+    const application: InstalledConfigApplication = {
+      planId: "plan-1",
+      receipt: { revision: 1 },
+    };
+    let stdout = "";
+    const dependencies = createNodeCliDependencies({
+      root: directory,
+      executor: {
+        async run() {
+          return { exitCode: 0, stdout: "", stderr: "" };
+        },
+      },
+      prompt: noPrompt,
+      io: { stdout: (value) => (stdout += value), stderr: () => undefined },
+      installedConfigIntegration: {
+        async inspect() {
+          return plan;
+        },
+        async apply(input) {
+          expect(input.inspection).toBe(plan);
+          return application;
+        },
+        async verify(input) {
+          expect(input.inspection).toBe(plan);
+          expect(input.application).toBe(application);
+          return { healthy: true, planId: "plan-1", status: "applied" };
+        },
+      },
+    });
+
+    await createProgram(dependencies).parseAsync([
+      "node",
+      "argus",
+      "config",
+      "apply",
+      "--yes",
+      "--json",
+    ]);
+
+    expect(JSON.parse(stdout).ok).toBe(true);
+    await expect(access(database)).rejects.toThrow();
+  });
+
+  const verifiedRelease: VerifiedOnboardingRelease = {
+    version: "1.2.3",
+    manifestSha256: "a".repeat(64),
+    images: {
+      argus: `ghcr.io/argus/app@sha256:${"b".repeat(64)}`,
+      postgres: `docker.io/library/postgres@sha256:${"c".repeat(64)}`,
+      searxng: `docker.io/searxng/searxng@sha256:${"d".repeat(64)}`,
+    },
+    fxembed: {
+      bundleSha256: "e".repeat(64),
+      compatibilityDate: "2026-08-01",
+    },
+  };
+  const releaseInspection: ReleaseOnboardingInspection = {
+    plan: { changes: [{ component: "argus", action: "create" }] },
+    release: verifiedRelease,
+  };
+  const releaseApplication: ReleaseOnboardingApplication = {
+    receipt: { deployment: "created" },
+    release: verifiedRelease,
+    stateWritten: true,
+  };
+
+  const releaseDependencies = (
+    integration: ProductionOnboardingIntegration,
+  ) =>
+    createNodeCliDependencies({
+      root: "/opt/argus",
+      executor: {
+        async run() {
+          return { exitCode: 0, stdout: "", stderr: "" };
+        },
+      },
+      prompt: noPrompt,
+      io: { stdout: () => undefined, stderr: () => undefined },
+      onboardingIntegration: integration,
+    });
+
+  const parsedReleaseAnswers = async (): Promise<OnboardingAnswersV1> =>
+    (await import("@argus/deployment")).onboardingAnswersSchema.parse(
+      parse(onboardingFixture),
+    ) as OnboardingAnswersV1;
+
+  it("applies and verifies the exact inspected release object identity", async () => {
+    const answers = await parsedReleaseAnswers();
+    const integration: ProductionOnboardingIntegration = {
+      async inspect() {
+        return releaseInspection;
+      },
+      async apply(input) {
+        expect(input.inspection).toBe(releaseInspection);
+        return releaseApplication;
+      },
+      async verify(input) {
+        expect(input.application).toBe(releaseApplication);
+        return {
+          healthy: true,
+          release: verifiedRelease,
+          status: "healthy",
+        };
+      },
+    };
+    const dependencies = releaseDependencies(integration);
+    const application = await dependencies.deployment.applyOnboarding(
+      answers,
+      {},
+      releaseInspection,
+    );
+    expect(application).toBe(releaseApplication);
+    await expect(
+      dependencies.deployment.verifyOnboarding(answers, application),
+    ).resolves.toMatchObject({ healthy: true });
+  });
+
+  it.each([
+    [
+      "state write",
+      { ...releaseApplication, stateWritten: false },
+    ],
+    [
+      "version",
+      {
+        ...releaseApplication,
+        release: { ...verifiedRelease, version: "9.9.9" },
+      },
+    ],
+    [
+      "manifest",
+      {
+        ...releaseApplication,
+        release: { ...verifiedRelease, manifestSha256: "f".repeat(64) },
+      },
+    ],
+    [
+      "image",
+      {
+        ...releaseApplication,
+        release: {
+          ...verifiedRelease,
+          images: {
+            ...verifiedRelease.images,
+            argus: `ghcr.io/argus/app@sha256:${"f".repeat(64)}`,
+          },
+        },
+      },
+    ],
+    [
+      "FxEmbed",
+      {
+        ...releaseApplication,
+        release: {
+          ...verifiedRelease,
+          fxembed: {
+            ...verifiedRelease.fxembed,
+            bundleSha256: "f".repeat(64),
+            compatibilityDate: "2026-08-01",
+          },
+        },
+      },
+    ],
+  ])("rejects onboarding application %s mismatch", async (_name, application) => {
+    const answers = await parsedReleaseAnswers();
+    const dependencies = releaseDependencies({
+      async inspect() {
+        return releaseInspection;
+      },
+      async apply() {
+        return application as ReleaseOnboardingApplication;
+      },
+      async verify() {
+        return { healthy: true, release: verifiedRelease, status: "healthy" };
+      },
+    });
+
+    await expect(
+      dependencies.deployment.applyOnboarding(
+        answers,
+        {},
+        releaseInspection,
+      ),
+    ).rejects.toMatchObject({ code: "ONBOARDING_APPLICATION_MISMATCH" });
+  });
+
+  it.each([
+    [
+      "unhealthy",
+      { healthy: false, release: verifiedRelease, status: "unhealthy" },
+    ],
+    [
+      "release mismatch",
+      {
+        healthy: true,
+        release: { ...verifiedRelease, version: "9.9.9" },
+        status: "healthy",
+      },
+    ],
+  ])("rejects onboarding verification %s", async (_name, verification) => {
+    const answers = await parsedReleaseAnswers();
+    const dependencies = releaseDependencies({
+      async inspect() {
+        return releaseInspection;
+      },
+      async apply() {
+        return releaseApplication;
+      },
+      async verify() {
+        return verification;
+      },
+    });
+
+    await expect(
+      dependencies.deployment.verifyOnboarding(
+        answers,
+        releaseApplication,
+      ),
+    ).rejects.toMatchObject({ code: "ONBOARDING_VERIFY_FAILED" });
   });
 });

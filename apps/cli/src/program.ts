@@ -8,13 +8,20 @@ import {
   stat,
   unlink,
 } from "node:fs/promises";
-import { constants as fsConstants } from "node:fs";
+import {
+  constants as fsConstants,
+  readFileSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { openRepository, startRuntime } from "@argus/app";
 import {
+  applyConfigReconciliation,
   loadConfig,
-  reconcileConfig,
+  planConfigReconciliation,
   resolveConfigPath,
+  verifyConfigReconciliation,
+  type ArgusConfig,
+  type ConfigReconciliationPlan,
 } from "@argus/config";
 import {
   createArgusDoctorApi,
@@ -117,7 +124,11 @@ export interface ProductionOnboardingIntegration {
   verify(input: {
     answers: OnboardingAnswersV1;
     application: ReleaseOnboardingApplication;
-  }): Promise<{ healthy: boolean; status: unknown }>;
+  }): Promise<{
+    healthy: boolean;
+    release: VerifiedOnboardingRelease;
+    status: unknown;
+  }>;
 }
 
 export interface CliFiles {
@@ -128,9 +139,47 @@ export interface CliFiles {
 
 export interface ConfigCliAdapter {
   validate(path?: string): Promise<unknown>;
-  apply(path?: string): Promise<unknown>;
+  inspectApply(path?: string): Promise<unknown>;
+  apply(path: string | undefined, inspection: unknown): Promise<unknown>;
+  verifyApply(
+    path: string | undefined,
+    inspection: unknown,
+    application: unknown,
+  ): Promise<unknown>;
   show(path?: string): Promise<unknown>;
   run?(path?: string): Promise<void>;
+}
+
+export interface InstalledConfigPlan {
+  contractVersion: 1;
+  planId: string;
+  operations: Array<{
+    resource: string;
+    action: "create" | "update" | "delete";
+    summary: string;
+  }>;
+}
+
+export interface InstalledConfigApplication {
+  planId: string;
+  receipt: unknown;
+}
+
+export interface InstalledConfigIntegration {
+  inspect(input: {
+    path: string;
+    config: ArgusConfig;
+  }): Promise<InstalledConfigPlan>;
+  apply(input: {
+    path: string;
+    config: ArgusConfig;
+    inspection: InstalledConfigPlan;
+  }): Promise<InstalledConfigApplication>;
+  verify(input: {
+    path: string;
+    inspection: InstalledConfigPlan;
+    application: InstalledConfigApplication;
+  }): Promise<{ healthy: boolean; planId: string; status: unknown }>;
 }
 
 export interface CliDependencies {
@@ -140,6 +189,7 @@ export interface CliDependencies {
   files: CliFiles;
   config: ConfigCliAdapter;
   root: string;
+  version?: string;
   interactive?: boolean;
   secretValues(): Promise<Record<string, string>>;
 }
@@ -453,8 +503,7 @@ const registerConfig = (
   ).action(
     async (path: string | undefined, options: MutationOptions) => {
       await execute(dependencies, options, async () => {
-        const inspected = await dependencies.config.validate(path);
-        const plan = { action: "apply", configuration: inspected };
+        const plan = await dependencies.config.inspectApply(path);
         if (options.dryRun) {
           return { data: { plan }, human: renderHumanPlan(plan) };
         }
@@ -465,9 +514,14 @@ const registerConfig = (
           "Apply the validated configuration?",
           plan,
         );
-        const applied = await dependencies.config.apply(path);
+        const applied = await dependencies.config.apply(path, plan);
+        const verified = await dependencies.config.verifyApply(
+          path,
+          plan,
+          applied,
+        );
         return {
-          data: { plan: inspected, result: applied },
+          data: { plan, result: applied, verification: verified },
           human: "Configuration applied.",
         };
       });
@@ -557,7 +611,7 @@ export const createProgram = (dependencies: CliDependencies): Command => {
   const program = new Command()
     .name("argus")
     .description("Self-hosted data layer for X, Telegram, and the Web")
-    .version("0.1.0")
+    .version(dependencies.version ?? resolveCliBuildVersion())
     .option("--json", "emit the stable versioned JSON contract")
     .showHelpAfterError()
     .exitOverride()
@@ -785,13 +839,17 @@ export const createProgram = (dependencies: CliDependencies): Command => {
       const secrets = await secretList(dependencies).catch(() => []);
       if (
         error instanceof CommanderError &&
-        error.code === "commander.helpDisplayed"
+        (error.code === "commander.helpDisplayed" ||
+          error.code === "commander.version")
       ) {
+        const output = capturedOutput.trimEnd();
         writeSuccess(
           dependencies.io,
           json,
-          { help: capturedOutput.trimEnd() },
-          capturedOutput.trimEnd(),
+          error.code === "commander.version"
+            ? { version: output }
+            : { help: output },
+          output,
         );
         return program;
       }
@@ -984,6 +1042,8 @@ export interface NodeCliDependenciesOptions {
   prompt: PromptAdapter;
   io: CliIO;
   onboardingIntegration?: ProductionOnboardingIntegration;
+  installedConfigIntegration?: InstalledConfigIntegration;
+  version?: string;
 }
 
 export const MANAGEMENT_HOST_PATHS = {
@@ -1000,8 +1060,39 @@ export const MANAGEMENT_WRAPPER_REQUIREMENTS = {
     "/var/run/docker.sock:/var/run/docker.sock",
   ],
   environment: ["ARGUS_INSTALL_ROOT=/opt/argus", "ARGUS_HOST_ARCH"],
+  cliImagePackages: ["iproute2"],
+  compositionRoot: [
+    "ProductionOnboardingIntegration",
+    "InstalledConfigIntegration",
+  ],
   hostNetwork: true,
 } as const;
+
+export const resolveCliBuildVersion = (
+  environment: Record<string, string | undefined> = process.env,
+): string => {
+  const injected = environment.ARGUS_VERSION ?? environment.npm_package_version;
+  if (injected) return injected;
+  for (const candidate of [
+    new URL("../package.json", import.meta.url),
+    new URL("../../package.json", import.meta.url),
+  ]) {
+    try {
+      const parsed = JSON.parse(readFileSync(candidate, "utf8")) as {
+        version?: unknown;
+      };
+      if (typeof parsed.version === "string" && parsed.version) {
+        return parsed.version;
+      }
+    } catch {
+      // Try the source-tree and built-layout package metadata locations.
+    }
+  }
+  throw new DeploymentError(
+    "CLI_VERSION_UNAVAILABLE",
+    "Argus build version metadata is unavailable.",
+  );
+};
 
 const createDeploymentAdapter = (
   root: string,
@@ -1069,6 +1160,10 @@ const createDeploymentAdapter = (
     stop: stopDeployment,
     restart: restartDeployment,
   } as const;
+  const sameRelease = (
+    left: VerifiedOnboardingRelease,
+    right: VerifiedOnboardingRelease,
+  ): boolean => JSON.stringify(left) === JSON.stringify(right);
   return {
     async inspectLifecycle(action) {
       const current = await getDeploymentStatus(context);
@@ -1206,11 +1301,22 @@ const createDeploymentAdapter = (
     },
     async applyOnboarding(answers, secrets, inspection) {
       if (onboardingIntegration !== undefined) {
-        return onboardingIntegration.apply({
+        const inspected = inspection as ReleaseOnboardingInspection;
+        const application = await onboardingIntegration.apply({
           answers,
           secrets,
-          inspection: inspection as ReleaseOnboardingInspection,
+          inspection: inspected,
         });
+        if (
+          application.stateWritten !== true ||
+          !sameRelease(application.release, inspected.release)
+        ) {
+          throw new DeploymentError(
+            "ONBOARDING_APPLICATION_MISMATCH",
+            "The applied release does not match the exact inspected release selection.",
+          );
+        }
+        return application;
       }
       throw new DeploymentError(
         "RELEASE_MANIFEST_REQUIRED",
@@ -1219,10 +1325,21 @@ const createDeploymentAdapter = (
     },
     async verifyOnboarding(answers, applied) {
       if (onboardingIntegration !== undefined) {
-        return onboardingIntegration.verify({
+        const application = applied as ReleaseOnboardingApplication;
+        const verified = await onboardingIntegration.verify({
           answers,
-          application: applied as ReleaseOnboardingApplication,
+          application,
         });
+        if (
+          verified.healthy !== true ||
+          !sameRelease(verified.release, application.release)
+        ) {
+          throw new DeploymentError(
+            "ONBOARDING_VERIFY_FAILED",
+            "The applied release could not be verified as the same healthy release.",
+          );
+        }
+        return verified;
       }
       return getDeploymentStatus(context);
     },
@@ -1235,8 +1352,11 @@ export const createNodeCliDependencies = ({
   prompt,
   io,
   onboardingIntegration,
+  installedConfigIntegration,
+  version,
 }: NodeCliDependenciesOptions): CliDependencies => ({
   root,
+  version: version ?? resolveCliBuildVersion(),
   prompt,
   io,
   deployment: createDeploymentAdapter(root, executor, onboardingIntegration),
@@ -1269,23 +1389,105 @@ export const createNodeCliDependencies = ({
         role: loaded.runtime.role,
       };
     },
-    async apply(path) {
-      const { config: loaded } = await loadInstalledConfig(root, path);
-      const handle = await openRepository(loaded);
-      try {
-        const reconciled = await reconcileConfig(handle.repository, loaded);
-        const verified = await handle.repository.getAppliedConfig();
-        if (verified?.contentHash !== reconciled.contentHash) {
+    async inspectApply(path) {
+      const loaded = await loadInstalledConfig(root, path);
+      if (path === undefined) {
+        if (installedConfigIntegration === undefined) {
           throw new DeploymentError(
-            "CONFIG_APPLY_VERIFY_FAILED",
-            "The applied configuration could not be verified.",
+            "INSTALLED_CONFIG_INTEGRATION_REQUIRED",
+            "Installed configuration apply requires the Argus service integration.",
+            {
+              recovery:
+                "Wire InstalledConfigIntegration in the release composition root, then retry.",
+            },
           );
         }
-        return {
-          applied: true,
-          ...reconciled,
-          verified: true,
-        };
+        return installedConfigIntegration.inspect({
+          path: loaded.path,
+          config: loaded.config,
+        });
+      }
+      const handle = await openRepository(loaded.config);
+      try {
+        return await planConfigReconciliation(
+          handle.repository,
+          loaded.config,
+        );
+      } finally {
+        await handle.close();
+      }
+    },
+    async apply(path, inspection) {
+      const loaded = await loadInstalledConfig(root, path);
+      if (path === undefined) {
+        if (installedConfigIntegration === undefined) {
+          throw new DeploymentError(
+            "INSTALLED_CONFIG_INTEGRATION_REQUIRED",
+            "Installed configuration apply requires the Argus service integration.",
+          );
+        }
+        const plan = inspection as InstalledConfigPlan;
+        const application = await installedConfigIntegration.apply({
+          path: loaded.path,
+          config: loaded.config,
+          inspection: plan,
+        });
+        if (application.planId !== plan.planId) {
+          throw new DeploymentError(
+            "CONFIG_APPLY_PLAN_MISMATCH",
+            "The installed configuration application does not match the inspected plan.",
+          );
+        }
+        return application;
+      }
+      const plan = inspection as ConfigReconciliationPlan;
+      const handle = await openRepository(loaded.config);
+      try {
+        return await applyConfigReconciliation(
+          handle.repository,
+          loaded.config,
+          plan,
+        );
+      } finally {
+        await handle.close();
+      }
+    },
+    async verifyApply(path, inspection, application) {
+      const loaded = await loadInstalledConfig(root, path);
+      if (path === undefined) {
+        if (installedConfigIntegration === undefined) {
+          throw new DeploymentError(
+            "INSTALLED_CONFIG_INTEGRATION_REQUIRED",
+            "Installed configuration apply requires the Argus service integration.",
+          );
+        }
+        const verified = await installedConfigIntegration.verify({
+          path: loaded.path,
+          inspection: inspection as InstalledConfigPlan,
+          application: application as InstalledConfigApplication,
+        });
+        const plan = inspection as InstalledConfigPlan;
+        if (!verified.healthy || verified.planId !== plan.planId) {
+          throw new DeploymentError(
+            "CONFIG_APPLY_VERIFY_FAILED",
+            "The installed configuration apply could not be verified.",
+          );
+        }
+        return verified;
+      }
+      const handle = await openRepository(loaded.config);
+      try {
+        const healthy = await verifyConfigReconciliation(
+          handle.repository,
+          inspection as ConfigReconciliationPlan,
+        );
+        if (!healthy) {
+          throw new DeploymentError(
+            "CONFIG_APPLY_VERIFY_FAILED",
+            "The direct configuration apply could not be verified.",
+          );
+        }
+        return { healthy: true };
       } finally {
         await handle.close();
       }
