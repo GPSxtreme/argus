@@ -1,25 +1,10 @@
 import { createPublicKey } from "node:crypto";
+import { isSafeReleaseAssetUrl } from "./manifest.js";
 
 export interface InstallerOptions {
   manifestUrl: string;
   publicKeyPem: string;
 }
-
-const safeHttpsUrl = (value: string): boolean => {
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    return false;
-  }
-  return (
-    url.protocol === "https:" &&
-    url.username === "" &&
-    url.password === "" &&
-    url.search === "" &&
-    url.hash === ""
-  );
-};
 
 const canonicalEd25519PublicKey = (pem: string): string => {
   try {
@@ -37,9 +22,9 @@ const shellLiteral = (value: string): string =>
   `'${value.replaceAll("'", `'\\''`)}'`;
 
 export function renderInstaller(options: InstallerOptions): string {
-  if (!safeHttpsUrl(options.manifestUrl)) {
+  if (!isSafeReleaseAssetUrl(options.manifestUrl)) {
     throw new TypeError(
-      "Argus installer manifest URL must be credential-free HTTPS without query or fragment.",
+      "Argus installer manifest URL must be credential-free HTTPS with a valid host, optional port 1-65535, and explicit shell-safe path.",
     );
   }
   const publicKey = canonicalEd25519PublicKey(options.publicKeyPem);
@@ -154,11 +139,6 @@ argus_detect_arch() {
   esac
 }
 
-argus_validate_url() {
-  printf '%s\\n' "$1" |
-    LC_ALL=C grep -Eq '^https://[A-Za-z0-9.-]+(:[0-9]+)?/[A-Za-z0-9._~/%+-]+$|^http://(127\\.0\\.0\\.1|localhost):[0-9]+/[A-Za-z0-9._~/%+-]+$'
-}
-
 argus_validate_asset_url() {
   printf '%s\\n' "$1" | LC_ALL=C awk '
     $0 !~ /^https:\\/\\/[A-Za-z0-9.-]+(:[0-9]+)?\\/[A-Za-z0-9._~%+-][A-Za-z0-9._~\\/%+-]*$/ { exit 1 }
@@ -184,10 +164,23 @@ argus_validate_asset_url() {
   '
 }
 
+argus_validate_manifest_url() {
+  case "$1" in
+    https://*) argus_validate_asset_url "$1" ;;
+    http://127.0.0.1:*|http://localhost:*)
+      [ "\${ARGUS_INSTALL_FIXTURE:-0}" = 1 ] &&
+        printf '%s\\n' "$1" |
+          LC_ALL=C grep -Eq '^http://(127\\.0\\.0\\.1|localhost):[1-9][0-9]{0,4}/[A-Za-z0-9._~%+-][A-Za-z0-9._~/%+-]*$'
+      ;;
+    *) return 1 ;;
+  esac
+}
+
 argus_read_os_release
 argus_detect_arch
 argus_manifest_url=\${ARGUS_MANIFEST_URL:-$argus_default_manifest_url}
-argus_validate_url "$argus_manifest_url" || argus_die "ARGUS_MANIFEST_URL must be safe HTTPS (loopback HTTP is accepted only for signed fixtures)"
+argus_validate_manifest_url "$argus_manifest_url" ||
+  argus_die "ARGUS_MANIFEST_URL must use the production HTTPS grammar (loopback HTTP requires ARGUS_INSTALL_FIXTURE=1)"
 argus_target=\${ARGUS_INSTALL_TARGET:-$argus_default_target}
 case "$argus_target" in
   /*) ;;

@@ -228,6 +228,7 @@ const runInstaller = async (
       ...process.env,
       PATH: `${fixture.bin}:/opt/homebrew/bin:/usr/bin:/bin`,
       ARGUS_MANIFEST_URL: manifestUrl,
+      ARGUS_INSTALL_FIXTURE: "1",
       ARGUS_INSTALL_OS_RELEASE: fixture.osRelease,
       ARGUS_INSTALL_TARGET: fixture.target,
       ARGUS_INSTALL_LOCK: join(fixture.root, "installer.lock"),
@@ -275,6 +276,7 @@ sys.exit(os.waitstatus_to_exitcode(status))
       ...process.env,
       PATH: `${fixture.bin}:/opt/homebrew/bin:/usr/bin:/bin`,
       ARGUS_MANIFEST_URL: manifestUrl,
+      ARGUS_INSTALL_FIXTURE: "1",
       ARGUS_INSTALL_OS_RELEASE: fixture.osRelease,
       ARGUS_INSTALL_TARGET: fixture.target,
       ARGUS_INSTALL_LOCK: join(fixture.root, "installer.lock"),
@@ -328,6 +330,46 @@ describe("renderInstaller", () => {
     expect(installer).not.toContain("eval ");
     expect(installer).not.toContain(". /etc/os-release");
     expect(installer).toContain("argus onboard");
+  });
+
+  it.each([
+    "https://argus.gpsxtre.me/releases/manifest.json",
+    "https://releases.example.com:443/v1/manifest.json",
+    "https://127.0.0.1:8443/fixture/manifest.json",
+  ])("accepts production manifest URL %s", (manifestUrl) => {
+    const { publicKey } = generateKeyPairSync("ed25519");
+    expect(() =>
+      renderInstaller({
+        manifestUrl,
+        publicKeyPem: publicKey
+          .export({ type: "spki", format: "pem" })
+          .toString(),
+      }),
+    ).not.toThrow();
+  });
+
+  it.each([
+    "https://example.com",
+    "https://example.com/",
+    "https://example.com:0/manifest.json",
+    "https://example.com:65536/manifest.json",
+    "https://singlelabel/manifest.json",
+    "https://-bad.example/manifest.json",
+    "https://bad-.example/manifest.json",
+    "https://example.com/manifest path.json",
+    "https://example.com/manifest.json?channel=stable",
+    "https://user@example.com/manifest.json",
+    "http://127.0.0.1:8080/manifest.json",
+  ])("rejects non-production manifest URL %s", (manifestUrl) => {
+    const { publicKey } = generateKeyPairSync("ed25519");
+    expect(() =>
+      renderInstaller({
+        manifestUrl,
+        publicKeyPem: publicKey
+          .export({ type: "spki", format: "pem" })
+          .toString(),
+      }),
+    ).toThrow("credential-free HTTPS");
   });
 
   it("verifies a local signed fixture, installs atomically, and reinstalls idempotently", async () => {
