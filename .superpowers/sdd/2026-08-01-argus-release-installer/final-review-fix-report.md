@@ -103,3 +103,33 @@ TDD evidence:
   29/29 with one smoke test skipped.
 - Node 24 typecheck and build: 15/15 packages. Lint and `git diff --check`:
   clean.
+
+### PostgreSQL query-credential follow-up
+
+Verified the installed `pg` 8.22 / `pg-connection-string` 2.14 behavior:
+lowercase query `user` and `password` override authority credentials when
+truthy, exact-key duplicates are last-wins, empty query values fall back to
+authority, and case variants are ignored by `pg`.
+
+The PostgreSQL projection now:
+
+- removes authority credentials and every case-insensitive `user`/`password`
+  query occurrence from persistence and redacted output;
+- fingerprints only the effective lowercase credentials accepted by `pg`, so
+  effective user/password changes reconcile while shadowed duplicates and
+  ignored case variants do not;
+- preserves safe query parameters and their order, including `sslmode` and
+  `application_name`;
+- keeps the complete live URL byte-for-byte for the PostgreSQL driver; and
+- retains the independent API-token-keyed HMAC and static no-key failure.
+
+TDD and verification:
+
+- RED: 2 failures and 9 passes reproduced query-password/user leakage through
+  applied config and redacted YAML.
+- GREEN security matrix: 39 passed; 9 opt-in PostgreSQL tests skipped.
+- Real PostgreSQL 17 accepted a reserved-character password supplied only via
+  the query string. First reconciliation changed, the second was idempotent,
+  the persisted URL retained only safe parameters, and the live URL was
+  unchanged.
+- Node 24 typecheck/build: 15/15 packages; lint and diff checks clean.

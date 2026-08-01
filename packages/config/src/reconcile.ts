@@ -6,6 +6,7 @@ import {
 } from "@argus/contracts";
 import type { ArgusConfig } from "./schema.js";
 import {
+  projectPostgresUrlCredentials,
   urlCredentialFingerprint,
   withoutUrlCredentials,
 } from "./sanitize.js";
@@ -32,7 +33,9 @@ const persistenceSafe = (config: ArgusConfig): ArgusConfig => {
   delete snapshot.intelligence.apiKey;
   delete snapshot.api.token;
   if (snapshot.storage.adapter === "postgres") {
-    snapshot.storage.url = withoutUrlCredentials(snapshot.storage.url);
+    snapshot.storage.url = projectPostgresUrlCredentials(
+      snapshot.storage.url,
+    ).safeUrl;
   }
   snapshot.sources.x.endpoint = withoutUrlCredentials(
     snapshot.sources.x.endpoint,
@@ -57,10 +60,17 @@ const reconciliationContentHash = (config: ArgusConfig): string => {
       .update(credential)
       .digest("hex");
   };
+  const postgresCredential =
+    config.storage.adapter === "postgres"
+      ? projectPostgresUrlCredentials(config.storage.url).effectiveCredential
+      : undefined;
   const fingerprints = {
     ...(config.storage.adapter === "postgres"
       ? {
-          storage: urlCredentialFingerprint(config.storage.url, fingerprint),
+          storage:
+            postgresCredential === undefined
+              ? undefined
+              : fingerprint(postgresCredential),
         }
       : {}),
     x: urlCredentialFingerprint(config.sources.x.endpoint, fingerprint),

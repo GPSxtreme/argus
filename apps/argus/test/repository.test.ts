@@ -17,7 +17,10 @@ const { openRepository } = await import("../src/repository.js");
 describe("runtime repository", () => {
   it("opens PostgreSQL with the complete live resolved URL", async () => {
     const password = "Argus-Runtime@:/?#[]% secret";
-    const liveUrl = `postgres://argus-admin:${encodeURIComponent(password)}@postgres:5432/argus`;
+    const liveUrl =
+      "postgres://argus-admin@postgres:5432/argus" +
+      `?password=${encodeURIComponent(password)}` +
+      "&sslmode=verify-full&application_name=argus";
     const config = validateConfig({
       version: 1,
       runtime: { role: "api" },

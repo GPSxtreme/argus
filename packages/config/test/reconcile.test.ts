@@ -141,6 +141,10 @@ describe("configuration reconciliation", () => {
 
     const withoutPepper = validateConfig({
       ...postgresConfig,
+      storage: {
+        adapter: "postgres",
+        url: `postgres://postgres:5432/argus?password=${encodedPostgresPassword}`,
+      },
       api: {},
     });
     let thrown: unknown;
@@ -161,5 +165,142 @@ describe("configuration reconciliation", () => {
     ]) {
       expect(errorText).not.toContain(secret);
     }
+  });
+
+  it("fingerprints effective pg query credentials and strips every credential parameter", async () => {
+    const repository = await createSqliteRepository({ filename: ":memory:" });
+    repositories.push(repository);
+    const firstPassword = "Argus-Shadowed@:/?#[]% secret";
+    const effectivePassword = "Argus-Query@:/?#[]% secret";
+    const uppercasePassword = "Argus-Ignored@:/?#[]% secret";
+    const queryUrl =
+      "postgres://authority-user:authority-password@postgres:5432/argus" +
+      `?sslmode=verify-full&password=${encodeURIComponent(firstPassword)}` +
+      `&PASSWORD=${encodeURIComponent(uppercasePassword)}` +
+      `&user=query-user&password=${encodeURIComponent(effectivePassword)}` +
+      "&application_name=argus";
+    const queryConfig = validateConfig({
+      ...postgresConfig,
+      storage: { adapter: "postgres", url: queryUrl },
+    });
+
+    const first = await reconcileConfig(repository, queryConfig);
+    const second = await reconcileConfig(repository, queryConfig);
+    expect(first.changed).toBe(true);
+    expect(second.changed).toBe(false);
+    const applied = await repository.getAppliedConfig();
+    expect(applied?.config).toMatchObject({
+      storage: {
+        adapter: "postgres",
+        url: "postgres://postgres:5432/argus?sslmode=verify-full&application_name=argus",
+      },
+    });
+    const surfaces = JSON.stringify(applied);
+    for (const secret of [
+      "authority-user",
+      "authority-password",
+      "query-user",
+      firstPassword,
+      encodeURIComponent(firstPassword),
+      effectivePassword,
+      encodeURIComponent(effectivePassword),
+      uppercasePassword,
+      encodeURIComponent(uppercasePassword),
+      queryUrl,
+    ]) {
+      expect(surfaces).not.toContain(secret);
+    }
+
+    const changedEffective = validateConfig({
+      ...queryConfig,
+      storage: {
+        adapter: "postgres",
+        url: queryUrl.replace(
+          encodeURIComponent(effectivePassword),
+          encodeURIComponent(`${effectivePassword}-changed`),
+        ),
+      },
+    });
+    expect(
+      (
+        await planConfigReconciliation(repository, changedEffective)
+      ).desiredContentHash,
+    ).not.toBe(applied?.contentHash);
+
+    const changedEffectiveUser = validateConfig({
+      ...queryConfig,
+      storage: {
+        adapter: "postgres",
+        url: queryUrl.replace("user=query-user", "user=changed-query-user"),
+      },
+    });
+    expect(
+      (
+        await planConfigReconciliation(repository, changedEffectiveUser)
+      ).desiredContentHash,
+    ).not.toBe(applied?.contentHash);
+
+    const changedShadowed = validateConfig({
+      ...queryConfig,
+      storage: {
+        adapter: "postgres",
+        url: queryUrl.replace(
+          encodeURIComponent(firstPassword),
+          encodeURIComponent(`${firstPassword}-changed`),
+        ),
+      },
+    });
+    expect(
+      (
+        await planConfigReconciliation(repository, changedShadowed)
+      ).desiredContentHash,
+    ).toBe(applied?.contentHash);
+
+    const changedIgnoredCase = validateConfig({
+      ...queryConfig,
+      storage: {
+        adapter: "postgres",
+        url: queryUrl.replace(
+          encodeURIComponent(uppercasePassword),
+          encodeURIComponent(`${uppercasePassword}-changed`),
+        ),
+      },
+    });
+    expect(
+      (
+        await planConfigReconciliation(repository, changedIgnoredCase)
+      ).desiredContentHash,
+    ).toBe(applied?.contentHash);
+
+    const emptyQueryFallsBackToAuthority = validateConfig({
+      ...postgresConfig,
+      storage: {
+        adapter: "postgres",
+        url: "postgres://authority-user:authority-password@postgres:5432/argus?password=&user=",
+      },
+    });
+    const authorityOnly = validateConfig({
+      ...postgresConfig,
+      storage: {
+        adapter: "postgres",
+        url: "postgres://authority-user:authority-password@postgres:5432/argus",
+      },
+    });
+    const emptyRepository = await createSqliteRepository({
+      filename: ":memory:",
+    });
+    const authorityRepository = await createSqliteRepository({
+      filename: ":memory:",
+    });
+    repositories.push(emptyRepository, authorityRepository);
+    const emptyPlan = await planConfigReconciliation(
+      emptyRepository,
+      emptyQueryFallsBackToAuthority,
+    );
+    const authorityPlan = await planConfigReconciliation(
+      authorityRepository,
+      authorityOnly,
+    );
+    expect(emptyPlan.desiredContentHash).toBe(authorityPlan.desiredContentHash);
   });
 });

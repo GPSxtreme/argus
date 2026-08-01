@@ -93,4 +93,59 @@ describe("loadConfig", () => {
     expect(serialized).toContain("postgres://postgres:5432/argus");
     expect(config.storage.url).toBe(liveUrl);
   });
+
+  it("removes PostgreSQL query credentials while preserving safe parameters", () => {
+    const firstPassword = "Argus-First@:/?#[]% secret";
+    const effectivePassword = "Argus-Effective@:/?#[]% secret";
+    const ignoredUppercasePassword = "Argus-Uppercase@:/?#[]% secret";
+    const liveUrl =
+      `postgres://authority-user:${encodeURIComponent("authority-password")}@postgres:5432/argus` +
+      `?sslmode=verify-full&password=${encodeURIComponent(firstPassword)}` +
+      `&PASSWORD=${encodeURIComponent(ignoredUppercasePassword)}` +
+      `&user=query-user&password=${encodeURIComponent(effectivePassword)}` +
+      "&application_name=argus";
+    const config = {
+      version: 1 as const,
+      runtime: { role: "api" as const },
+      storage: { adapter: "postgres" as const, url: liveUrl },
+      sources: {
+        x: { enabled: false, endpoint: "http://localhost:8787/api" },
+        telegram: { enabled: false, adapter: "public-web" as const },
+        web: {
+          enabled: false,
+          userAgent: "Argus/0.1",
+          browserFallback: false,
+        },
+      },
+      watches: [],
+      intelligence: {
+        enabled: false,
+        provider: "openrouter" as const,
+        model: "openai/gpt-4.1-mini",
+        processors: [],
+      },
+      api: { host: "0.0.0.0", port: 8788 },
+    };
+
+    const serialized = serializeRedactedConfig(config);
+    expect(serialized).toContain(
+      "postgres://postgres:5432/argus?sslmode=verify-full&application_name=argus",
+    );
+    for (const secret of [
+      "authority-user",
+      "authority-password",
+      encodeURIComponent("authority-password"),
+      "query-user",
+      firstPassword,
+      encodeURIComponent(firstPassword),
+      effectivePassword,
+      encodeURIComponent(effectivePassword),
+      ignoredUppercasePassword,
+      encodeURIComponent(ignoredUppercasePassword),
+      liveUrl,
+    ]) {
+      expect(serialized).not.toContain(secret);
+    }
+    expect(config.storage.url).toBe(liveUrl);
+  });
 });

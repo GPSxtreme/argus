@@ -196,7 +196,10 @@ describe("Argus API", () => {
     const app = createApp({ config, repository });
     const postgresPassword = "Argus-Management@:/?#[]% secret";
     const encodedPostgresPassword = encodeURIComponent(postgresPassword);
-    const postgresUrl = `postgres://argus-admin:${encodedPostgresPassword}@postgres:5432/argus`;
+    const postgresUrl =
+      "postgres://argus-admin@postgres:5432/argus" +
+      `?password=${encodedPostgresPassword}` +
+      "&sslmode=verify-full&application_name=argus";
     const credentialFragments = [
       postgresPassword,
       encodedPostgresPassword,
@@ -283,7 +286,7 @@ describe("Argus API", () => {
       config: {
         storage: {
           adapter: "postgres",
-          url: "postgres://postgres:5432/argus",
+          url: "postgres://postgres:5432/argus?sslmode=verify-full&application_name=argus",
         },
       },
     });
