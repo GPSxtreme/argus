@@ -85,3 +85,50 @@ pnpm argus config apply /app/argus.yaml
 
 Invalid files never replace the current snapshot. Reapplying identical content
 is a no-op. Runtime services should all mount the same config revision.
+
+## Installer smoke
+
+`.github/workflows/installer-smoke.yml` runs automatically after the signed
+release workflow completes successfully and can be started manually with an
+immutable release tag. It uses digest-pinned Ubuntu and Debian root filesystems
+on fixed native amd64 and arm64 runners. Separate jobs cover a usable existing
+Docker installation and the installer's explicit `ARGUS_INSTALL_DOCKER=1` path
+on a systemd clean host.
+
+The smoke installs the wrapper twice, verifies its signed-manifest checksum,
+byte identity, and version after both installs, then applies a strict Web-only
+answers file. Its API token is generated inside the disposable host and is not
+a user or repository secret. Success requires `/opt/argus/state.json` to name
+the expected release and `argus doctor --json` to report both `ok: true` and
+`healthy: true`.
+
+To run `scripts/e2e/installer-smoke.sh` directly, use an isolated supported
+Linux host as root. The script may install Docker and writes `/usr/local/bin/argus`
+and `/opt/argus`; do not run it on a workstation or an existing Argus instance.
+
+```bash
+tag=v0.1.0
+base="https://github.com/gpsxtreme/argus/releases/download/$tag"
+curl --fail --location --output /tmp/argus-manifest.json "$base/manifest.json"
+version=${tag#v}
+wrapper_sha256=$(jq -er '.assets.wrapper.sha256' /tmp/argus-manifest.json)
+sudo --preserve-env=PATH \
+  ARGUS_INSTALLER_URL="$base/install.sh" \
+  ARGUS_MANIFEST_URL="$base/manifest.json" \
+  ARGUS_EXPECTED_VERSION="$version" \
+  ARGUS_EXPECTED_WRAPPER_SHA256="$wrapper_sha256" \
+  ARGUS_INSTALL_DOCKER=0 \
+  scripts/e2e/installer-smoke.sh
+```
+
+Loopback HTTP is accepted only with `ARGUS_INSTALL_FIXTURE=1`; the matching
+installer must still embed the fixture public key, and the manifest signature
+and wrapper hash are still verified. The smoke needs outbound HTTPS for the
+release, OCI images, and the controlled IANA example Web target. Ubuntu 25.10
+is omitted from the recurring matrix because it is end-of-life; the maintained
+Ubuntu releases and Debian 12/13 remain covered.
+
+On failure CI uploads only `installer.log`, `wrapper.sha256`, `compose.log`,
+and `doctor.json`, each from the dedicated smoke artifact directory. It never
+uploads `secrets.env`, signing keys, tokens, private keys, or an environment
+dump.
