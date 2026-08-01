@@ -1,0 +1,27 @@
+version: 1
+deployment:
+  provider: vps-docker
+  root: /opt/argus
+  storage: sqlite
+  apiHost: 0.0.0.0
+  apiPort: 8788
+managed:
+  searxng: managed
+  fxembed: disabled
+watches:
+  - id: web
+    enabled: true
+    schedule: "*/5 * * * *"
+    x:
+      accounts: []
+      queries: []
+    telegram:
+      channels: []
+    web:
+      urls: []
+      feeds: []
+      queries: [argus]
+    keywords: []
+intelligence:
+  enabled: false
+  model: openai/gpt-4.1-mini
