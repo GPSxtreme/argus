@@ -9,6 +9,7 @@ export interface CommandExecutor {
       cwd?: string;
       env?: Record<string, string>;
       stdin?: string;
+      timeoutMs?: number;
     },
   ): Promise<CommandResult>;
 }
@@ -20,12 +21,16 @@ export const createExecaExecutor = (): CommandExecutor => ({
       ...(options?.cwd === undefined ? {} : { cwd: options.cwd }),
       ...(options?.env === undefined ? {} : { env: options.env }),
       ...(options?.stdin === undefined ? {} : { input: options.stdin }),
+      ...(options?.timeoutMs === undefined
+        ? {}
+        : { timeout: options.timeoutMs, forceKillAfterDelay: 1_000 }),
     });
 
     return {
       exitCode: result.exitCode ?? 1,
       stdout: result.stdout,
       stderr: result.stderr,
+      ...(result.timedOut ? { timedOut: true } : {}),
     };
   },
 });

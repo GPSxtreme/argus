@@ -30,6 +30,7 @@ class FixtureExecutor implements CommandExecutor {
     args: string[];
     cwd: string | undefined;
     env: Record<string, string> | undefined;
+    timeoutMs: number | undefined;
   }> = [];
 
   constructor(
@@ -40,9 +41,15 @@ class FixtureExecutor implements CommandExecutor {
   async run(
     command: string,
     args: string[],
-    options?: { cwd?: string; env?: Record<string, string> },
+    options?: { cwd?: string; env?: Record<string, string>; timeoutMs?: number },
   ): Promise<CommandResult> {
-    this.calls.push({ command, args, cwd: options?.cwd, env: options?.env });
+    this.calls.push({
+      command,
+      args,
+      cwd: options?.cwd,
+      env: options?.env,
+      timeoutMs: options?.timeoutMs,
+    });
     return this.responses.shift() ?? this.response;
   }
 }
@@ -164,6 +171,7 @@ describe("managed SearXNG", () => {
         command: "docker",
         args: ["compose", "-p", "argus", "config"],
         cwd: root,
+        timeoutMs: 30_000,
         env: {
           ARGUS_API_PORT: "8788",
           ARGUS_VERSION: `0.2.0@sha256:${"a".repeat(64)}`,
@@ -175,6 +183,7 @@ describe("managed SearXNG", () => {
         command: "docker",
         args: ["compose", "-p", "argus", "up", "-d", "--force-recreate", "searxng"],
         cwd: root,
+        timeoutMs: 30_000,
         env: {
           ARGUS_API_PORT: "8788",
           ARGUS_VERSION: `0.2.0@sha256:${"a".repeat(64)}`,
@@ -260,5 +269,57 @@ describe("managed SearXNG", () => {
       }),
     );
     expect(executor.calls).toEqual([]);
+  });
+
+  it("returns a structured diagnostic when Compose validation times out", async () => {
+    const root = await mkdtemp(join(tmpdir(), "argus-searxng-"));
+    roots.push(root);
+    await persistComposeInputs(root);
+    let healthCalls = 0;
+    const executor = new FixtureExecutor({ exitCode: 124, stdout: "secret", stderr: "raw", timedOut: true });
+
+    const diagnostic = await repairSearxng({
+      root,
+      executor,
+      fetcher: async () => {
+        healthCalls += 1;
+        return jsonResponse({ results: [] });
+      },
+    });
+
+    expect(diagnostic.checks).toEqual([expect.objectContaining({ code: "SEARXNG_COMPOSE_CONFIG_TIMEOUT" })]);
+    expect(healthCalls).toBe(0);
+    expect(executor.calls).toHaveLength(1);
+    expect(executor.calls[0]?.timeoutMs).toBeGreaterThan(0);
+    expect(JSON.stringify(diagnostic)).not.toContain("secret");
+  });
+
+  it("returns a structured diagnostic and skips health polling when recreate times out", async () => {
+    const root = await mkdtemp(join(tmpdir(), "argus-searxng-"));
+    roots.push(root);
+    await persistComposeInputs(root);
+    let healthCalls = 0;
+    const executor = new FixtureExecutor(
+      { exitCode: 0, stdout: "", stderr: "" },
+      [
+        { exitCode: 0, stdout: "", stderr: "" },
+        { exitCode: 124, stdout: "secret", stderr: "raw", timedOut: true },
+      ],
+    );
+
+    const diagnostic = await repairSearxng({
+      root,
+      executor,
+      fetcher: async () => {
+        healthCalls += 1;
+        return jsonResponse({ results: [] });
+      },
+    });
+
+    expect(diagnostic.checks).toEqual([expect.objectContaining({ code: "SEARXNG_RECREATE_TIMEOUT" })]);
+    expect(healthCalls).toBe(0);
+    expect(executor.calls).toHaveLength(2);
+    expect(executor.calls.every((call) => (call.timeoutMs ?? 0) > 0)).toBe(true);
+    expect(JSON.stringify(diagnostic)).not.toContain("secret");
   });
 });

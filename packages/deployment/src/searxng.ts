@@ -47,6 +47,7 @@ export interface SearxngRepairContext {
   sleep?: (milliseconds: number) => Promise<void>;
   attempts?: number;
   requestTimeoutMs?: number;
+  composeTimeoutMs?: number;
 }
 
 /** Renders the complete, versioned settings file owned by Argus. */
@@ -121,6 +122,11 @@ const writeManagedSettings = async (root: string): Promise<void> => {
 const wait = (milliseconds: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, milliseconds));
 
+const boundedComposeTimeout = (timeoutMs: number | undefined): number =>
+  typeof timeoutMs === "number" && Number.isFinite(timeoutMs)
+    ? Math.min(Math.max(1_000, timeoutMs), 30_000)
+    : 30_000;
+
 const diagnostic = (
   healthy: boolean,
   code: string,
@@ -153,6 +159,7 @@ export const repairSearxng = async ({
   sleep = wait,
   attempts = 3,
   requestTimeoutMs,
+  composeTimeoutMs,
 }: SearxngRepairContext): Promise<DiagnosticReport> => {
   let environment: Record<string, string>;
   try {
@@ -172,18 +179,30 @@ export const repairSearxng = async ({
   }
 
   try {
+    const timeoutMs = boundedComposeTimeout(composeTimeoutMs);
     const validated = await executor.run("docker", ["compose", "-p", "argus", "config"], {
       cwd: root,
       env: environment,
+      timeoutMs,
     });
+    if (validated.timedOut) {
+      return diagnostic(
+        false,
+        "SEARXNG_COMPOSE_CONFIG_TIMEOUT",
+        "Managed SearXNG configuration validation timed out.",
+      );
+    }
     if (validated.exitCode !== 0) {
       return diagnostic(false, "SEARXNG_COMPOSE_CONFIG_FAILED", "Managed SearXNG configuration is invalid.");
     }
     const recreated = await executor.run(
       "docker",
       ["compose", "-p", "argus", "up", "-d", "--force-recreate", "searxng"],
-      { cwd: root, env: environment },
+      { cwd: root, env: environment, timeoutMs },
     );
+    if (recreated.timedOut) {
+      return diagnostic(false, "SEARXNG_RECREATE_TIMEOUT", "Managed SearXNG recreation timed out.");
+    }
     if (recreated.exitCode === 0) {
       return await waitForSearxng(endpoint, fetcher, sleep, attempts, requestTimeoutMs);
     }

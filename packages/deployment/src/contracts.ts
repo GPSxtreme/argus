@@ -104,6 +104,7 @@ export interface CommandResult {
   exitCode: number;
   stdout: string;
   stderr: string;
+  timedOut?: boolean;
 }
 
 export type DeploymentArgusConfig = ArgusConfig;
@@ -283,5 +284,6 @@ export const commandResultSchema = z
     exitCode: z.number().int(),
     stdout: z.string(),
     stderr: z.string(),
+    timedOut: z.boolean().optional(),
   })
   .strict();

@@ -17,11 +17,27 @@ const prerequisites = async (): Promise<string | undefined> => {
   if (!clientImage || !isPinnedImageReference(clientImage)) {
     return "Set ARGUS_SEARXNG_SMOKE_CLIENT_IMAGE to a validated digest-pinned HTTP client image.";
   }
-  if ((await execa("docker", ["info"], { reject: false })).exitCode !== 0) {
+  if (
+    (
+      await execa("docker", ["info"], {
+        reject: false,
+        timeout: 5_000,
+        forceKillAfterDelay: 1_000,
+      })
+    ).exitCode !== 0
+  ) {
     return "Start a reachable Docker daemon before running the managed SearXNG smoke test.";
   }
   for (const image of [searxngImage, clientImage]) {
-    if ((await execa("docker", ["image", "inspect", image], { reject: false })).exitCode !== 0) {
+    if (
+      (
+        await execa("docker", ["image", "inspect", image], {
+          reject: false,
+          timeout: 5_000,
+          forceKillAfterDelay: 1_000,
+        })
+      ).exitCode !== 0
+    ) {
       return `Pull the required pinned image before running the smoke test: ${image}`;
     }
   }
@@ -57,10 +73,16 @@ networks:
     );
 
     try {
-      const config = await execa("docker", ["compose", "-f", compose, "config"]);
+      const config = await execa("docker", ["compose", "-f", compose, "config"], {
+        timeout: 30_000,
+        forceKillAfterDelay: 1_000,
+      });
       expect(config.stdout).toContain("internal: true");
       expect(config.stdout).toContain(pinnedSearxngImage);
-      await execa("docker", ["compose", "-f", compose, "up", "-d", "searxng"]);
+      await execa("docker", ["compose", "-f", compose, "up", "-d", "searxng"], {
+        timeout: 30_000,
+        forceKillAfterDelay: 1_000,
+      });
 
       let results: unknown;
       for (let attempt = 0; attempt < 10; attempt += 1) {
@@ -75,7 +97,7 @@ networks:
             "-fsS",
             "http://searxng:8080/search?q=argus&format=json",
           ],
-          { reject: false },
+          { reject: false, timeout: 10_000, forceKillAfterDelay: 1_000 },
         );
         if (response.exitCode === 0) {
           results = JSON.parse(response.stdout) as { results?: unknown };
@@ -87,7 +109,11 @@ networks:
       expect(results).toMatchObject({ results: expect.any(Array) });
       expect((results as { results: unknown[] }).results.length).toBeGreaterThan(0);
     } finally {
-      await execa("docker", ["compose", "-f", compose, "down", "-v"], { reject: false });
+      await execa("docker", ["compose", "-f", compose, "down", "-v"], {
+        reject: false,
+        timeout: 30_000,
+        forceKillAfterDelay: 1_000,
+      });
       await rm(root, { force: true, recursive: true });
     }
   }, 30_000);
