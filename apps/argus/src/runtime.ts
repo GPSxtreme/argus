@@ -31,20 +31,27 @@ export const resolveRuntimeRole = (
   };
 };
 
-const processJobs = async (
+export interface ProcessNextJobDependencies {
+  runTarget?: typeof runTarget;
+  workerId?: string;
+}
+
+export const processNextJob = async (
   config: ArgusConfig,
   repository: StorageRepository,
-): Promise<void> => {
-  const owner = `${hostname()}:${process.pid}`;
-  for (const job of await repository.claimJobs(owner, 10, 60_000)) {
+  { runTarget: execute = runTarget, workerId = `${hostname()}:${process.pid}` }: ProcessNextJobDependencies = {},
+): Promise<{ status: "idle" | "complete" | "failed" | "cancelled" }> => {
+  const job = (await repository.claimJobs(workerId, 1, 60_000))[0];
+  if (!job) return { status: "idle" };
     try {
       const diagnostic = await repository.getDiagnosticWatch(job.targetId);
       const target = findTarget(config, job.targetId) ?? await findDiagnosticTarget(repository, job.targetId);
       if (!target) throw new Error(`Unknown target: ${job.targetId}`);
-      if (diagnostic && diagnostic.status !== "active") { await repository.completeJob(job.id); continue; }
-      const result = await runTarget(target, config, repository, undefined, diagnostic ? async () => (await repository.getDiagnosticWatch(job.targetId))?.status === "active" : undefined);
+      if (diagnostic && diagnostic.status !== "active") { await repository.completeJob(job.id); return { status: "cancelled" }; }
+      const result = await execute(target, config, repository, undefined, diagnostic ? async () => (await repository.getDiagnosticWatch(job.targetId))?.status === "active" : undefined);
       await repository.completeJob(job.id);
       logger.info({ jobId: job.id, targetId: job.targetId, ...result }, "job complete");
+      return { status: "complete" };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const retryAt =
@@ -59,8 +66,12 @@ const processJobs = async (
           : undefined;
       await repository.failJob(job.id, message, retryAt);
       logger.error({ jobId: job.id, error: message }, "job failed");
+      return { status: "failed" };
     }
-  }
+};
+
+const processJobs = async (config: ArgusConfig, repository: StorageRepository): Promise<void> => {
+  for (let index = 0; index < 10; index += 1) if ((await processNextJob(config, repository)).status === "idle") return;
 };
 
 export interface RuntimeHandle {
