@@ -44,7 +44,9 @@ export const runTarget = async (
   config: ArgusConfig,
   repository: StorageRepository,
   adapter: AnyAdapter = adapterFor(target),
+  isActive: (() => Promise<boolean>) | undefined = undefined,
 ): Promise<{ inserted: number; revised: number; duplicates: number }> => {
+  if (isActive && !(await isActive())) return { inserted: 0, revised: 0, duplicates: 0 };
   const checkpoint = await repository.getCheckpoint<{ lastId?: string }>(
     target.id,
   );
@@ -59,6 +61,7 @@ export const runTarget = async (
   async function* sourceItems(): AsyncIterable<SourceItem> {
     yield* items;
   }
+  if (isActive && !(await isActive())) return { inserted: 0, revised: 0, duplicates: 0 };
   return ingestItems({
     source: target.source,
     targetId: target.id,

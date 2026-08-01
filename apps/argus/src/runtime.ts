@@ -38,9 +38,11 @@ const processJobs = async (
   const owner = `${hostname()}:${process.pid}`;
   for (const job of await repository.claimJobs(owner, 10, 60_000)) {
     try {
+      const diagnostic = await repository.getDiagnosticWatch(job.targetId);
       const target = findTarget(config, job.targetId) ?? await findDiagnosticTarget(repository, job.targetId);
       if (!target) throw new Error(`Unknown target: ${job.targetId}`);
-      const result = await runTarget(target, config, repository);
+      if (diagnostic && diagnostic.status !== "active") { await repository.completeJob(job.id); continue; }
+      const result = await runTarget(target, config, repository, undefined, diagnostic ? async () => (await repository.getDiagnosticWatch(job.targetId))?.status === "active" : undefined);
       await repository.completeJob(job.id);
       logger.info({ jobId: job.id, targetId: job.targetId, ...result }, "job complete");
     } catch (error) {
