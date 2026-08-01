@@ -5,6 +5,7 @@ import type {
   ValidationResult,
 } from "@argus/contracts";
 import { fetchFeed } from "./feed.js";
+import type { SafeHttpOptions } from "./safe-http.js";
 import { searchSearxng } from "./search.js";
 import { fetchPage } from "./url.js";
 
@@ -23,6 +24,8 @@ export class WebAdapter implements SourceAdapter<WebTargetConfig> {
     realtime: false,
   };
 
+  constructor(private readonly httpOptions: SafeHttpOptions = {}) {}
+
   async validate(config: WebTargetConfig): Promise<ValidationResult> {
     const valid =
       Boolean(config.value) &&
@@ -36,17 +39,18 @@ export class WebAdapter implements SourceAdapter<WebTargetConfig> {
     if (input.config.kind === "url") {
       yield await fetchPage(
         input.config.value,
-        fetch,
+        this.httpOptions,
         input.config.userAgent ?? "Argus/0.1",
       );
       return;
     }
     const items =
       input.config.kind === "feed"
-        ? await fetchFeed(input.config.value)
+        ? await fetchFeed(input.config.value, this.httpOptions)
         : await searchSearxng(
             input.config.searchEndpoint as string,
             input.config.value,
+            this.httpOptions,
           );
     for (const item of items) yield item;
   }

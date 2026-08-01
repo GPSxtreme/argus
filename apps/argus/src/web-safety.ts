@@ -1,12 +1,15 @@
-import { lookup } from "node:dns/promises";
+import { isIP } from "node:net";
+import {
+  nodeWebResolver,
+  resolvePublicWebUrl,
+  type WebResolver,
+} from "@argus/source-web";
 
-export type DiagnosticResolver = (hostname: string) => Promise<Array<{ address: string }>>;
+export type DiagnosticResolver = (
+  hostname: string,
+) => Promise<ReadonlyArray<{ address: string; family?: 4 | 6 }>>;
 
-const privateAddress = (value: string): boolean =>
-  /^(127\.|10\.|0\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[0-1])\.|224\.|::1$|fc|fd|fe80)/i.test(value);
-
-export const nodeDiagnosticResolver: DiagnosticResolver = async (hostname) =>
-  lookup(hostname, { all: true, verbatim: true });
+export const nodeDiagnosticResolver: DiagnosticResolver = nodeWebResolver;
 
 /** Validates a configured web target without exposing its host or URL in errors. */
 export const safeDiagnosticWebTarget = async (
@@ -14,11 +17,15 @@ export const safeDiagnosticWebTarget = async (
   resolver: DiagnosticResolver = nodeDiagnosticResolver,
   timeoutMs = 2_000,
 ): Promise<boolean> => {
-  let url: URL;
-  try { url = new URL(value); } catch { return false; }
-  if (!/^https?:$/.test(url.protocol) || url.username || url.password || url.hostname === "localhost" || privateAddress(url.hostname)) return false;
+  const sharedResolver: WebResolver = async (hostname) =>
+    (await resolver(hostname)).map((answer) => ({
+      address: answer.address,
+      family: answer.family ?? (isIP(answer.address) === 6 ? 6 : 4),
+    }));
   try {
-    const answers = await Promise.race([resolver(url.hostname), new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timeout")), timeoutMs))]);
-    return answers.length > 0 && answers.every((answer) => !privateAddress(answer.address));
-  } catch { return false; }
+    await resolvePublicWebUrl(value, sharedResolver, timeoutMs);
+    return true;
+  } catch {
+    return false;
+  }
 };

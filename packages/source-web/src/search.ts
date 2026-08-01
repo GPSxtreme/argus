@@ -1,16 +1,30 @@
 import type { SourceItem } from "@argus/contracts";
+import { safeHttpGet, type SafeHttpOptions } from "./safe-http.js";
 
 export const searchSearxng = async (
   endpoint: string,
   query: string,
-  fetcher: typeof fetch = fetch,
+  options: SafeHttpOptions | typeof fetch = {},
 ): Promise<SourceItem[]> => {
   const url = new URL("/search", endpoint);
   url.searchParams.set("q", query);
   url.searchParams.set("format", "json");
-  const response = await fetcher(url, { headers: { accept: "application/json" } });
-  if (!response.ok) throw new Error(`SearXNG request failed (${response.status})`);
-  const body = (await response.json()) as {
+  const response =
+    typeof options === "function"
+      ? await options(url, { headers: { accept: "application/json" } }).then(
+          async (result) => ({
+            ok: result.ok,
+            status: result.status,
+            body: await result.text(),
+          }),
+        )
+      : await safeHttpGet(url, {
+          ...options,
+          headers: { ...options.headers, accept: "application/json" },
+        });
+  if (!response.ok)
+    throw new Error(`SearXNG request failed (${response.status})`);
+  const body = JSON.parse(response.body) as {
     results?: Array<{ url?: string; title?: string; content?: string }>;
   };
   return (body.results ?? [])

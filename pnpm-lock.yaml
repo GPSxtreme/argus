@@ -193,6 +193,9 @@ importers:
       jsdom:
         specifier: ^26.1.0
         version: 26.1.0
+      undici:
+        specifier: ^7.29.0
+        version: 7.29.0
     devDependencies:
       '@types/jsdom':
         specifier: ^21.1.0
