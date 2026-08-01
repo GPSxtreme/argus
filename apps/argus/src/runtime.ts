@@ -8,7 +8,7 @@ import { Cron } from "croner";
 import { createApp } from "./app.js";
 import { runSummaryProcessor } from "./processor.js";
 import { openRepository, type RepositoryHandle } from "./repository.js";
-import { findDiagnosticTarget, findTarget, runTarget } from "./worker.js";
+import { adapterFor, findDiagnosticTarget, findTarget, runTarget, type AdapterFactory } from "./worker.js";
 
 const logger = pino({ name: "argus" });
 
@@ -33,13 +33,14 @@ export const resolveRuntimeRole = (
 
 export interface ProcessNextJobDependencies {
   runTarget?: typeof runTarget;
+  adapterFactory?: AdapterFactory;
   workerId?: string;
 }
 
 export const processNextJob = async (
   config: ArgusConfig,
   repository: StorageRepository,
-  { runTarget: execute = runTarget, workerId = `${hostname()}:${process.pid}` }: ProcessNextJobDependencies = {},
+  { runTarget: execute = runTarget, adapterFactory = adapterFor, workerId = `${hostname()}:${process.pid}` }: ProcessNextJobDependencies = {},
 ): Promise<{ status: "idle" | "complete" | "failed" | "cancelled" }> => {
   const job = (await repository.claimJobs(workerId, 1, 60_000))[0];
   if (!job) return { status: "idle" };
@@ -48,7 +49,7 @@ export const processNextJob = async (
       const target = findTarget(config, job.targetId) ?? await findDiagnosticTarget(repository, job.targetId);
       if (!target) throw new Error(`Unknown target: ${job.targetId}`);
       if (diagnostic && diagnostic.status !== "active") { await repository.completeJob(job.id); return { status: "cancelled" }; }
-      const result = await execute(target, config, repository, undefined, diagnostic ? async () => (await repository.getDiagnosticWatch(job.targetId))?.status === "active" : undefined);
+      const result = await execute(target, config, repository, adapterFactory(target), diagnostic ? async () => (await repository.getDiagnosticWatch(job.targetId))?.status === "active" : undefined);
       await repository.completeJob(job.id);
       logger.info({ jobId: job.id, targetId: job.targetId, ...result }, "job complete");
       return { status: "complete" };

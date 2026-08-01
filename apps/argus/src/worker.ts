@@ -12,8 +12,9 @@ import { XAdapter } from "@argus/source-x";
 
 // biome-ignore lint/suspicious/noExplicitAny: Runtime dispatch intentionally erases source-specific adapter types.
 type AnyAdapter = SourceAdapter<any, any>;
+export type AdapterFactory = (target: ScheduledTarget) => AnyAdapter;
 
-const adapterFor = (target: ScheduledTarget): AnyAdapter => {
+export const adapterFor: AdapterFactory = (target) => {
   if (target.source === "x") return new XAdapter();
   if (target.source === "telegram") return new TelegramAdapter();
   return new WebAdapter();
