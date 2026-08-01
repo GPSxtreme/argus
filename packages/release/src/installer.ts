@@ -258,6 +258,11 @@ openssl pkeyutl -verify -pubin -inkey "$argus_tmp/release-public.pem" -rawin -in
 [ "$(tail -c 1 "$argus_tmp/manifest.json" | od -An -tuC | tr -d ' ')" = 125 ] ||
   argus_die "signed release manifest must have canonical bytes without BOM or trailing newline"
 [ "$(awk 'END { print NR }' "$argus_tmp/manifest.json")" -eq 1 ] || argus_die "signed release manifest must be canonical single-line JSON"
+sed 's/,"installer":{"url":"[^"]*","sha256":"[a-f0-9]\\{64\\}"},"publicKey":{"url":"[^"]*","sha256":"[a-f0-9]\\{64\\}"},"fxembedLicense":{"url":"[^"]*","sha256":"[a-f0-9]\\{64\\}"},"fxembedProvenance":{"url":"[^"]*","sha256":"[a-f0-9]\\{64\\}"}//' \
+  "$argus_tmp/manifest.json" > "$argus_tmp/schema-manifest.json" ||
+  argus_die "could not normalize the signed release manifest schema"
+mv "$argus_tmp/schema-manifest.json" "$argus_tmp/manifest.json" ||
+  argus_die "could not normalize the signed release manifest schema"
 LC_ALL=C grep -Eq '^\\{"schemaVersion":1,"version":"(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?","publishedAt":"[0-9]{4}-(0[1-9]|1[0-2])-([012][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]\\.[0-9]{3}Z","images":\\{"app":\\{"reference":"[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}","digest":"sha256:[a-f0-9]{64}"\\},"cli":\\{"reference":"[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}","digest":"sha256:[a-f0-9]{64}"\\},"searxng":\\{"reference":"[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}","digest":"sha256:[a-f0-9]{64}"\\},"postgres":\\{"reference":"[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}","digest":"sha256:[a-f0-9]{64}"\\}\\},"assets":\\{"fxembed":\\{"url":"https://[A-Za-z0-9.-]+(:[0-9]{1,5})?/[A-Za-z0-9._~%+-][A-Za-z0-9._~/%+-]*","sha256":"[a-f0-9]{64}","compatibilityDate":"[0-9]{4}-(0[1-9]|1[0-2])-([012][0-9]|3[01])"\\},"wrapper":\\{"url":"https://[A-Za-z0-9.-]+(:[0-9]{1,5})?/[A-Za-z0-9._~%+-][A-Za-z0-9._~/%+-]*","sha256":"[a-f0-9]{64}"\\}\\},"minimumStateSchema":1\\}$' "$argus_tmp/manifest.json" ||
   argus_die "signed release manifest does not match the supported canonical schema"
 
@@ -266,8 +271,8 @@ argus_version=$(printf '%s\\n' "$argus_manifest_line" | sed -n 's/^{"schemaVersi
 argus_published_at=$(printf '%s\\n' "$argus_manifest_line" | sed -n 's/.*"publishedAt":"\\([0-9TZ:.-]*\\)","images".*/\\1/p')
 argus_compatibility_date=$(printf '%s\\n' "$argus_manifest_line" | sed -n 's/.*"compatibilityDate":"\\([0-9-]*\\)"}.*/\\1/p')
 argus_fxembed_url=$(printf '%s\\n' "$argus_manifest_line" | sed -n 's/.*"fxembed":{"url":"\\([^"]*\\)","sha256".*/\\1/p')
-argus_wrapper_url=$(printf '%s\\n' "$argus_manifest_line" | sed -n 's/.*"wrapper":{"url":"\\([^"]*\\)","sha256":"[a-f0-9]*"}},"minimumStateSchema":1}$/\\1/p')
-argus_wrapper_sha=$(printf '%s\\n' "$argus_manifest_line" | sed -n 's/.*"wrapper":{"url":"[^"]*","sha256":"\\([a-f0-9]*\\)"}},"minimumStateSchema":1}$/\\1/p')
+argus_wrapper_url=$(printf '%s\\n' "$argus_manifest_line" | sed -n 's/.*"wrapper":{"url":"\\([^"]*\\)","sha256":"[a-f0-9]*"}.*/\\1/p')
+argus_wrapper_sha=$(printf '%s\\n' "$argus_manifest_line" | sed -n 's/.*"wrapper":{"url":"[^"]*","sha256":"\\([a-f0-9]*\\)"}.*/\\1/p')
 [ -n "$argus_version" ] && [ -n "$argus_wrapper_url" ] && [ -n "$argus_wrapper_sha" ] ||
   argus_die "could not read verified manifest fields"
 

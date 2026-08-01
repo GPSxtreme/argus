@@ -5,6 +5,7 @@ import {
 } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { parse } from "yaml";
 import {
   buildReleaseArtifacts,
   type ReleaseImageInput,
@@ -41,21 +42,54 @@ const input = () => ({
     bytes: Buffer.from("#!/bin/sh\nexec true\n"),
     url: "https://github.com/gpsxtreme/argus/releases/download/v1.2.3/argus",
   },
+  installer: {
+    bytes: Buffer.from("#!/bin/sh\n# installer\n"),
+    url: "https://github.com/gpsxtreme/argus/releases/download/v1.2.3/install.sh",
+  },
+  publicKeyUrl:
+    "https://github.com/gpsxtreme/argus/releases/download/v1.2.3/release-public.pem",
+  fxembedLicense: {
+    bytes: Buffer.from("MIT\n"),
+    url: "https://github.com/gpsxtreme/argus/releases/download/v1.2.3/FXEMBED-LICENSE.md",
+  },
+  fxembedProvenance: {
+    bytes: Buffer.from('{"revision":"fixture"}\n'),
+    url: "https://github.com/gpsxtreme/argus/releases/download/v1.2.3/fxembed-provenance.json",
+  },
   privateKeyPem: fixturePrivateKey,
 });
 
 describe("release manifest builder", () => {
   it("emits deterministic canonical bytes and a valid detached Ed25519 signature", () => {
     const built = buildReleaseArtifacts(input());
-    const fxembedHash = createHash("sha256")
-      .update(input().fxembed.bytes)
-      .digest("hex");
-    const wrapperHash = createHash("sha256")
-      .update(input().wrapper.bytes)
-      .digest("hex");
-
-    expect(Buffer.from(built.manifestBytes).toString("utf8")).toBe(
-      `{"schemaVersion":1,"version":"1.2.3","publishedAt":"2026-08-01T10:30:00.000Z","images":{"app":{"reference":"ghcr.io/gpsxtreme/argus@sha256:${sha("a")}","digest":"sha256:${sha("a")}"},"cli":{"reference":"ghcr.io/gpsxtreme/argus-cli@sha256:${sha("b")}","digest":"sha256:${sha("b")}"},"searxng":{"reference":"docker.io/searxng/searxng@sha256:${sha("c")}","digest":"sha256:${sha("c")}"},"postgres":{"reference":"docker.io/library/postgres@sha256:${sha("d")}","digest":"sha256:${sha("d")}"}},"assets":{"fxembed":{"url":"https://github.com/gpsxtreme/argus/releases/download/v1.2.3/fxembed.js","sha256":"${fxembedHash}","compatibilityDate":"2026-04-11"},"wrapper":{"url":"https://github.com/gpsxtreme/argus/releases/download/v1.2.3/argus","sha256":"${wrapperHash}"}},"minimumStateSchema":1}`,
+    const manifestText = Buffer.from(built.manifestBytes).toString("utf8");
+    const manifest = JSON.parse(manifestText) as {
+      version: string;
+      assets: Record<string, { sha256: string }>;
+    };
+    const hash = (bytes: Uint8Array): string =>
+      createHash("sha256").update(bytes).digest("hex");
+    expect(Buffer.from(buildReleaseArtifacts(input()).manifestBytes).toString("utf8")).toBe(
+      manifestText,
+    );
+    expect(manifest.version).toBe("1.2.3");
+    expect(Object.keys(manifest.assets)).toEqual([
+      "fxembed",
+      "wrapper",
+      "installer",
+      "publicKey",
+      "fxembedLicense",
+      "fxembedProvenance",
+    ]);
+    expect(manifest.assets.installer?.sha256).toBe(hash(input().installer.bytes));
+    expect(manifest.assets.fxembed?.sha256).toBe(hash(input().fxembed.bytes));
+    expect(manifest.assets.wrapper?.sha256).toBe(hash(input().wrapper.bytes));
+    expect(manifest.assets.publicKey?.sha256).toBe(
+      hash(Buffer.from(built.publicKeyPem)),
+    );
+    expect(manifest.assets.fxembedLicense?.sha256).toBe(hash(input().fxembedLicense.bytes));
+    expect(manifest.assets.fxembedProvenance?.sha256).toBe(
+      hash(input().fxembedProvenance.bytes),
     );
     expect(built.signature).toHaveLength(64);
     expect(
@@ -98,6 +132,13 @@ describe("release manifest builder", () => {
     ).toThrow("build metadata");
   });
 
+  it("rejects an asset URL that is not bound to the release version", () => {
+    const mismatched = input();
+    mismatched.installer.url =
+      "https://github.com/gpsxtreme/argus/releases/download/v1.2.4/install.sh";
+    expect(() => buildReleaseArtifacts(mismatched)).toThrow("bound to the release version");
+  });
+
   it("reserves a same-tag release before any mutable publish step", () => {
     const workflow = readFileSync(
       new URL("../../../.github/workflows/release.yml", import.meta.url),
@@ -116,5 +157,41 @@ describe("release manifest builder", () => {
       'gh release create "$GITHUB_REF_NAME" --draft --title "$GITHUB_REF_NAME"',
     );
     expect(workflow).toContain("draft: false");
+  });
+
+  it("semantically pins the release workflow and covers every published asset", () => {
+    const workflowText = readFileSync(
+      new URL("../../../.github/workflows/release.yml", import.meta.url),
+      "utf8",
+    );
+    const workflow = parse(workflowText) as {
+      jobs: { release: { "runs-on": string; steps: Array<Record<string, unknown>> } };
+    };
+    expect(workflow.jobs.release["runs-on"]).toBe("ubuntu-24.04");
+    const steps = workflow.jobs.release.steps;
+    for (const step of steps) {
+      if (typeof step.uses === "string") {
+        expect(step.uses).toMatch(/@[a-f0-9]{40}$/u);
+      }
+    }
+    const buildStep = steps.find((step) => step.name === "Build and verify signed assets");
+    expect(String(buildStep?.run)).toContain("--fxembed-license dist/release/FXEMBED-LICENSE.md");
+    expect(String(buildStep?.run)).toContain(
+      "--fxembed-provenance dist/release/fxembed-provenance.json",
+    );
+    const publishStep = steps.find((step) => step.name === "Publish immutable GitHub Release");
+    const files = String((publishStep?.with as { files?: string } | undefined)?.files)
+      .trim()
+      .split("\n");
+    expect(files).toEqual([
+      "dist/release/manifest.json",
+      "dist/release/manifest.sig",
+      "dist/release/release-public.pem",
+      "dist/release/install.sh",
+      "dist/release/argus",
+      "dist/release/fxembed.js",
+      "dist/release/FXEMBED-LICENSE.md",
+      "dist/release/fxembed-provenance.json",
+    ]);
   });
 });

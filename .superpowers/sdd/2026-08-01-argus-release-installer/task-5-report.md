@@ -240,3 +240,33 @@ Review-round RED: 4 files failed, 6 tests failed, 51 passed, and 2 opt-in image
 tests skipped. Review-round GREEN: 60 focused tests passed with 2 opt-in image
 tests skipped; 8 Compose/HTTP regression tests passed; typecheck passed 15/15
 packages; lint checked 162 files clean.
+
+## Formal review fix round 2
+
+The signed manifest now deterministically covers every standalone published
+artifact: FxEmbed, the host wrapper, installer, release public key, FxEmbed
+license, and FxEmbed provenance. The detached signature is excluded because it
+authenticates the manifest itself. Public-key derivation and installer rendering
+happen before manifest construction, avoiding circular trust; the canonical
+manifest is then signed.
+
+All asset URLs are bound to the exact release version. The release verifier
+requires all six signed checksums and hashes the adjacent local files before
+publication. The workflow passes the license and provenance inputs explicitly,
+then runs that fail-closed verifier before publishing.
+
+Workflow tests now parse YAML semantically and assert the fixed runner, full-SHA
+action pins, generation inputs, and exact publication set.
+
+Round-2 RED evidence: the semantic YAML test initially failed because its
+declared parser dependency was not yet linked. A deliberately tampered
+`fxembed-provenance.json` failed verification with
+`Signed checksum mismatch for fxembed-provenance.json.`
+
+Round-2 focused GREEN:
+
+- Signed builder/manifest/installer/integration contract: 127/127.
+- Builder, semantic workflow, and CLI integration follow-up: 14/14.
+- Real fixture generation and six-artifact verification succeeded.
+- Typecheck: 15/15 packages.
+- Lint: 162 files clean.

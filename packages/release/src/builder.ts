@@ -31,6 +31,10 @@ export interface BuildReleaseArtifactsInput {
     bytes: Uint8Array;
     url: string;
   };
+  installer: { bytes: Uint8Array; url: string };
+  publicKeyUrl: string;
+  fxembedLicense: { bytes: Uint8Array; url: string };
+  fxembedProvenance: { bytes: Uint8Array; url: string };
   privateKeyPem: string;
 }
 
@@ -47,6 +51,12 @@ const digestOf = (reference: string): `sha256:${string}` =>
 
 const sha256 = (bytes: Uint8Array): string =>
   createHash("sha256").update(bytes).digest("hex");
+
+export const deriveReleasePublicKeyPem = (privateKeyPem: string): string => {
+  const privateKey = createPrivateKey(privateKeyPem);
+  if (privateKey.asymmetricKeyType !== "ed25519") throw new TypeError("Release key is not Ed25519.");
+  return createPublicKey(privateKey).export({ type: "spki", format: "pem" }).toString();
+};
 
 const publishedAt = (sourceDateEpoch: string): string => {
   if (!/^(?:0|[1-9][0-9]*)$/u.test(sourceDateEpoch)) {
@@ -105,6 +115,18 @@ export const buildReleaseArtifacts = (
   if (input.version.includes("+")) {
     throw new TypeError("Release versions with build metadata cannot be published as OCI tags.");
   }
+  const versionPath = `/v${input.version}/`;
+  const assetUrls = [
+    input.fxembed.url,
+    input.wrapper.url,
+    input.installer.url,
+    input.publicKeyUrl,
+    input.fxembedLicense.url,
+    input.fxembedProvenance.url,
+  ];
+  if (assetUrls.some((url) => !new URL(url).pathname.includes(versionPath))) {
+    throw new TypeError("Every release asset URL must be bound to the release version.");
+  }
   let privateKey: KeyObject;
   try {
     privateKey = createPrivateKey(input.privateKeyPem);
@@ -131,6 +153,19 @@ export const buildReleaseArtifacts = (
       wrapper: {
         url: input.wrapper.url,
         sha256: sha256(input.wrapper.bytes),
+      },
+      installer: { url: input.installer.url, sha256: sha256(input.installer.bytes) },
+      publicKey: {
+        url: input.publicKeyUrl,
+        sha256: sha256(Buffer.from(deriveReleasePublicKeyPem(input.privateKeyPem))),
+      },
+      fxembedLicense: {
+        url: input.fxembedLicense.url,
+        sha256: sha256(input.fxembedLicense.bytes),
+      },
+      fxembedProvenance: {
+        url: input.fxembedProvenance.url,
+        sha256: sha256(input.fxembedProvenance.bytes),
       },
     },
     minimumStateSchema: 1,

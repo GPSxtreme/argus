@@ -9,6 +9,7 @@ import {
 import { dirname, join, resolve } from "node:path";
 import {
   buildReleaseArtifacts,
+  deriveReleasePublicKeyPem,
   renderArgusWrapper,
   renderInstaller,
   type ReleaseImageInput,
@@ -19,7 +20,7 @@ MC4CAQAwBQYDK2VwBCIEIGJqC73Ezwmnx3FFQ5W1czmiNwXmLFn2Xso+6xXKPXKf
 -----END PRIVATE KEY-----`;
 const fixtureDigest = (character: string): string => character.repeat(64);
 const usage =
-  "Usage: create-manifest.ts --fixture | --version VERSION --source-date-epoch EPOCH --image NAME=REFERENCE (four times) --fxembed PATH --fxembed-compatibility-date YYYY-MM-DD --wrapper PATH --release-base-url HTTPS_URL --output-dir PATH [--signing-key-file PATH]";
+  "Usage: create-manifest.ts --fixture | --version VERSION --source-date-epoch EPOCH --image NAME=REFERENCE (four times) --fxembed PATH --fxembed-license PATH --fxembed-provenance PATH --fxembed-compatibility-date YYYY-MM-DD --wrapper PATH --release-base-url HTTPS_URL --output-dir PATH [--signing-key-file PATH]";
 
 interface Arguments {
   version: string;
@@ -27,6 +28,8 @@ interface Arguments {
   images: ReleaseImageInput[];
   fxembedPath: string;
   fxembedCompatibilityDate: string;
+  fxembedLicensePath: string;
+  fxembedProvenancePath: string;
   wrapperPath: string;
   releaseBaseUrl: string;
   outputDirectory: string;
@@ -61,6 +64,8 @@ const fixtureArguments = async (): Promise<Arguments> => {
   await mkdir(directory, { recursive: true });
   const fxembedPath = join(directory, "fxembed.js");
   const wrapperPath = join(directory, "argus");
+  const fxembedLicensePath = join(directory, "FXEMBED-LICENSE.md");
+  const fxembedProvenancePath = join(directory, "fxembed-provenance.json");
   const wrapper = renderArgusWrapper({
     version: "0.0.0-fixture",
     cliImageDigest: `ghcr.io/gpsxtreme/argus-cli@sha256:${fixtureDigest("b")}`,
@@ -71,6 +76,8 @@ const fixtureArguments = async (): Promise<Arguments> => {
     0o644,
   );
   await atomicWrite(wrapperPath, Buffer.from(wrapper), 0o755);
+  await atomicWrite(fxembedLicensePath, Buffer.from("MIT fixture\n"), 0o644);
+  await atomicWrite(fxembedProvenancePath, Buffer.from('{"fixture":true}\n'), 0o644);
   return {
     version: "0.0.0-fixture",
     sourceDateEpoch: "1785580200",
@@ -82,6 +89,8 @@ const fixtureArguments = async (): Promise<Arguments> => {
     ],
     fxembedPath,
     fxembedCompatibilityDate: "2026-04-11",
+    fxembedLicensePath,
+    fxembedProvenancePath,
     wrapperPath,
     releaseBaseUrl: "https://github.com/gpsxtreme/argus/releases/download/v0.0.0-fixture",
     outputDirectory: directory,
@@ -101,6 +110,8 @@ const parseArguments = async (values: readonly string[]): Promise<Arguments> => 
     "--image",
     "--fxembed",
     "--fxembed-compatibility-date",
+    "--fxembed-license",
+    "--fxembed-provenance",
     "--wrapper",
     "--release-base-url",
     "--output-dir",
@@ -145,6 +156,8 @@ const parseArguments = async (values: readonly string[]): Promise<Arguments> => 
     images,
     fxembedPath: await regularFile(required("--fxembed")),
     fxembedCompatibilityDate: required("--fxembed-compatibility-date"),
+    fxembedLicensePath: await regularFile(required("--fxembed-license")),
+    fxembedProvenancePath: await regularFile(required("--fxembed-provenance")),
     wrapperPath: await regularFile(required("--wrapper")),
     releaseBaseUrl: required("--release-base-url").replace(/\/+$/u, ""),
     outputDirectory: resolve(required("--output-dir")),
@@ -177,10 +190,18 @@ const atomicWrite = async (
 
 const main = async (): Promise<void> => {
   const arguments_ = await parseArguments(process.argv.slice(2));
-  const [fxembedBytes, wrapperBytes] = await Promise.all([
+  const [fxembedBytes, wrapperBytes, fxembedLicenseBytes, fxembedProvenanceBytes] = await Promise.all([
     readFile(arguments_.fxembedPath),
     readFile(arguments_.wrapperPath),
+    readFile(arguments_.fxembedLicensePath),
+    readFile(arguments_.fxembedProvenancePath),
   ]);
+  const publicKeyPem = deriveReleasePublicKeyPem(arguments_.privateKeyPem);
+  const installer = renderInstaller({
+    manifestUrl: `${arguments_.releaseBaseUrl}/manifest.json`,
+    publicKeyPem,
+  });
+  const installerBytes = Buffer.from(installer);
   const built = buildReleaseArtifacts({
     version: arguments_.version,
     sourceDateEpoch: arguments_.sourceDateEpoch,
@@ -194,17 +215,23 @@ const main = async (): Promise<void> => {
       bytes: wrapperBytes,
       url: `${arguments_.releaseBaseUrl}/argus`,
     },
+    installer: { bytes: installerBytes, url: `${arguments_.releaseBaseUrl}/install.sh` },
+    publicKeyUrl: `${arguments_.releaseBaseUrl}/release-public.pem`,
+    fxembedLicense: {
+      bytes: fxembedLicenseBytes,
+      url: `${arguments_.releaseBaseUrl}/FXEMBED-LICENSE.md`,
+    },
+    fxembedProvenance: {
+      bytes: fxembedProvenanceBytes,
+      url: `${arguments_.releaseBaseUrl}/fxembed-provenance.json`,
+    },
     privateKeyPem: arguments_.privateKeyPem,
-  });
-  const installer = renderInstaller({
-    manifestUrl: `${arguments_.releaseBaseUrl}/manifest.json`,
-    publicKeyPem: built.publicKeyPem,
   });
   await Promise.all([
     atomicWrite(join(arguments_.outputDirectory, "manifest.json"), built.manifestBytes, 0o644),
     atomicWrite(join(arguments_.outputDirectory, "manifest.sig"), built.signature, 0o644),
     atomicWrite(join(arguments_.outputDirectory, "release-public.pem"), Buffer.from(built.publicKeyPem), 0o644),
-    atomicWrite(join(arguments_.outputDirectory, "install.sh"), Buffer.from(installer), 0o755),
+    atomicWrite(join(arguments_.outputDirectory, "install.sh"), installerBytes, 0o755),
   ]);
 };
 

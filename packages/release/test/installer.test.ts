@@ -84,6 +84,13 @@ const manifest = (
       compatibilityDate: "2026-08-01",
     },
     wrapper: { url: wrapperUrl, sha256: wrapperSha },
+    installer: { url: "https://fixture.invalid/install.sh", sha256: digest },
+    publicKey: { url: "https://fixture.invalid/release-public.pem", sha256: digest },
+    fxembedLicense: { url: "https://fixture.invalid/FXEMBED-LICENSE.md", sha256: digest },
+    fxembedProvenance: {
+      url: "https://fixture.invalid/fxembed-provenance.json",
+      sha256: digest,
+    },
   },
   minimumStateSchema: 1,
 });

@@ -191,6 +191,8 @@ jobs:
             --image "postgres=docker.io/library/postgres@${{ steps.upstream.outputs.postgres }}" \
             --image "searxng=docker.io/searxng/searxng@${{ steps.upstream.outputs.searxng }}" \
             --fxembed dist/release/fxembed.js \
+            --fxembed-license dist/release/FXEMBED-LICENSE.md \
+            --fxembed-provenance dist/release/fxembed-provenance.json \
             --fxembed-compatibility-date "$FXEMBED_COMPATIBILITY_DATE" \
             --wrapper dist/release/argus \
             --release-base-url "${{ steps.release.outputs.release_base_url }}" \

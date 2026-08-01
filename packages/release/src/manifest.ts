@@ -141,6 +141,10 @@ const releaseManifestV1Schema = z
             sha256: sha256Schema,
           })
           .strict(),
+        installer: z.object({ url: assetUrlSchema, sha256: sha256Schema }).strict(),
+        publicKey: z.object({ url: assetUrlSchema, sha256: sha256Schema }).strict(),
+        fxembedLicense: z.object({ url: assetUrlSchema, sha256: sha256Schema }).strict(),
+        fxembedProvenance: z.object({ url: assetUrlSchema, sha256: sha256Schema }).strict(),
       })
       .strict(),
     minimumStateSchema: z.literal(1),
@@ -160,6 +164,10 @@ export interface ReleaseManifestV1 {
   assets: {
     fxembed: { url: string; sha256: string; compatibilityDate: string };
     wrapper: { url: string; sha256: string };
+    installer: { url: string; sha256: string };
+    publicKey: { url: string; sha256: string };
+    fxembedLicense: { url: string; sha256: string };
+    fxembedProvenance: { url: string; sha256: string };
   };
   minimumStateSchema: 1;
 }
@@ -214,6 +222,10 @@ export function serializeReleaseManifestCanonical(
           url: value.assets.wrapper.url,
           sha256: value.assets.wrapper.sha256,
         },
+        installer: value.assets.installer,
+        publicKey: value.assets.publicKey,
+        fxembedLicense: value.assets.fxembedLicense,
+        fxembedProvenance: value.assets.fxembedProvenance,
       },
       minimumStateSchema: value.minimumStateSchema,
     }),

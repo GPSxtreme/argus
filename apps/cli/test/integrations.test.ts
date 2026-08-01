@@ -145,10 +145,17 @@ const releaseFixture = () => {
     ],
     fxembed: {
       bytes: fxembed,
-      url: "https://release.example/fxembed.js",
+      url: "https://release.example/v1.2.3/fxembed.js",
       compatibilityDate: "2026-04-11",
     },
-    wrapper: { bytes: wrapper, url: "https://release.example/argus" },
+    wrapper: { bytes: wrapper, url: "https://release.example/v1.2.3/argus" },
+    installer: { bytes: Buffer.from("installer"), url: "https://release.example/v1.2.3/install.sh" },
+    publicKeyUrl: "https://release.example/v1.2.3/release-public.pem",
+    fxembedLicense: { bytes: Buffer.from("MIT"), url: "https://release.example/v1.2.3/FXEMBED-LICENSE.md" },
+    fxembedProvenance: {
+      bytes: Buffer.from("{}"),
+      url: "https://release.example/v1.2.3/fxembed-provenance.json",
+    },
     privateKeyPem: fixturePrivateKey,
   });
   return { ...built, fxembed };
@@ -191,7 +198,7 @@ describe("production onboarding integration", () => {
     const responses = new Map<string, Uint8Array>([
       ["https://release.example/manifest.json", fixture.manifestBytes],
       ["https://release.example/manifest.sig", fixture.signature],
-      ["https://release.example/fxembed.js", fixture.fxembed],
+      ["https://release.example/v1.2.3/fxembed.js", fixture.fxembed],
     ]);
     const integration = createProductionOnboardingIntegration({
       root,

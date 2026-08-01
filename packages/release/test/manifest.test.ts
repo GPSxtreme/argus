@@ -48,6 +48,13 @@ const validManifest = {
       url: "https://github.com/gpsxtreme/argus/releases/download/v1.2.3/argus",
       sha256: sha("f"),
     },
+    installer: { url: "https://fixture.invalid/install.sh", sha256: sha("1") },
+    publicKey: { url: "https://fixture.invalid/release-public.pem", sha256: sha("2") },
+    fxembedLicense: { url: "https://fixture.invalid/FXEMBED-LICENSE.md", sha256: sha("3") },
+    fxembedProvenance: {
+      url: "https://fixture.invalid/fxembed-provenance.json",
+      sha256: sha("4"),
+    },
   },
   minimumStateSchema: 1,
 } as const;
