@@ -94,10 +94,18 @@ export const createApp = ({ config, repository }: CreateAppInput): Hono => {
     const body: { source?: string; targetId?: string } = await context.req.json<{ source?: string; targetId?: string }>().catch(() => ({}));
     const target = typeof body.targetId === "string" ? targetsFromConfig(config).find((candidate) => candidate.id === body.targetId && candidate.source === body.source) : undefined;
     if (!target) return context.json({ error: "configured enabled diagnostic target was not found" }, 404);
+    if (target.source === "web" && target.kind === "url") {
+      try {
+        const url = new URL(target.value);
+        const privateHost = /^(localhost|127\.|0\.0\.0\.0|::1$|fc|fd|fe80)/i.test(url.hostname);
+        if (url.username || url.password || privateHost) return context.json({ error: "configured web diagnostic target is not permitted" }, 400);
+      } catch { return context.json({ error: "configured web diagnostic target is not permitted" }, 400); }
+    }
     const id = randomUUID();
     const targetId = `__argus_doctor:${id}`;
     const now = new Date().toISOString();
-    const created = await repository.createDiagnosticWatch({ id, targetId, source: target.source, target: { kind: target.kind, value: target.value, keywords: target.keywords, watchId: target.watchId }, status: "active", createdAt: now, updatedAt: now, job: { id: randomUUID(), targetId, source: target.source, status: "queued", attempt: 0, runAt: now } });
+    const snapshot = { kind: target.kind, value: target.value, keywords: target.keywords, watchId: target.watchId };
+    const created = await repository.createDiagnosticWatch({ id, targetId, source: target.source, target: snapshot, status: "active", createdAt: now, updatedAt: now, job: { id: randomUUID(), targetId, source: target.source, status: "queued", attempt: 0, runAt: now } });
     if (!created) return context.json({ error: "diagnostic watch could not be created" }, 409);
     return context.json({ id, targetId }, 202);
   });
