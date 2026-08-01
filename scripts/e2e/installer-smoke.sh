@@ -48,10 +48,19 @@ printf '%s\n' "$ARGUS_EXPECTED_WRAPPER_SHA256" |
   grep -Eq '^[a-f0-9]{64}$' ||
   argus_die "ARGUS_EXPECTED_WRAPPER_SHA256 must be lowercase SHA-256"
 
-for argus_command in curl expect jq openssl sha256sum; do
+for argus_command in curl expect jq openssl sha256sum timeout; do
   command -v "$argus_command" >/dev/null 2>&1 ||
     argus_die "$argus_command is required"
 done
+argus_snapshot_timeout=10
+argus_daemon_settle=1
+if [ "${ARGUS_INSTALL_FIXTURE:-0}" = 1 ]; then
+  argus_snapshot_timeout=${ARGUS_SNAPSHOT_TIMEOUT_SECONDS:-10}
+  argus_daemon_settle=${ARGUS_DAEMON_SETTLE_SECONDS:-1}
+fi
+printf '%s\n' "$argus_snapshot_timeout" "$argus_daemon_settle" |
+  grep -Eq '^[0-9]+([.][0-9]+)?$' ||
+  argus_die "snapshot timeout and settle interval must be non-negative numbers"
 
 argus_artifacts=${ARGUS_SMOKE_ARTIFACT_DIR:-/tmp/argus-installer-smoke}
 argus_work=$(mktemp -d "${TMPDIR:-/tmp}/argus-installer-smoke.XXXXXX")
@@ -139,11 +148,17 @@ export ARGUS_INSTALL_DOCKER="${ARGUS_INSTALL_DOCKER:-0}"
 export ARGUS_INSTALL_TARGET=/usr/local/bin/argus
 
 argus_snapshot_stat() {
-  if stat -c '%n' "$1" >/dev/null 2>&1; then
-    stat -c 'entry:%n|%F|%a|%u|%g|%s|%Y|%Z' "$1"
+  if argus_snapshot_exec stat -c '%n' "$1" >/dev/null 2>&1; then
+    argus_snapshot_exec stat -c 'entry:%n|%F|%a|%u|%g|%s|%Y|%Z' "$1" ||
+      return 1
   else
-    stat -f 'entry:%N|%HT|%Lp|%u|%g|%z|%m|%c' "$1"
+    argus_snapshot_exec stat -f 'entry:%N|%HT|%Lp|%u|%g|%z|%m|%c' "$1" ||
+      return 1
   fi
+}
+
+argus_snapshot_exec() {
+  timeout --signal=TERM --kill-after=1 "$argus_snapshot_timeout" "$@"
 }
 
 argus_snapshot_path() {
@@ -151,26 +166,45 @@ argus_snapshot_path() {
   argus_snapshot_target=$2
   printf 'path:%s\n' "$argus_snapshot_label"
   if [ -d "$argus_snapshot_target" ]; then
-    find "$argus_snapshot_target" -xdev -print |
-      LC_ALL=C sort |
-      while IFS= read -r argus_snapshot_entry; do
-        argus_snapshot_stat "$argus_snapshot_entry"
-        if [ -L "$argus_snapshot_entry" ]; then
-          printf 'link:%s\n' "$(readlink "$argus_snapshot_entry")"
-          [ ! -f "$argus_snapshot_entry" ] ||
-            sha256sum "$argus_snapshot_entry"
-        elif [ -f "$argus_snapshot_entry" ]; then
-          sha256sum "$argus_snapshot_entry"
-        fi
-      done
+    argus_snapshot_list=$(mktemp "$argus_work/snapshot-list.XXXXXX")
+    argus_snapshot_sorted=$(mktemp "$argus_work/snapshot-sorted.XXXXXX")
+    if ! argus_snapshot_exec find "$argus_snapshot_target" -xdev -print \
+      > "$argus_snapshot_list"
+    then
+      rm -f "$argus_snapshot_list" "$argus_snapshot_sorted"
+      return 1
+    fi
+    if ! argus_snapshot_exec env LC_ALL=C sort "$argus_snapshot_list" \
+      > "$argus_snapshot_sorted"
+    then
+      rm -f "$argus_snapshot_list" "$argus_snapshot_sorted"
+      return 1
+    fi
+    while IFS= read -r argus_snapshot_entry; do
+      argus_snapshot_stat "$argus_snapshot_entry" || return 1
+      if [ -L "$argus_snapshot_entry" ]; then
+        argus_snapshot_link=$(argus_snapshot_exec readlink "$argus_snapshot_entry") ||
+          return 1
+        printf 'link:%s\n' "$argus_snapshot_link"
+        [ ! -f "$argus_snapshot_entry" ] ||
+          argus_snapshot_exec sha256sum "$argus_snapshot_entry" ||
+          return 1
+      elif [ -f "$argus_snapshot_entry" ]; then
+        argus_snapshot_exec sha256sum "$argus_snapshot_entry" || return 1
+      fi
+    done < "$argus_snapshot_sorted"
+    rm -f "$argus_snapshot_list" "$argus_snapshot_sorted"
   elif [ -e "$argus_snapshot_target" ] || [ -L "$argus_snapshot_target" ]; then
-    argus_snapshot_stat "$argus_snapshot_target"
+    argus_snapshot_stat "$argus_snapshot_target" || return 1
     if [ -L "$argus_snapshot_target" ]; then
-      printf 'link:%s\n' "$(readlink "$argus_snapshot_target")"
+      argus_snapshot_link=$(argus_snapshot_exec readlink "$argus_snapshot_target") ||
+        return 1
+      printf 'link:%s\n' "$argus_snapshot_link"
       [ ! -f "$argus_snapshot_target" ] ||
-        sha256sum "$argus_snapshot_target"
+        argus_snapshot_exec sha256sum "$argus_snapshot_target" ||
+        return 1
     elif [ -f "$argus_snapshot_target" ]; then
-      sha256sum "$argus_snapshot_target"
+      argus_snapshot_exec sha256sum "$argus_snapshot_target" || return 1
     fi
   else
     printf '%s\n' absent
@@ -185,9 +219,12 @@ argus_snapshot_command() {
     argus_snapshot_binary=$(command -v "$argus_snapshot_command_name")
     argus_snapshot_path command-binary "$argus_snapshot_binary"
     set +e
-    "$argus_snapshot_command_name" "$@" 2>&1
+    argus_snapshot_exec "$argus_snapshot_command_name" "$@" 2>&1
     argus_snapshot_status=$?
     set -e
+    case "$argus_snapshot_status" in
+      124|137) return 1 ;;
+    esac
     printf 'status:%s\n' "$argus_snapshot_status"
   else
     printf '%s\n' absent
@@ -252,10 +289,10 @@ argus_snapshot_host() {
     for argus_temp_root in /tmp /var/tmp; do
       argus_temp_directory=$(argus_host_path "$argus_temp_root")
       if [ -d "$argus_temp_directory" ]; then
-        find "$argus_temp_directory" -mindepth 1 -maxdepth 1 \
+        argus_snapshot_exec find "$argus_temp_directory" -mindepth 1 -maxdepth 1 \
           \( -name 'argus-install.*' -o -name 'argus-installer.lock' \) \
           -print |
-          LC_ALL=C sort |
+          argus_snapshot_exec env LC_ALL=C sort |
           while IFS= read -r argus_temp_path; do
             argus_snapshot_path installer-temp "$argus_temp_path"
           done
@@ -287,9 +324,11 @@ argus_snapshot_host() {
 argus_snapshot_daemon_data() {
   argus_daemon_snapshot_output=$1
   {
-    argus_snapshot_path docker-data "$(argus_host_path /var/lib/docker)"
+    argus_snapshot_path docker-data "$(argus_host_path /var/lib/docker)" ||
+      return 1
     argus_snapshot_path containerd-data \
-      "$(argus_host_path /var/lib/containerd)"
+      "$(argus_host_path /var/lib/containerd)" ||
+      return 1
   } > "$argus_daemon_snapshot_output"
 }
 
@@ -298,7 +337,9 @@ argus_wait_for_daemon_quiescence() {
   argus_daemon_attempt=1
   argus_daemon_have_snapshot=0
   while [ "$argus_daemon_attempt" -le 5 ]; do
-    argus_daemon_wait=1
+    if [ "$argus_daemon_have_snapshot" -eq 1 ]; then
+      sleep "$argus_daemon_settle"
+    fi
     if argus_snapshot_daemon_data "$argus_daemon_snapshot_probe" 2>/dev/null; then
       if [ "$argus_daemon_have_snapshot" -eq 1 ] &&
         cmp -s "$argus_daemon_stable_output" "$argus_daemon_snapshot_probe"
@@ -306,18 +347,17 @@ argus_wait_for_daemon_quiescence() {
         return 0
       fi
       cp "$argus_daemon_snapshot_probe" "$argus_daemon_stable_output"
-      [ "$argus_daemon_have_snapshot" -eq 1 ] || argus_daemon_wait=0
       argus_daemon_have_snapshot=1
     fi
     argus_daemon_attempt=$((argus_daemon_attempt + 1))
-    if [ "$argus_daemon_wait" -eq 1 ] &&
-      [ "$argus_daemon_attempt" -le 5 ]
-    then
-      sleep 1
-    fi
   done
   argus_die "Docker daemon data did not reach a stable clean-host snapshot"
 }
+
+if [ "${ARGUS_QUIESCENCE_TEST_ONLY:-0}" = 1 ]; then
+  argus_wait_for_daemon_quiescence "$argus_daemon_snapshot_before"
+  exit 0
+fi
 
 argus_snapshot_host "$argus_snapshot_before"
 argus_wait_for_daemon_quiescence "$argus_daemon_snapshot_before"

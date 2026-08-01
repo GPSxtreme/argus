@@ -35,6 +35,83 @@ const writeJson = async (
   return path;
 };
 
+const runQuiescenceFixture = async ({
+  findSource = 'exec /usr/bin/find "$@"',
+  timeoutSource = 'shift 3\nexec "$@"',
+  settleSeconds = "0.05",
+  timeoutSeconds = "0.2",
+}: {
+  findSource?: string;
+  timeoutSource?: string;
+  settleSeconds?: string;
+  timeoutSeconds?: string;
+} = {}) => {
+  const directory = await mkdtemp(join(tmpdir(), "argus-quiescence-"));
+  temporaryDirectories.push(directory);
+  const bin = join(directory, "bin");
+  const systemRoot = join(directory, "host");
+  const sequence = join(directory, "sequence");
+  const fakeInstaller = join(directory, "install.sh");
+  await Promise.all([
+    mkdir(bin, { recursive: true }),
+    mkdir(join(systemRoot, "var/lib/docker"), { recursive: true }),
+    mkdir(join(systemRoot, "var/lib/containerd"), { recursive: true }),
+  ]);
+  await Promise.all([
+    writeFile(join(systemRoot, "var/lib/docker/state"), "stable\n"),
+    writeFile(join(systemRoot, "var/lib/containerd/state"), "stable\n"),
+    writeFile(fakeInstaller, "#!/bin/sh\nexit 0\n", { mode: 0o755 }),
+  ]);
+  const command = async (name: string, source: string) => {
+    const path = join(bin, name);
+    await writeFile(path, `#!/bin/sh\n${source}\n`);
+    await chmod(path, 0o755);
+  };
+  await command("id", 'test "$1" = -u && printf "0\\n"');
+  await command(
+    "curl",
+    `while [ "$#" -gt 0 ]; do
+  if [ "$1" = --output ]; then output=$2; shift 2; continue; fi
+  shift
+done
+cp "$ARGUS_FAKE_INSTALLER" "$output"`,
+  );
+  for (const name of ["expect", "jq", "openssl"]) await command(name, "exit 99");
+  await command("find", findSource);
+  await command("timeout", timeoutSource);
+  await command(
+    "sleep",
+    `printf 'sleep\\n' >> "$ARGUS_SEQUENCE"
+exec /bin/sleep "$@"`,
+  );
+  const started = Date.now();
+  const result = spawnSync(
+    "/bin/sh",
+    [resolve(root, "scripts/e2e/installer-smoke.sh")],
+    {
+      encoding: "utf8",
+      timeout: 5_000,
+      env: {
+        PATH: `${bin}:/usr/bin:/bin:/sbin`,
+        TMPDIR: directory,
+        ARGUS_FAKE_INSTALLER: fakeInstaller,
+        ARGUS_SEQUENCE: sequence,
+        ARGUS_SMOKE_SYSTEM_ROOT: systemRoot,
+        ARGUS_INSTALL_FIXTURE: "1",
+        ARGUS_QUIESCENCE_TEST_ONLY: "1",
+        ARGUS_DAEMON_SETTLE_SECONDS: settleSeconds,
+        ARGUS_SNAPSHOT_TIMEOUT_SECONDS: timeoutSeconds,
+        ARGUS_INSTALLER_URL: "https://example.com/release/install.sh",
+        ARGUS_MANIFEST_URL: "https://example.com/release/manifest.json",
+        ARGUS_EXPECTED_VERSION: "1.2.3",
+        ARGUS_EXPECTED_WRAPPER_SHA256: "a".repeat(64),
+        ARGUS_SMOKE_ARTIFACT_DIR: join(directory, "artifacts"),
+      },
+    },
+  );
+  return { result, elapsedMs: Date.now() - started, sequence, directory };
+};
+
 const resolveSource = async (overrides?: {
   releaseTag?: string;
   runTag?: string;
@@ -111,6 +188,43 @@ const resolveWorkflowRun = (conclusion: string) =>
   );
 
 describe("clean-host installer smoke contract", () => {
+  it("waits a real settle interval before accepting the first stable pair", async () => {
+    const { result, elapsedMs, sequence } = await runQuiescenceFixture();
+    expect(result).toMatchObject({ status: 0, stderr: "" });
+    expect(await readFile(sequence, "utf8")).toBe("sleep\n");
+    expect(elapsedMs).toBeGreaterThanOrEqual(40);
+  });
+
+  it.runIf(process.platform === "linux")(
+    "hard-times out stalled traversal and leaves no late child",
+    async () => {
+      const childPid = join(tmpdir(), `argus-stalled-child-${process.pid}`);
+      const { result, elapsedMs } = await runQuiescenceFixture({
+        timeoutSource: 'exec /usr/bin/timeout "$@"',
+        timeoutSeconds: "0.1",
+        settleSeconds: "0.01",
+        findSource: `case "\${1:-}" in
+  */var/lib/docker)
+    /bin/sleep 30 &
+    child=$!
+    printf '%s\\n' "$child" > "${childPid}"
+    wait "$child"
+    ;;
+  *) exec /usr/bin/find "$@" ;;
+esac`,
+      });
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain(
+        "Docker daemon data did not reach a stable clean-host snapshot",
+      );
+      expect(elapsedMs).toBeLessThan(2_500);
+      const pid = Number((await readFile(childPid, "utf8")).trim());
+      const alive = spawnSync("/bin/kill", ["-0", String(pid)]);
+      expect(alive.status).not.toBe(0);
+      await rm(childPid);
+    },
+  );
+
   it("fails evidence when the upstream signed release did not succeed", () => {
     expect(resolveWorkflowRun("success")).toMatchObject({
       status: 0,
@@ -293,6 +407,10 @@ describe("clean-host installer smoke contract", () => {
     };
     await command("id", 'test "$1" = -u && printf "0\\n"');
     await command(
+      "timeout",
+      'shift 3\nexec "$@"',
+    );
+    await command(
       "curl",
       `while [ "$#" -gt 0 ]; do
   if [ "$1" = --output ]; then output=$2; shift 2; continue; fi
@@ -346,6 +464,8 @@ exit 42
           ARGUS_EXPECTED_VERSION: "1.2.3",
           ARGUS_EXPECTED_WRAPPER_SHA256: "a".repeat(64),
           ARGUS_SMOKE_ARTIFACT_DIR: artifacts,
+          ARGUS_DAEMON_SETTLE_SECONDS: "0.01",
+          ARGUS_SNAPSHOT_TIMEOUT_SECONDS: "1",
         },
       },
     );
@@ -450,6 +570,10 @@ exit 42
         await chmod(path, 0o755);
       };
       await command("id", 'test "$1" = -u && printf "0\\n"');
+      await command(
+        "timeout",
+        'shift 3\nexec "$@"',
+      );
       await command(
         "curl",
         `while [ "$#" -gt 0 ]; do
@@ -556,6 +680,8 @@ exit 42
             ARGUS_EXPECTED_VERSION: "1.2.3",
             ARGUS_EXPECTED_WRAPPER_SHA256: "a".repeat(64),
             ARGUS_SMOKE_ARTIFACT_DIR: artifacts,
+            ARGUS_DAEMON_SETTLE_SECONDS: "0.01",
+            ARGUS_SNAPSHOT_TIMEOUT_SECONDS: "1",
           },
         },
       );
@@ -582,6 +708,12 @@ exit 42
       smoke.match(/ARGUS_INSTALL_INSPECT=0 sh "\$argus_installer"/gu),
     ).toHaveLength(2);
     expect(smoke).toContain("ARGUS_INSTALL_INSPECT=1");
+    expect(smoke).toMatch(
+      /argus_snapshot_timeout=10\nargus_daemon_settle=1\nif \[ "\$\{ARGUS_INSTALL_FIXTURE:-0\}" = 1 \]; then/u,
+    );
+    expect(smoke).toContain(
+      'timeout --signal=TERM --kill-after=1 "$argus_snapshot_timeout" "$@"',
+    );
     expect(smoke).toContain("No files were downloaded or changed.");
     expect(smoke).toContain("sha256sum");
     expect(smoke).toContain("cmp -s");
