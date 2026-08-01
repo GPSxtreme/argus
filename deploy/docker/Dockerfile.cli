@@ -1,7 +1,5 @@
 # syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 
-# The digest is the official Node 24 bookworm-slim OCI index. It contains both
-# linux/amd64 and linux/arm64/v8 manifests and is shared by every stage.
 FROM --platform=$BUILDPLATFORM node:24-bookworm-slim@sha256:235600a8101ab264e117b1768e925532262668dc9b581ef1dd7d96ced463b8e7 AS build
 
 ARG TARGETARCH
@@ -16,8 +14,10 @@ RUN apt-get update \
 WORKDIR /workspace
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml turbo.json tsconfig.json ./
 COPY apps/argus/package.json apps/argus/package.json
+COPY apps/cli/package.json apps/cli/package.json
 COPY packages/config/package.json packages/config/package.json
 COPY packages/contracts/package.json packages/contracts/package.json
+COPY packages/deployment/package.json packages/deployment/package.json
 COPY packages/engine/package.json packages/engine/package.json
 COPY packages/intelligence/package.json packages/intelligence/package.json
 COPY packages/query/package.json packages/query/package.json
@@ -30,8 +30,10 @@ COPY packages/storage-sqlite/package.json packages/storage-sqlite/package.json
 RUN pnpm install --frozen-lockfile
 
 COPY apps/argus apps/argus
+COPY apps/cli apps/cli
 COPY packages/config packages/config
 COPY packages/contracts packages/contracts
+COPY packages/deployment packages/deployment
 COPY packages/engine packages/engine
 COPY packages/intelligence packages/intelligence
 COPY packages/query packages/query
@@ -42,13 +44,13 @@ COPY packages/source-x packages/source-x
 COPY packages/storage-postgres packages/storage-postgres
 COPY packages/storage-sqlite packages/storage-sqlite
 
-RUN pnpm --filter @argus/app... build \
-  && pnpm exec esbuild apps/argus/src/main.ts \
+RUN pnpm --filter @argus/cli... build \
+  && pnpm exec esbuild apps/cli/src/main.ts \
     --bundle \
     --external:better-sqlite3 \
     --banner:js='import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' \
     --format=esm \
-    --outfile=/workspace/app-main.js \
+    --outfile=/workspace/cli-main.js \
     --packages=bundle \
     --platform=node \
     --target=node24 \
@@ -62,10 +64,8 @@ RUN pnpm --filter @argus/app... build \
     --packages=bundle \
     --platform=node \
     --target=node24 \
-  && pnpm --filter @argus/app deploy --legacy --prod /workspace/deployed
+  && pnpm --filter @argus/cli deploy --legacy --prod /workspace/deployed
 
-# Rebuild the only native runtime module for the requested target without
-# executing that target binary in the build-platform stage.
 RUN case "$TARGETARCH" in \
       amd64) node_arch=x64; expected="x86-64" ;; \
       arm64) node_arch=arm64; expected="ARM aarch64" ;; \
@@ -84,41 +84,76 @@ RUN case "$TARGETARCH" in \
   && cp -RL "$(find /workspace/deployed/node_modules/.pnpm -path '*/node_modules/bindings' -type d -print -quit)" /workspace/runtime-node-modules/bindings \
   && cp -RL "$(find /workspace/deployed/node_modules/.pnpm -path '*/node_modules/file-uri-to-path' -type d -print -quit)" /workspace/runtime-node-modules/file-uri-to-path
 
+FROM --platform=$BUILDPLATFORM node:24-bookworm-slim@sha256:235600a8101ab264e117b1768e925532262668dc9b581ef1dd7d96ced463b8e7 AS management-tools
+
+ARG TARGETARCH
+ARG DOCKER_VERSION=29.7.1
+ARG DOCKER_AMD64_SHA256=0fcea2a8b4d1b54ccc9010e3451b78504a369d414f37eb3bb79300e1b5c22ce6
+ARG DOCKER_ARM64_SHA256=4eb4d1b21131897ed3990aac31039161bf4bdd07fcfb733e996010319ff4e069
+ARG COMPOSE_VERSION=2.39.1
+ARG COMPOSE_AMD64_SHA256=a5ea28722d5da628b59226626f7d6c33c89a7ed19e39f750645925242044c9d2
+ARG COMPOSE_ARM64_SHA256=7b2627ed76f7dcb0d93f649f185af912372229b4c09762a3cd1db5be5255632b
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    ca-certificates=20230311+deb12u1 \
+    curl=7.88.1-10+deb12u15 \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN case "$TARGETARCH" in \
+      amd64) asset_arch=x86_64; docker_sha="$DOCKER_AMD64_SHA256"; compose_sha="$COMPOSE_AMD64_SHA256" ;; \
+      arm64) asset_arch=aarch64; docker_sha="$DOCKER_ARM64_SHA256"; compose_sha="$COMPOSE_ARM64_SHA256" ;; \
+      *) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
+    esac \
+  && curl --connect-timeout 15 --fail --location --max-time 180 --retry 3 --show-error \
+    "https://download.docker.com/linux/static/stable/${asset_arch}/docker-${DOCKER_VERSION}.tgz" \
+    --output /tmp/docker.tgz \
+  && echo "${docker_sha}  /tmp/docker.tgz" | sha256sum --check --strict \
+  && tar --extract --gzip --file /tmp/docker.tgz --directory /tmp docker/docker \
+  && install -D -m 0755 /tmp/docker/docker /out/usr/local/bin/docker \
+  && curl --connect-timeout 15 --fail --location --max-time 180 --retry 3 --show-error \
+    "https://github.com/docker/compose/releases/download/v${COMPOSE_VERSION}/docker-compose-linux-${asset_arch}" \
+    --output /tmp/docker-compose \
+  && echo "${compose_sha}  /tmp/docker-compose" | sha256sum --check --strict \
+  && install -D -m 0755 /tmp/docker-compose /out/usr/local/lib/docker/cli-plugins/docker-compose
+
 FROM --platform=$TARGETPLATFORM node:24-bookworm-slim@sha256:235600a8101ab264e117b1768e925532262668dc9b581ef1dd7d96ced463b8e7 AS runtime
 
 ARG ARGUS_VERSION=0.0.0-dev
 ARG ARGUS_REVISION=unknown
 ARG ARGUS_SOURCE=https://github.com/gpsxtreme/argus
-LABEL org.opencontainers.image.title="Argus" \
-  org.opencontainers.image.description="Argus data ingestion runtime" \
+LABEL org.opencontainers.image.title="Argus CLI" \
+  org.opencontainers.image.description="Root management client for an Argus VPS instance; no Docker daemon is included" \
   org.opencontainers.image.source="$ARGUS_SOURCE" \
   org.opencontainers.image.revision="$ARGUS_REVISION" \
   org.opencontainers.image.version="$ARGUS_VERSION"
 
+# This image intentionally runs as root: the host wrapper grants it only the
+# Docker socket, /opt/argus, and read-only host inspection mounts. It contains
+# the Docker client and Compose v2 plugin, never a Docker daemon.
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
+    bash=5.2.15-2+b13 \
     ca-certificates=20230311+deb12u1 \
-    tini=0.19.0-1+b3 \
-  && groupadd --gid 10001 argus \
-  && useradd --uid 10001 --gid 10001 --no-create-home --home-dir /app --shell /usr/sbin/nologin argus \
-  && mkdir -p /app/apps/argus/dist /app/data /app/node_modules \
-  && chown -R 10001:10001 /app \
+    coreutils=9.1-1 \
+    curl=7.88.1-10+deb12u15 \
+    findutils=4.9.0-4 \
+    iproute2=6.1.0-3 \
+    openssl=3.0.20-1~deb12u2 \
+    procps=2:4.0.2-3 \
+  && mkdir -p /app/apps/cli/dist /app/node_modules /opt/argus \
   && rm -rf /var/lib/apt/lists/*
 
-COPY --from=build --chown=10001:10001 /workspace/app-main.js /app/apps/argus/dist/main.js
-COPY --from=build --chown=10001:10001 /workspace/xhr-sync-worker.js /app/apps/argus/dist/xhr-sync-worker.js
-COPY --from=build --chown=10001:10001 /workspace/apps/argus/package.json /app/apps/argus/package.json
-COPY --from=build --chown=10001:10001 /workspace/runtime-node-modules/ /app/node_modules/
+COPY --from=build /workspace/cli-main.js /app/apps/cli/dist/main.js
+COPY --from=build /workspace/xhr-sync-worker.js /app/apps/cli/dist/xhr-sync-worker.js
+COPY --from=build /workspace/apps/cli/package.json /app/apps/cli/package.json
+COPY --from=build /workspace/runtime-node-modules/ /app/node_modules/
+COPY --from=management-tools /out/ /
 
-ENV NODE_ENV="production"
-ENV ARGUS_CONFIG="/app/argus.yaml"
-ENV ARGUS_ROLE="all"
-WORKDIR /app
-VOLUME ["/app/data"]
-EXPOSE 8788
-USER 10001:10001
+ENV NODE_ENV="production" \
+  ARGUS_INSTALL_ROOT="/opt/argus" \
+  ARGUS_VERSION="$ARGUS_VERSION"
+WORKDIR /opt/argus
+USER 0:0
 
-HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:8788/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
-
-ENTRYPOINT ["tini", "--", "node", "/app/apps/argus/dist/main.js"]
+ENTRYPOINT ["node", "/app/apps/cli/dist/main.js"]
