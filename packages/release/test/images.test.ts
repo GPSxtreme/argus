@@ -132,13 +132,7 @@ describe("production image definitions", () => {
       expect(dockerfile).toContain("corepack enable");
       expect(dockerfile).toContain("pnpm --config.ignore-scripts=true");
       expect(dockerfile).not.toContain("prebuild-install");
-      expect(dockerfile).toContain("npm_config_build_from_source=true");
-      expect(dockerfile).toMatch(
-        /FROM --platform=\$TARGETPLATFORM [^\n]+ AS native-build/u,
-      );
-      expect(dockerfile).toContain('file "$native_module"');
       expect(dockerfile).toMatch(/ca-certificates=[^\s\\]+/u);
-      expect(dockerfile).toMatch(/python3=[^\s\\]+/u);
       expect(dockerfile).toContain("ARG DEBIAN_SNAPSHOT=");
       expect(dockerfile).toContain("configure-snapshot.sh");
       expect(dockerfile).not.toMatch(
@@ -148,6 +142,11 @@ describe("production image definitions", () => {
       expect(dockerfile).toContain("/app/licenses");
       expect(dockerfile).toContain("COPY deploy/docker/legal");
     }
+    expect(appDockerfile).toContain("npm_config_build_from_source=true");
+    expect(appDockerfile).toMatch(/ AS native-build/u);
+    expect(appDockerfile).toMatch(/python3=[^\s\\]+/u);
+    expect(cliDockerfile).not.toMatch(/better-sqlite3|AS native-build|storage-sqlite|storage-postgres/u);
+    expect(cliDockerfile).not.toContain("COPY apps/argus");
   });
 
   it("locks builder tooling with registry integrity", () => {

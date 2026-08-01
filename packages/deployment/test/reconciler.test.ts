@@ -42,7 +42,7 @@ class FixtureExecutor implements CommandExecutor {
   async run(
     command: string,
     args: string[],
-    options?: { cwd?: string; env?: Record<string, string> },
+    options?: { cwd?: string; env?: Record<string, string>; timeoutMs?: number },
   ): Promise<CommandResult> {
     this.calls.push({ command, args, cwd: options?.cwd, env: options?.env });
     if (args.at(-1) === "json") {
@@ -148,7 +148,7 @@ describe("deployment reconciliation", () => {
 
     expect(executor.calls[0]?.env).toMatchObject({
       ARGUS_API_PORT: "8788",
-      ARGUS_VERSION: `0.2.0@sha256:${"a".repeat(64)}`,
+      ARGUS_IMAGE: `ghcr.io/gpsxtreme/argus@sha256:${"a".repeat(64)}`,
       SEARXNG_IMAGE: `docker.io/searxng/searxng@sha256:${"b".repeat(64)}`,
     });
   });
@@ -166,7 +166,7 @@ describe("deployment reconciliation", () => {
 
     expect(freshExecutor.calls.every((call) => call.env?.ARGUS_API_PORT === "8788")).toBe(true);
     expect(freshExecutor.calls[0]?.env).toMatchObject({
-      ARGUS_VERSION: `0.2.0@sha256:${"a".repeat(64)}`,
+      ARGUS_IMAGE: `ghcr.io/gpsxtreme/argus@sha256:${"a".repeat(64)}`,
       SEARXNG_IMAGE: `docker.io/searxng/searxng@sha256:${"b".repeat(64)}`,
     });
     expect((await loadDeploymentState(context.root))?.compose).toEqual({
@@ -181,6 +181,34 @@ describe("deployment reconciliation", () => {
       },
     });
     expect(await readFile(join(context.root, "state.json"), "utf8")).not.toContain("secret");
+  });
+
+  it("passes an alternate-registry app image to Compose without reconstruction", async () => {
+    const { context, executor } = await contextFor();
+    context.desired = {
+      ...desired,
+      images: {
+        ...desired.images,
+        argus: { reference: `registry.example:5443/team/argus@sha256:${"d".repeat(64)}` },
+      },
+    };
+    const plan = planDeployment(await inspectDeployment(context), context.desired);
+    executor.calls.splice(0);
+    await applyDeployment(plan, context);
+    expect(executor.calls[0]?.env?.ARGUS_IMAGE).toBe(
+      `registry.example:5443/team/argus@sha256:${"d".repeat(64)}`,
+    );
+  });
+
+  it("bounds Compose calls even when an executor ignores its timeout", async () => {
+    const root = await mkdtemp(join(tmpdir(), "argus-reconciler-timeout-"));
+    roots.push(root);
+    const executor: CommandExecutor = {
+      run: async () => await new Promise<CommandResult>(() => undefined),
+    };
+    await expect(
+      getDeploymentStatus({ root, executor, desired, composeTimeoutMs: 10 }),
+    ).rejects.toThrow("timed out");
   });
 
   it.each([

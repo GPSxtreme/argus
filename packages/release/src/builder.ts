@@ -102,6 +102,9 @@ const releaseImages = (
 export const buildReleaseArtifacts = (
   input: BuildReleaseArtifactsInput,
 ): BuiltReleaseArtifacts => {
+  if (input.version.includes("+")) {
+    throw new TypeError("Release versions with build metadata cannot be published as OCI tags.");
+  }
   let privateKey: KeyObject;
   try {
     privateKey = createPrivateKey(input.privateKeyPem);

@@ -174,7 +174,7 @@ describe("managed SearXNG", () => {
         timeoutMs: 30_000,
         env: {
           ARGUS_API_PORT: "8788",
-          ARGUS_VERSION: `0.2.0@sha256:${"a".repeat(64)}`,
+          ARGUS_IMAGE: `ghcr.io/gpsxtreme/argus@sha256:${"a".repeat(64)}`,
           POSTGRES_IMAGE: `docker.io/library/postgres@sha256:${"c".repeat(64)}`,
           SEARXNG_IMAGE: `docker.io/searxng/searxng@sha256:${"b".repeat(64)}`,
         },
@@ -186,7 +186,7 @@ describe("managed SearXNG", () => {
         timeoutMs: 30_000,
         env: {
           ARGUS_API_PORT: "8788",
-          ARGUS_VERSION: `0.2.0@sha256:${"a".repeat(64)}`,
+          ARGUS_IMAGE: `ghcr.io/gpsxtreme/argus@sha256:${"a".repeat(64)}`,
           POSTGRES_IMAGE: `docker.io/library/postgres@sha256:${"c".repeat(64)}`,
           SEARXNG_IMAGE: `docker.io/searxng/searxng@sha256:${"b".repeat(64)}`,
         },

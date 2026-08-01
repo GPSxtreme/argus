@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
       packages: write
@@ -26,32 +26,40 @@ jobs:
       FXEMBED_LICENSE_SHA256: 30ee0a78e6df8c8210bbee02a477c57f2cf8c7db13a756ea577678aee7014d37
       FXEMBED_LOCK_SHA256: 88ae1a737ca41e9a7d69593fd9e82ad35dee90d4fabc51ae3c5b33d5868535bc
       FXEMBED_COMPATIBILITY_DATE: "2026-04-11"
+      FXEMBED_OUTPUT_SHA256: aee0406fc38830fce35e4d493bc93a44d0a3aa15f7305fe2a36e8185b588c868
+      NODE_VERSION: "24.16.0"
+      NPM_VERSION: "11.13.0"
+      PNPM_VERSION: "10.33.0"
     steps:
       - name: Check out exact tag
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
 
       - name: Set up pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
         with:
-          version: 10.33.0
+          version: ${{ env.PNPM_VERSION }}
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: 24
+          node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: |
+          test "$(node --version)" = "v${NODE_VERSION}"
+          test "$(npm --version)" = "${NPM_VERSION}"
+          test "$(pnpm --version)" = "${PNPM_VERSION}"
+          pnpm install --frozen-lockfile
 
       - name: Validate immutable release identity
         id: release
         shell: bash
         run: |
           set -euo pipefail
-          [[ "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]
+          [[ "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$ ]]
           version="${GITHUB_REF_NAME#v}"
           source_date_epoch="$(git show -s --format=%ct "$GITHUB_SHA")"
           release_base_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
@@ -93,11 +101,11 @@ jobs:
         run: pnpm build
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -105,7 +113,7 @@ jobs:
 
       - name: Build and push application image
         id: app
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
         with:
           context: .
           file: deploy/docker/Dockerfile
@@ -118,7 +126,7 @@ jobs:
 
       - name: Build and push management image
         id: cli
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
         with:
           context: .
           file: deploy/docker/Dockerfile.cli
@@ -153,11 +161,14 @@ jobs:
           printf '%s  %s\n' "$FXEMBED_LOCK_SHA256" dist/fxembed-source/package-lock.json | sha256sum --check --strict
           (
             cd dist/fxembed-source
+            test "$(node --version)" = "v${NODE_VERSION}"
+            test "$(npm --version)" = "${NPM_VERSION}"
             npm ci --ignore-scripts
             npm run build:atmosphere
             npm run build-local
           )
           install -m 0644 dist/fxembed-source/dist/worker.js dist/release/fxembed.js
+          printf '%s  %s\n' "$FXEMBED_OUTPUT_SHA256" dist/release/fxembed.js | sha256sum --check --strict
           install -m 0644 dist/fxembed-source/LICENSE.md dist/release/FXEMBED-LICENSE.md
           install -m 0644 scripts/release/fxembed-provenance.json dist/release/fxembed-provenance.json
 
@@ -192,7 +203,7 @@ jobs:
           sh -n dist/release/install.sh
 
       - name: Publish immutable GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@62c96d0c4e8a889135c1f3a25910db8dbe0e85f7 # v2.3.4
         with:
           draft: false
           fail_on_unmatched_files: true

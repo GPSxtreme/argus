@@ -130,7 +130,6 @@ describe("CLI JSON contract", () => {
       "repair",
       "config",
       "secrets",
-      "run",
     ]);
   });
 

@@ -7,6 +7,8 @@
   "licenseSha256": "30ee0a78e6df8c8210bbee02a477c57f2cf8c7db13a756ea577678aee7014d37",
   "packageLockSha256": "88ae1a737ca41e9a7d69593fd9e82ad35dee90d4fabc51ae3c5b33d5868535bc",
   "compatibilityDate": "2026-04-11",
+  "nodeVersion": "24.16.0",
+  "outputSha256": "aee0406fc38830fce35e4d493bc93a44d0a3aa15f7305fe2a36e8185b588c868",
   "build": [
     "npm ci --ignore-scripts",
     "npm run build:atmosphere",

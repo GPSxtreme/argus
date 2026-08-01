@@ -92,6 +92,12 @@ describe("release manifest builder", () => {
     );
   });
 
+  it("rejects SemVer build metadata that cannot form an injective OCI tag", () => {
+    expect(() =>
+      buildReleaseArtifacts({ ...input(), version: "1.2.3+build.1" }),
+    ).toThrow("build metadata");
+  });
+
   it("reserves a same-tag release before any mutable publish step", () => {
     const workflow = readFileSync(
       new URL("../../../.github/workflows/release.yml", import.meta.url),

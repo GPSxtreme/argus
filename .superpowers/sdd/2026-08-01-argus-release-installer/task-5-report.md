@@ -213,3 +213,30 @@ Fix-round GREEN:
   prevents a rerun from selecting a different digest for the same tag. The
   published manifest and all runtime deployment plans contain no mutable
   SearXNG tag.
+
+## Formal review fix round 1
+
+The management CLI no longer exposes the application `run` command or imports
+the application runtime. Its production dependency graph and Docker image no
+longer copy application/storage workspaces or package `better-sqlite3`; the
+separate application image retains the runtime and native storage adapter.
+
+Compose now receives the exact digest-pinned `ARGUS_IMAGE` from the verified
+manifest, including alternate registries, and every Compose execution has a
+clamped deadline even for executors that ignore their timeout option. Generated
+`secrets.env` values are single-quoted and escaped so Compose metacharacters
+survive faithfully.
+
+Both management HTTP integrations race the complete fetch-and-body-read
+operation against a hard deadline. Release versions containing SemVer build
+metadata are rejected before OCI publication.
+
+The runner is fixed to Ubuntu 24.04; Node 24.16.0, npm 11.13.0, and pnpm
+10.33.0 are checked exactly. Every release action is pinned to a full commit SHA
+with a version comment. FxEmbed provenance records its exact Node version and
+expected output SHA-256, which the workflow verifies after rebuilding.
+
+Review-round RED: 4 files failed, 6 tests failed, 51 passed, and 2 opt-in image
+tests skipped. Review-round GREEN: 60 focused tests passed with 2 opt-in image
+tests skipped; 8 Compose/HTTP regression tests passed; typecheck passed 15/15
+packages; lint checked 162 files clean.

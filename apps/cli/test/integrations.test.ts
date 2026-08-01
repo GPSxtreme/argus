@@ -276,20 +276,30 @@ describe("production onboarding integration", () => {
       manifestUrl: "https://release.example/manifest.json",
       publicKeyPem: fixture.publicKeyPem,
       timeoutMs: 5,
-      fetcher: async (input, init) => {
+      fetcher: async (input) => {
         if (String(input).endsWith("manifest.sig")) {
           return new Response(Uint8Array.from(fixture.signature).buffer);
         }
-        return await new Promise<Response>((_resolve, reject) => {
-          init?.signal?.addEventListener(
-            "abort",
-            () => reject(new DOMException("aborted", "AbortError")),
-            { once: true },
-          );
-        });
+        return await new Promise<Response>(() => undefined);
       },
     });
 
+    await expect(
+      integration.inspect({ answers, secrets: {} }),
+    ).rejects.toMatchObject({ code: "RELEASE_MANIFEST_DOWNLOAD_FAILED" });
+  });
+
+  it("enforces the deadline while an abort-ignoring response body hangs", async () => {
+    const fixture = releaseFixture();
+    const integration = createProductionOnboardingIntegration({
+      root: "/opt/argus",
+      executor: new DeploymentExecutor(),
+      manifestUrl: "https://release.example/manifest.json",
+      publicKeyPem: fixture.publicKeyPem,
+      timeoutMs: 5,
+      fetcher: async () =>
+        new Response(new ReadableStream<Uint8Array>({ pull: async () => await new Promise(() => undefined) })),
+    });
     await expect(
       integration.inspect({ answers, secrets: {} }),
     ).rejects.toMatchObject({ code: "RELEASE_MANIFEST_DOWNLOAD_FAILED" });

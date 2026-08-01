@@ -5,7 +5,7 @@ export interface ComposeInput {
 }
 
 const argusService = `  argus:
-    image: ghcr.io/gpsxtreme/argus:\${ARGUS_VERSION}
+    image: \${ARGUS_IMAGE}
     env_file: [secrets.env]
     environment:
       ARGUS_CONFIG: /app/argus.yaml

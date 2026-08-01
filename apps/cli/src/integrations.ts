@@ -34,6 +34,27 @@ import {
   type ReleaseManifestV1,
   verifyReleaseManifestWithIdentity,
 } from "@argus/release";
+
+const withHttpDeadline = async <T>(
+  timeoutMs: number,
+  operation: (signal: AbortSignal) => Promise<T>,
+): Promise<T> => {
+  const controller = new AbortController();
+  const bounded = Math.min(Math.max(1, timeoutMs), 30_000);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const work = operation(controller.signal);
+  return Promise.race([
+    work,
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(new Error("HTTP deadline exceeded"));
+      }, bounded);
+    }),
+  ]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer);
+  });
+};
 import type {
   InstalledConfigApplication,
   InstalledConfigIntegration,
@@ -87,21 +108,17 @@ export const createInstalledConfigIntegration = ({
     body: unknown,
     staleCode = "CONFIG_SERVICE_REQUEST_FAILED",
   ): Promise<T> => {
-    const controller = new AbortController();
-    const timer = setTimeout(
-      () => controller.abort(),
-      Math.min(Math.max(1, timeoutMs), 30_000),
-    );
     try {
-      const response = await fetcher(new URL(path, origin), {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${token}`,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
+      return await withHttpDeadline(timeoutMs, async (signal) => {
+        const response = await fetcher(new URL(path, origin), {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${token}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify(body),
+          signal,
+        });
       if (response.status === 401) {
         throw requestError(
           "CONFIG_SERVICE_UNAUTHORIZED",
@@ -127,17 +144,16 @@ export const createInstalledConfigIntegration = ({
           "The Argus configuration service response is invalid.",
         );
       }
-      return JSON.parse(
+        return JSON.parse(
         new TextDecoder("utf-8", { fatal: true }).decode(bytes),
       ) as T;
+      });
     } catch (error) {
       if (error instanceof DeploymentError) throw error;
       throw requestError(
         "CONFIG_SERVICE_REQUEST_FAILED",
         "The Argus configuration service request failed.",
       );
-    } finally {
-      clearTimeout(timer);
     }
   };
   const assertPlan = (value: InstalledConfigPlan): InstalledConfigPlan => {
@@ -420,23 +436,18 @@ export const createProductionOnboardingIntegration = ({
     code: string,
     message: string,
   ): Promise<Uint8Array> => {
-    const controller = new AbortController();
-    const timer = setTimeout(
-      () => controller.abort(),
-      Math.min(Math.max(1, timeoutMs), 30_000),
-    );
     try {
-      return await boundedBytes(
-        await fetcher(url, { signal: controller.signal }),
-        maximumBytes,
-        code,
-        message,
+      return await withHttpDeadline(timeoutMs, async (signal) =>
+        boundedBytes(
+          await fetcher(url, { signal }),
+          maximumBytes,
+          code,
+          message,
+        ),
       );
     } catch (error) {
       if (error instanceof DeploymentError) throw error;
       throw new DeploymentError(code, message);
-    } finally {
-      clearTimeout(timer);
     }
   };
   const fetchRelease = async () => {

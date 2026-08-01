@@ -13,7 +13,6 @@ import {
   readFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { startRuntime } from "@argus/app";
 import {
   loadConfig,
   resolveConfigPath,
@@ -144,7 +143,6 @@ export interface ConfigCliAdapter {
     application: unknown,
   ): Promise<unknown>;
   show(path?: string): Promise<unknown>;
-  run?(path?: string): Promise<void>;
 }
 
 export interface InstalledConfigPlan {
@@ -806,19 +804,6 @@ export const createProgram = (dependencies: CliDependencies): Command => {
 
   registerConfig(program, dependencies);
   registerSecrets(program, dependencies);
-  program
-    .command("run")
-    .argument("[path]", "configuration path")
-    .description("Start the configured Argus runtime role")
-    .action(async (path?: string) => {
-      if (dependencies.config.run === undefined) {
-        throw new DeploymentError(
-          "RUNTIME_UNAVAILABLE",
-          "The direct development runtime is unavailable.",
-        );
-      }
-      await dependencies.config.run(path);
-    });
 
   const commanderParseAsync = program.parseAsync.bind(program);
   program.parseAsync = async (argv, parseOptions) => {
@@ -1443,13 +1428,6 @@ export const createNodeCliDependencies = ({
         loaded.config,
         Object.values(loaded.secretEnvironment),
       );
-    },
-    async run(path) {
-      const loaded = await loadInstalledConfig(root, path);
-      await startRuntime(loaded.path, {
-        ...process.env,
-        ...loaded.secretEnvironment,
-      });
     },
   },
 });

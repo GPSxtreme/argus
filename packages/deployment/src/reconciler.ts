@@ -25,6 +25,7 @@ export interface DeploymentContext {
   root: string;
   executor: CommandExecutor;
   desired?: DesiredDeployment;
+  composeTimeoutMs?: number;
 }
 
 export interface ActualDeployment {
@@ -52,10 +53,22 @@ const runCompose = async (
   operation: string,
   environment?: Record<string, string>,
 ) => {
-  const result = await context.executor.run("docker", composeArgs(...args), {
+  const timeoutMs = Math.min(Math.max(context.composeTimeoutMs ?? 30_000, 1), 30_000);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const execution = context.executor.run("docker", composeArgs(...args), {
     cwd: context.root,
+    timeoutMs,
     ...(environment === undefined ? {} : { env: environment }),
   });
+  const result = await Promise.race([
+    execution,
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(commandFailure(`${operation} timed out`)), timeoutMs);
+    }),
+  ]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer);
+  });
+  if (result.timedOut) throw commandFailure(`${operation} timed out`);
   if (result.exitCode !== 0) throw commandFailure(operation);
   return result;
 };
@@ -74,11 +87,9 @@ const imageReference = (image: ManifestImage): string => {
   return image.reference;
 };
 
-const imageDigest = (image: ManifestImage): string => imageReference(image).slice(image.reference.lastIndexOf("@") + 1);
-
 const composeEnvironment = (desired: DesiredDeployment): Record<string, string> => ({
   ARGUS_API_PORT: String(desired.apiPort),
-  ARGUS_VERSION: `${desired.version}@${imageDigest(desired.images.argus)}`,
+  ARGUS_IMAGE: imageReference(desired.images.argus),
   POSTGRES_IMAGE: imageReference(desired.images.postgres),
   SEARXNG_IMAGE: imageReference(desired.images.searxng),
 });

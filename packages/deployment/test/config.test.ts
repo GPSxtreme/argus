@@ -28,7 +28,7 @@ describe("renderInstanceConfig", () => {
     // biome-ignore lint/suspicious/noTemplateCurlyInString: Secret references intentionally use literal environment-placeholder syntax.
     expect(rendered.yaml).toContain("token: ${ARGUS_API_TOKEN}");
     expect(rendered.yaml).not.toContain("api-secret");
-    expect(rendered.secrets).toContain("ARGUS_API_TOKEN=api-secret");
+    expect(rendered.secrets).toContain("ARGUS_API_TOKEN='api-secret'");
   });
 
   it("renders the configured storage, sources, and API endpoint deterministically", () => {
@@ -122,12 +122,25 @@ api:
       ARGUS_POSTGRES_URL_PASSWORD: "p%40ss%3Aword",
       OPENROUTER_API_KEY: "openrouter-secret",
     });
-    expect(rendered.secrets).toContain("POSTGRES_PASSWORD=p@ss:word\n");
+    expect(rendered.secrets).toContain("POSTGRES_PASSWORD='p@ss:word'\n");
     expect(rendered.secrets).toContain(
-      "ARGUS_POSTGRES_URL_PASSWORD=p%40ss%3Aword\n",
+      "ARGUS_POSTGRES_URL_PASSWORD='p%40ss%3Aword'\n",
     );
     expect(rendered.secrets).toContain(
-      "OPENROUTER_API_KEY=openrouter-secret\n",
+      "OPENROUTER_API_KEY='openrouter-secret'\n",
     );
+  });
+
+  it("quotes Compose env-file metacharacters without interpolation or truncation", () => {
+    const value = " $TOKEN # note = \"quoted\" 'single' \\\\ ";
+    const rendered = renderInstanceConfig(answers, {
+      searxng: "http://searxng:8080",
+      fxembed: "https://argus-fx.workers.dev/api",
+      apiToken: value,
+    });
+    expect(rendered.secrets).toBe(
+      "ARGUS_API_TOKEN=' $TOKEN # note = \"quoted\" \\'single\\' \\\\\\\\ '\n",
+    );
+    expect(rendered.secretEnvironment.ARGUS_API_TOKEN).toBe(value);
   });
 });

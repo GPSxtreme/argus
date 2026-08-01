@@ -340,7 +340,7 @@ describe("deployment doctor", () => {
     expect(
       storageCalls.every(
         ({ env }) =>
-          env?.ARGUS_VERSION === `0.2.0@sha256:${"a".repeat(64)}` &&
+          env?.ARGUS_IMAGE === `ghcr.io/gpsxtreme/argus@sha256:${"a".repeat(64)}` &&
           env.ARGUS_API_PORT === "8788",
       ),
     ).toBe(true);

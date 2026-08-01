@@ -16,6 +16,8 @@ export interface RenderedInstanceConfig {
 }
 
 const environmentReference = (name: string): string => `\${${name}}`;
+const composeEnvValue = (value: string): string =>
+  `'${value.replaceAll("\\", "\\\\").replaceAll("'", "\\'")}'`;
 
 export const renderInstanceConfig = (
   answers: OnboardingAnswersV1,
@@ -126,7 +128,7 @@ export const renderInstanceConfig = (
   return {
     yaml,
     secrets: `${Object.entries(secretEnvironment)
-      .map(([name, value]) => `${name}=${value}`)
+      .map(([name, value]) => `${name}=${composeEnvValue(value)}`)
       .join("\n")}\n`,
     secretEnvironment,
   };
