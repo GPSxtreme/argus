@@ -1,7 +1,8 @@
 import { execFile, execFileSync, spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   chmodSync,
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -35,7 +36,38 @@ const licenseExceptions = JSON.parse(
     join(repositoryRoot, "deploy/docker/license-exceptions.json"),
     "utf8",
   ),
-) as { packages: Record<string, unknown> };
+) as {
+  packages: Record<
+    string,
+    {
+      copyright: string;
+      sha256: string;
+      source: string;
+      sourceSha256: string;
+      spdx: string;
+      textFile: string;
+    }
+  >;
+  tools: Record<
+    string,
+    {
+      license: {
+        sha256: string;
+        source: string;
+        sourceSha256: string;
+        textFile: string;
+      };
+      notice: {
+        sha256: string;
+        source: string;
+        sourceSha256: string;
+        textFile: string;
+      };
+      version: string;
+    }
+  >;
+};
+const legalRoot = join(repositoryRoot, "deploy/docker");
 const snapshotScriptPath = join(
   repositoryRoot,
   "deploy/docker/configure-snapshot.sh",
@@ -114,6 +146,7 @@ describe("production image definitions", () => {
       );
       expect(dockerfile).toContain("THIRD_PARTY_NOTICES.md");
       expect(dockerfile).toContain("/app/licenses");
+      expect(dockerfile).toContain("COPY deploy/docker/legal");
     }
   });
 
@@ -187,7 +220,7 @@ describe("production image definitions", () => {
         modules,
         cliOutput,
         "cli",
-        JSON.stringify({ compose: "8.7.6-test", docker: "7.6.5-test" }),
+        JSON.stringify({ compose: "2.39.1", docker: "29.7.1" }),
       ],
       { cwd: repositoryRoot },
     );
@@ -195,8 +228,23 @@ describe("production image definitions", () => {
       join(cliOutput, "THIRD_PARTY_NOTICES.md"),
       "utf8",
     );
-    expect(cliNotices).toContain("Docker CLI 7.6.5-test");
-    expect(cliNotices).toContain("Docker Compose 8.7.6-test");
+    expect(cliNotices).toContain("Docker CLI 29.7.1");
+    expect(cliNotices).toContain("docker-cli-29.7.1-NOTICE");
+    expect(cliNotices).toContain("Docker Compose 2.39.1");
+    expect(cliNotices).toContain("docker-compose-2.39.1-NOTICE");
+    expect(() =>
+      execFileSync(
+        "node",
+        [
+          noticeGeneratorPath,
+          modules,
+          join(fixture, "mismatched-version-output"),
+          "cli",
+          JSON.stringify({ compose: "8.7.6-test", docker: "7.6.5-test" }),
+        ],
+        { cwd: repositoryRoot, stdio: "pipe" },
+      ),
+    ).toThrow(/version mismatch/u);
 
     const missingDirectory = join(
       modules,
@@ -224,6 +272,97 @@ describe("production image definitions", () => {
         { cwd: repositoryRoot, stdio: "pipe" },
       ),
     ).toThrow(/missing-license@1\.0\.0/u);
+    rmSync(fixture, { recursive: true });
+  });
+
+  it("verifies exact attributed legal texts and rejects checksum tampering", () => {
+    const expectedCopyrights = new Map([
+      ["@esbuild/darwin-arm64@0.28.1", "2020 Evan Wallace"],
+      ["@esbuild/linux-arm64@0.28.1", "2020 Evan Wallace"],
+      ["@esbuild/linux-x64@0.28.1", "2020 Evan Wallace"],
+      ["@nodable/entities@3.0.0", "2026 Nodable"],
+      ["boolbase@1.0.0", "2014-2015, Felix Boehm"],
+      ["pg-types@2.2.0", "2014 Brian M. Carlson"],
+      ["pgpass@1.0.5", "2013-2016 Hannes Hörl"],
+      ["saxes@6.0.0", "Contributors"],
+    ]);
+    for (const [packageVersion, identity] of expectedCopyrights) {
+      const metadata = licenseExceptions.packages[packageVersion];
+      expect(metadata).toBeDefined();
+      if (!metadata) throw new Error(`missing metadata for ${packageVersion}`);
+      expect(metadata.copyright).toContain(identity);
+      expect(metadata.source).toMatch(
+        /githubusercontent\.com\/[^/]+\/[^/]+\/[a-f0-9]{40}\//u,
+      );
+      expect(metadata.sourceSha256).toMatch(/^[a-f0-9]{64}$/u);
+      const versionSeparator = packageVersion.lastIndexOf("@");
+      expect(metadata.textFile).toContain(
+        packageVersion
+          .slice(0, versionSeparator)
+          .replaceAll("/", "__")
+          .replaceAll("@", "_"),
+      );
+      expect(metadata.textFile).toContain(
+        `/${packageVersion.slice(versionSeparator + 1)}/`,
+      );
+      const text = readFileSync(join(legalRoot, metadata.textFile), "utf8");
+      expect(text).toContain(identity);
+      expect(text).not.toMatch(/<year>|<copyright holders>/u);
+      expect(createHash("sha256").update(text).digest("hex")).toBe(
+        metadata.sha256,
+      );
+    }
+
+    for (const [tool, version] of [
+      ["docker", "29.7.1"],
+      ["compose", "2.39.1"],
+    ] as const) {
+      const metadata = licenseExceptions.tools[tool];
+      if (!metadata) throw new Error(`missing metadata for ${tool}`);
+      expect(metadata.version).toBe(version);
+      for (const legalFile of [metadata.license, metadata.notice]) {
+        expect(legalFile.source).toMatch(
+          /githubusercontent\.com\/[^/]+\/[^/]+\/[a-f0-9]{40}\//u,
+        );
+        expect(legalFile.sourceSha256).toMatch(/^[a-f0-9]{64}$/u);
+        const text = readFileSync(join(legalRoot, legalFile.textFile), "utf8");
+        expect(createHash("sha256").update(text).digest("hex")).toBe(
+          legalFile.sha256,
+        );
+      }
+    }
+
+    const fixture = mkdtempSync(join(tmpdir(), "argus-legal-tamper-"));
+    const fixtureLegalRoot = join(fixture, "docker");
+    const modules = join(fixture, "node_modules");
+    mkdirSync(join(modules, ".pnpm"), { recursive: true });
+    cpSync(join(legalRoot, "license-exceptions.json"), join(fixtureLegalRoot, "license-exceptions.json"), {
+      recursive: true,
+    });
+    cpSync(join(legalRoot, "legal"), join(fixtureLegalRoot, "legal"), {
+      recursive: true,
+    });
+    const dockerLegal = licenseExceptions.tools.docker;
+    if (!dockerLegal) throw new Error("missing Docker legal metadata");
+    const noticePath = join(
+      fixtureLegalRoot,
+      dockerLegal.notice.textFile,
+    );
+    writeFileSync(noticePath, `${readFileSync(noticePath, "utf8")}tampered\n`);
+    expect(() =>
+      execFileSync(
+        "node",
+        [
+          noticeGeneratorPath,
+          modules,
+          join(fixture, "output"),
+          "cli",
+          JSON.stringify({ compose: "2.39.1", docker: "29.7.1" }),
+          fixtureLegalRoot,
+        ],
+        { cwd: repositoryRoot, stdio: "pipe" },
+      ),
+    ).toThrow(/checksum mismatch/u);
     rmSync(fixture, { recursive: true });
   });
 
@@ -508,6 +647,15 @@ api: { host: 0.0.0.0, port: 8788 }
     for (const dependency of ["hono@", "yaml@", "zod@", "better-sqlite3@", "Tini"]) {
       expect(notices).toContain(dependency);
     }
+    expect(
+      docker([
+        "exec",
+        containerName,
+        "sh",
+        "-c",
+        "grep -R -F 'Copyright (c) 2020 Evan Wallace' /app/licenses/npm >/dev/null && grep -R -F 'Copyright (c) 2026 Nodable' /app/licenses/npm >/dev/null",
+      ]),
+    ).toBe("");
   }, 90_000);
 
   it("runs the compiled management CLI with all required host tools", () => {
@@ -568,7 +716,7 @@ api: { host: 0.0.0.0, port: 8788 }
         "sh",
         cliImage,
         "-c",
-        "test -s /app/licenses/docker-cli-LICENSE && test -s /app/licenses/docker-compose-LICENSE",
+        "test -s /app/licenses/tools/docker-cli-29.7.1-LICENSE && test -s /app/licenses/tools/docker-cli-29.7.1-NOTICE && test -s /app/licenses/tools/docker-compose-2.39.1-LICENSE && test -s /app/licenses/tools/docker-compose-2.39.1-NOTICE && grep -F 'Copyright 2012-2017 Docker, Inc.' /app/licenses/tools/docker-cli-29.7.1-NOTICE >/dev/null && grep -F 'Copyright 2020 Docker Compose authors' /app/licenses/tools/docker-compose-2.39.1-NOTICE >/dev/null",
       ]),
     ).toBe("");
   }, 120_000);

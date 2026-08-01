@@ -27,7 +27,7 @@ RUN pnpm install --frozen-lockfile --ignore-scripts
 
 COPY deploy/docker/generate-third-party-notices.mjs /workspace/generate-third-party-notices.mjs
 COPY deploy/docker/license-exceptions.json /workspace/license-exceptions.json
-COPY deploy/docker/license-texts /workspace/license-texts
+COPY deploy/docker/legal /workspace/legal
 COPY apps/argus apps/argus
 COPY packages/config packages/config
 COPY packages/contracts packages/contracts
