@@ -64,16 +64,50 @@ jobs:
               -f event=push \
               -f status=success \
               -f per_page=100 \
+              --paginate \
+              --slurp \
               "repos/${REPOSITORY}/actions/workflows/release.yml/runs" \
               > release-runs.json
-            gh api "repos/${REPOSITORY}/commits/${RELEASE_TAG}" \
-              > tag-commit.json
+            encoded_tag="$(jq -rn --arg tag "$RELEASE_TAG" '$tag | @uri')"
+            gh api "repos/${REPOSITORY}/git/ref/tags/${encoded_tag}" \
+              > tag-ref.json
+            tag_type="$(jq -er '.object.type' tag-ref.json)"
+            tag_sha="$(jq -er '.object.sha' tag-ref.json)"
+            tag_objects='[]'
+            depth=0
+            seen=':'
+            while [ "$tag_type" = tag ]; do
+              (( depth < 16 )) || {
+                echo "annotated tag depth exceeds safety limit" >&2
+                exit 1
+              }
+              case "$seen" in
+                *:"$tag_sha":*)
+                  echo "annotated tag cycle detected" >&2
+                  exit 1
+                  ;;
+              esac
+              seen="${seen}${tag_sha}:"
+              tag_object="$(gh api "repos/${REPOSITORY}/git/tags/${tag_sha}")"
+              test "$(jq -er '.sha' <<<"$tag_object")" = "$tag_sha"
+              tag_objects="$(
+                jq -cn \
+                  --argjson objects "$tag_objects" \
+                  --argjson object "$tag_object" \
+                  '$objects + [$object]'
+              )"
+              tag_type="$(jq -er '.object.type' <<<"$tag_object")"
+              tag_sha="$(jq -er '.object.sha' <<<"$tag_object")"
+              depth=$((depth + 1))
+            done
+            printf '%s\n' "$tag_objects" > tag-objects.json
             source_ref="$(
               node scripts/e2e/resolve-installer-source.mjs \
                 --tag "$RELEASE_TAG" \
                 --release release-metadata.json \
                 --runs release-runs.json \
-                --tag-commit tag-commit.json
+                --tag-ref tag-ref.json \
+                --tag-objects tag-objects.json
             )"
           fi
           [[ "$source_ref" =~ ^[a-f0-9]{40}$ ]]

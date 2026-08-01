@@ -66,7 +66,8 @@ const resolveManualDispatch = (parsed) => {
     "--tag",
     "--release",
     "--runs",
-    "--tag-commit",
+    "--tag-ref",
+    "--tag-objects",
   ]);
   const tag = parsed.get("--tag");
   if (!tagPattern.test(tag)) fail("release tag is invalid");
@@ -80,11 +81,20 @@ const resolveManualDispatch = (parsed) => {
   }
   if (release.draft !== false) fail("release is not published");
   const publishedAt = timestamp(release.published_at);
-  const runs = jsonFile(parsed.get("--runs"));
-  if (!runs || typeof runs !== "object" || !Array.isArray(runs.workflow_runs)) {
+  const runPages = jsonFile(parsed.get("--runs"));
+  if (
+    !Array.isArray(runPages) ||
+    runPages.length === 0 ||
+    runPages.some(
+      (page) =>
+        !page ||
+        typeof page !== "object" ||
+        !Array.isArray(page.workflow_runs),
+    )
+  ) {
     fail("signed release workflow metadata is invalid");
   }
-  const matching = runs.workflow_runs.filter((run) => {
+  const matching = runPages.flatMap((page) => page.workflow_runs).filter((run) => {
     if (!run || typeof run !== "object") return false;
     if (
       run.path !== ".github/workflows/release.yml" ||
@@ -109,16 +119,51 @@ const resolveManualDispatch = (parsed) => {
     fail("no unique successful signed release run contains this publication");
   }
   const sourceSha = matching[0].head_sha;
-  const tagCommit = jsonFile(parsed.get("--tag-commit"));
+  const tagRef = jsonFile(parsed.get("--tag-ref"));
   if (
-    !tagCommit ||
-    typeof tagCommit !== "object" ||
-    typeof tagCommit.sha !== "string" ||
-    !shaPattern.test(tagCommit.sha)
+    !tagRef ||
+    typeof tagRef !== "object" ||
+    tagRef.ref !== `refs/tags/${tag}` ||
+    !tagRef.object ||
+    typeof tagRef.object !== "object" ||
+    typeof tagRef.object.type !== "string" ||
+    typeof tagRef.object.sha !== "string" ||
+    !shaPattern.test(tagRef.object.sha)
   ) {
-    fail("tag commit metadata is invalid");
+    fail("tag ref metadata is invalid");
   }
-  if (tagCommit.sha !== sourceSha) {
+  const tagObjects = jsonFile(parsed.get("--tag-objects"));
+  if (!Array.isArray(tagObjects)) fail("annotated tag metadata is invalid");
+  const objectsBySha = new Map();
+  for (const object of tagObjects) {
+    if (
+      !object ||
+      typeof object !== "object" ||
+      typeof object.sha !== "string" ||
+      !shaPattern.test(object.sha) ||
+      !object.object ||
+      typeof object.object !== "object" ||
+      typeof object.object.type !== "string" ||
+      typeof object.object.sha !== "string" ||
+      !shaPattern.test(object.object.sha) ||
+      objectsBySha.has(object.sha)
+    ) {
+      fail("annotated tag metadata is invalid");
+    }
+    objectsBySha.set(object.sha, object.object);
+  }
+  let target = tagRef.object;
+  const visited = new Set();
+  for (let depth = 0; target.type === "tag"; depth += 1) {
+    if (depth >= 16) fail("annotated tag depth exceeds safety limit");
+    if (visited.has(target.sha)) fail("annotated tag cycle detected");
+    visited.add(target.sha);
+    const next = objectsBySha.get(target.sha);
+    if (!next) fail("annotated tag metadata is incomplete");
+    target = next;
+  }
+  if (target.type !== "commit") fail("tag does not resolve to a commit");
+  if (target.sha !== sourceSha) {
     fail("tag commit does not match the signed release workflow commit");
   }
   return sourceSha;

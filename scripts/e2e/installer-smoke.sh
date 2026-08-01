@@ -22,10 +22,22 @@ done
 
 [ "$(id -u)" -eq 0 ] ||
   argus_die "run this clean-host smoke as root inside an isolated test host"
-if [ -e /usr/local/bin/argus ] ||
-  [ -e /opt/argus/state.json ] ||
-  [ -e /opt/argus/secrets.env ] ||
-  [ -e /opt/argus/compose.yaml ]
+argus_system_root=${ARGUS_SMOKE_SYSTEM_ROOT:-}
+if [ -n "$argus_system_root" ]; then
+  [ "${ARGUS_INSTALL_FIXTURE:-0}" = 1 ] ||
+    argus_die "ARGUS_SMOKE_SYSTEM_ROOT is restricted to explicit fixtures"
+  [ "${argus_system_root#/}" != "$argus_system_root" ] &&
+    [ -d "$argus_system_root" ] ||
+    argus_die "ARGUS_SMOKE_SYSTEM_ROOT must be an absolute directory"
+  argus_system_root=${argus_system_root%/}
+fi
+argus_host_path() {
+  printf '%s\n' "${argus_system_root}$1"
+}
+if [ -e "$(argus_host_path /usr/local/bin/argus)" ] ||
+  [ -e "$(argus_host_path /opt/argus/state.json)" ] ||
+  [ -e "$(argus_host_path /opt/argus/secrets.env)" ] ||
+  [ -e "$(argus_host_path /opt/argus/compose.yaml)" ]
 then
   argus_die "refusing non-clean host with an existing Argus installation"
 fi
@@ -49,6 +61,8 @@ argus_answers=/opt/argus/.installer-smoke-onboard.yaml
 argus_expect=$argus_work/onboard.exp
 argus_doctor=$argus_work/doctor.json
 argus_inspection=$argus_work/inspection.log
+argus_snapshot_before=$argus_work/inspect.before
+argus_snapshot_after=$argus_work/inspect.after
 argus_token=
 mkdir -p "$argus_artifacts"
 chmod 700 "$argus_artifacts"
@@ -121,36 +135,164 @@ export ARGUS_VERSION="$ARGUS_EXPECTED_VERSION"
 export ARGUS_INSTALL_DOCKER="${ARGUS_INSTALL_DOCKER:-0}"
 export ARGUS_INSTALL_TARGET=/usr/local/bin/argus
 
-argus_docker_state() {
-  if command -v docker >/dev/null 2>&1 &&
-    docker info >/dev/null 2>&1 &&
-    docker compose version >/dev/null 2>&1
-  then
-    printf '%s\n' usable
+argus_snapshot_stat() {
+  if stat -c '%n' "$1" >/dev/null 2>&1; then
+    stat -c 'entry:%n|%F|%a|%u|%g|%s|%Y|%Z' "$1"
+  else
+    stat -f 'entry:%N|%HT|%Lp|%u|%g|%z|%m|%c' "$1"
+  fi
+}
+
+argus_snapshot_path() {
+  argus_snapshot_label=$1
+  argus_snapshot_target=$2
+  printf 'path:%s\n' "$argus_snapshot_label"
+  if [ -d "$argus_snapshot_target" ]; then
+    find "$argus_snapshot_target" -xdev -print |
+      LC_ALL=C sort |
+      while IFS= read -r argus_snapshot_entry; do
+        argus_snapshot_stat "$argus_snapshot_entry"
+        if [ -L "$argus_snapshot_entry" ]; then
+          printf 'link:%s\n' "$(readlink "$argus_snapshot_entry")"
+          [ ! -f "$argus_snapshot_entry" ] ||
+            sha256sum "$argus_snapshot_entry"
+        elif [ -f "$argus_snapshot_entry" ]; then
+          sha256sum "$argus_snapshot_entry"
+        fi
+      done
+  elif [ -e "$argus_snapshot_target" ] || [ -L "$argus_snapshot_target" ]; then
+    argus_snapshot_stat "$argus_snapshot_target"
+    if [ -L "$argus_snapshot_target" ]; then
+      printf 'link:%s\n' "$(readlink "$argus_snapshot_target")"
+      [ ! -f "$argus_snapshot_target" ] ||
+        sha256sum "$argus_snapshot_target"
+    elif [ -f "$argus_snapshot_target" ]; then
+      sha256sum "$argus_snapshot_target"
+    fi
   else
     printf '%s\n' absent
   fi
 }
-argus_docker_before=$(argus_docker_state)
-if ! ARGUS_INSTALL_INSPECT=1 sh "$argus_installer" > "$argus_inspection" 2>&1; then
-  cat "$argus_inspection" >> "$argus_artifacts/installer.log"
-  argus_die "installer inspection failed"
-fi
+
+argus_snapshot_command() {
+  argus_snapshot_command_name=$1
+  shift
+  printf 'command:%s\n' "$argus_snapshot_command_name"
+  if command -v "$argus_snapshot_command_name" >/dev/null 2>&1; then
+    argus_snapshot_binary=$(command -v "$argus_snapshot_command_name")
+    argus_snapshot_path command-binary "$argus_snapshot_binary"
+    set +e
+    "$argus_snapshot_command_name" "$@" 2>&1
+    argus_snapshot_status=$?
+    set -e
+    printf 'status:%s\n' "$argus_snapshot_status"
+  else
+    printf '%s\n' absent
+  fi
+}
+
+argus_snapshot_host() {
+  argus_snapshot_output=$1
+  {
+    argus_snapshot_path install-root "$(argus_host_path /opt/argus)"
+    argus_snapshot_path wrapper "$(argus_host_path /usr/local/bin/argus)"
+    argus_snapshot_path apt-sources "$(argus_host_path /etc/apt/sources.list)"
+    argus_snapshot_path apt-sources-dir "$(argus_host_path /etc/apt/sources.list.d)"
+    argus_snapshot_path apt-keyrings "$(argus_host_path /etc/apt/keyrings)"
+    argus_snapshot_path apt-lists "$(argus_host_path /var/lib/apt/lists)"
+    argus_snapshot_path apt-cache "$(argus_host_path /var/cache/apt)"
+    argus_snapshot_path docker-keyring \
+      "$(argus_host_path /usr/share/keyrings/docker-archive-keyring.gpg)"
+    argus_snapshot_path docker-config "$(argus_host_path /etc/docker)"
+    argus_snapshot_path dpkg-state "$(argus_host_path /var/lib/dpkg)"
+    argus_snapshot_path docker-systemd \
+      "$(argus_host_path /etc/systemd/system/docker.service)"
+    argus_snapshot_path docker-systemd-overrides \
+      "$(argus_host_path /etc/systemd/system/docker.service.d)"
+    argus_snapshot_path containerd-systemd \
+      "$(argus_host_path /etc/systemd/system/containerd.service)"
+    argus_snapshot_path containerd-systemd-overrides \
+      "$(argus_host_path /etc/systemd/system/containerd.service.d)"
+    argus_snapshot_path vendor-docker-systemd \
+      "$(argus_host_path /usr/lib/systemd/system/docker.service)"
+    argus_snapshot_path vendor-docker-systemd-overrides \
+      "$(argus_host_path /usr/lib/systemd/system/docker.service.d)"
+    argus_snapshot_path vendor-containerd-systemd \
+      "$(argus_host_path /usr/lib/systemd/system/containerd.service)"
+    argus_snapshot_path vendor-containerd-systemd-overrides \
+      "$(argus_host_path /usr/lib/systemd/system/containerd.service.d)"
+    argus_snapshot_path legacy-docker-systemd \
+      "$(argus_host_path /lib/systemd/system/docker.service)"
+    argus_snapshot_path legacy-docker-systemd-overrides \
+      "$(argus_host_path /lib/systemd/system/docker.service.d)"
+    argus_snapshot_path legacy-containerd-systemd \
+      "$(argus_host_path /lib/systemd/system/containerd.service)"
+    argus_snapshot_path legacy-containerd-systemd-overrides \
+      "$(argus_host_path /lib/systemd/system/containerd.service.d)"
+    for argus_compose_directory in \
+      /usr/local/lib/docker/cli-plugins \
+      /usr/local/libexec/docker/cli-plugins \
+      /usr/libexec/docker/cli-plugins \
+      /usr/lib/docker/cli-plugins \
+      /root/.docker/cli-plugins
+    do
+      argus_snapshot_path compose-plugins \
+        "$(argus_host_path "$argus_compose_directory")"
+    done
+    argus_snapshot_path installer-lock \
+      "${ARGUS_INSTALL_LOCK:-$(argus_host_path /tmp/argus-installer.lock)}"
+    argus_snapshot_path runtime-lock \
+      "$(argus_host_path /run/lock/argus-installer.lock)"
+    argus_snapshot_path persistent-lock \
+      "$(argus_host_path /var/lock/argus-installer.lock)"
+    for argus_temp_root in /tmp /var/tmp; do
+      argus_temp_directory=$(argus_host_path "$argus_temp_root")
+      if [ -d "$argus_temp_directory" ]; then
+        find "$argus_temp_directory" -mindepth 1 -maxdepth 1 \
+          \( -name 'argus-install.*' -o -name 'argus-installer.lock' \) \
+          -print |
+          LC_ALL=C sort |
+          while IFS= read -r argus_temp_path; do
+            argus_snapshot_path installer-temp "$argus_temp_path"
+          done
+      fi
+    done
+    argus_snapshot_command dpkg-query -W \
+      "-f=\${binary:Package}\\t\${Version}\\t\${db:Status-Abbrev}\\n"
+    argus_snapshot_command apt-mark showmanual
+    argus_snapshot_command apt-mark showhold
+    argus_snapshot_command docker --version
+    argus_snapshot_command docker compose version
+    argus_snapshot_command docker info --format \
+      '{{.ServerVersion}}|{{.Driver}}|{{.DockerRootDir}}|{{.CgroupDriver}}|{{.OperatingSystem}}|{{.Architecture}}|{{.OSType}}'
+    argus_snapshot_command dockerd --version
+    argus_snapshot_command containerd --version
+    argus_snapshot_command containerd-shim-runc-v2 --version
+    argus_snapshot_command runc --version
+    argus_snapshot_command systemctl is-active docker.service
+    argus_snapshot_command systemctl is-enabled docker.service
+    argus_snapshot_command systemctl show docker.service \
+      --property=ActiveState,SubState,UnitFileState
+  } > "$argus_snapshot_output"
+}
+
+argus_snapshot_host "$argus_snapshot_before"
+set +e
+ARGUS_INSTALL_INSPECT=1 sh "$argus_installer" > "$argus_inspection" 2>&1
+argus_inspection_status=$?
+set -e
+argus_snapshot_host "$argus_snapshot_after"
 cat "$argus_inspection" >> "$argus_artifacts/installer.log"
+cmp -s "$argus_snapshot_before" "$argus_snapshot_after" ||
+  argus_die "installer inspection mutated protected host state"
+[ "$argus_inspection_status" -eq 0 ] ||
+  argus_die "installer inspection failed"
 grep -Fx "  signed manifest: $ARGUS_MANIFEST_URL" "$argus_inspection" >/dev/null ||
   argus_die "installer inspection reported the wrong manifest"
 grep -Fx "  target: /usr/local/bin/argus" "$argus_inspection" >/dev/null ||
   argus_die "installer inspection reported the wrong target"
 grep -Fx "No files were downloaded or changed." "$argus_inspection" >/dev/null ||
   argus_die "installer inspection did not confirm a mutation-free plan"
-[ ! -e /usr/local/bin/argus ] &&
-  [ ! -e /opt/argus/state.json ] &&
-  [ ! -e /opt/argus/secrets.env ] &&
-  [ ! -e /opt/argus/compose.yaml ] &&
-  [ ! -e "${ARGUS_INSTALL_LOCK:-${TMPDIR:-/tmp}/argus-installer.lock}" ] ||
-  argus_die "installer inspection mutated the clean host"
-[ "$(argus_docker_state)" = "$argus_docker_before" ] ||
-  argus_die "installer inspection changed Docker availability"
 
 ARGUS_INSTALL_INSPECT=0 sh "$argus_installer" >> "$argus_artifacts/installer.log" 2>&1
 printf '%s  %s\n' "$ARGUS_EXPECTED_WRAPPER_SHA256" /usr/local/bin/argus |
