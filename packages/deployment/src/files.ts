@@ -26,6 +26,19 @@ export interface InstanceIO {
 
 export const nodeInstanceIO: InstanceIO = { mkdir, open, readFile, rename, unlink };
 
+const removeTemporary = async (path: string, io: InstanceIO): Promise<void> => {
+  await io.unlink(path).catch(() => undefined);
+};
+
+const syncDirectory = async (path: string, io: InstanceIO): Promise<void> => {
+  const directory = await io.open(dirname(path), "r");
+  try {
+    await directory.sync();
+  } finally {
+    await directory.close();
+  }
+};
+
 const atomicWrite = async (
   path: string,
   contents: string,
@@ -34,15 +47,21 @@ const atomicWrite = async (
 ): Promise<void> => {
   await io.mkdir(dirname(path), { recursive: true });
   const temporaryPath = `${path}.${process.pid}.${crypto.randomUUID()}.tmp`;
-  const handle = await io.open(temporaryPath, "w", 0o600);
   try {
-    await handle.writeFile(contents, "utf8");
-    await handle.chmod(mode);
-    await handle.sync();
-  } finally {
-    await handle.close();
+    const handle = await io.open(temporaryPath, "w", 0o600);
+    try {
+      await handle.writeFile(contents, "utf8");
+      await handle.chmod(mode);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await io.rename(temporaryPath, path);
+    await syncDirectory(path, io);
+  } catch (error) {
+    await removeTemporary(temporaryPath, io);
+    throw error;
   }
-  await io.rename(temporaryPath, path);
 };
 
 export interface WriteInstanceFilesInput {
@@ -59,19 +78,17 @@ export const writeInstanceFiles = async ({
   const paths = instancePaths(root);
   const temporaryConfig = `${paths.config}.${process.pid}.${crypto.randomUUID()}.validate`;
   await io.mkdir(dirname(paths.config), { recursive: true });
-  const validationHandle = await io.open(temporaryConfig, "w", 0o600);
   try {
-    await validationHandle.writeFile(rendered.yaml, "utf8");
-    await validationHandle.sync();
-  } finally {
-    await validationHandle.close();
-  }
-  try {
+    const validationHandle = await io.open(temporaryConfig, "w", 0o600);
+    try {
+      await validationHandle.writeFile(rendered.yaml, "utf8");
+      await validationHandle.sync();
+    } finally {
+      await validationHandle.close();
+    }
     await loadConfig(temporaryConfig, rendered.secretEnvironment);
   } finally {
-    await io.unlink(temporaryConfig).catch((error: unknown) => {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    });
+    await removeTemporary(temporaryConfig, io);
   }
   await atomicWrite(paths.config, rendered.yaml, 0o644, io);
   await atomicWrite(paths.secrets, rendered.secrets, 0o600, io);

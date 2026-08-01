@@ -1,7 +1,7 @@
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { chmod, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   instancePaths,
   loadDeploymentState,
@@ -14,6 +14,7 @@ import type { DeploymentStateV1, OnboardingAnswersV1 } from "../src/contracts.js
 
 const roots: string[] = [];
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(roots.splice(0).map((root) => rm(root, { force: true, recursive: true })));
 });
 
@@ -61,6 +62,88 @@ describe("instance files", () => {
     expect(yaml).not.toContain("api-secret");
     const mode = (await stat(join(root, "argus.yaml"))).mode & 0o777;
     expect(mode).toBe(0o644);
+  });
+
+  it("replaces existing files with their required modes", async () => {
+    const root = await mkdtemp(join(tmpdir(), "argus-instance-"));
+    roots.push(root);
+    await writeFile(join(root, "argus.yaml"), "old config", { mode: 0o600 });
+    await writeFile(join(root, "secrets.env"), "old secrets", { mode: 0o644 });
+    await chmod(join(root, "argus.yaml"), 0o600);
+    await chmod(join(root, "secrets.env"), 0o644);
+
+    await writeInstanceFiles({ root, rendered, io: nodeInstanceIO });
+
+    expect((await stat(join(root, "argus.yaml"))).mode & 0o777).toBe(0o644);
+    expect((await stat(join(root, "secrets.env"))).mode & 0o777).toBe(0o600);
+  });
+
+  it("removes a failed write temporary sibling while preserving the error", async () => {
+    const root = await mkdtemp(join(tmpdir(), "argus-instance-"));
+    roots.push(root);
+    const renameError = new Error("rename failed");
+    const io = { ...nodeInstanceIO, rename: vi.fn(async () => Promise.reject(renameError)) };
+
+    await expect(writeInstanceFiles({ root, rendered, io })).rejects.toBe(renameError);
+
+    expect(await readdir(root)).toEqual([]);
+  });
+
+  it("removes invalid validation input and preserves live files", async () => {
+    const root = await mkdtemp(join(tmpdir(), "argus-instance-"));
+    roots.push(root);
+    await writeFile(join(root, "argus.yaml"), "existing config");
+    await writeFile(join(root, "secrets.env"), "existing secrets");
+
+    await expect(
+      writeInstanceFiles({
+        root,
+        rendered: { ...rendered, yaml: "version: invalid\n" },
+        io: nodeInstanceIO,
+      }),
+    ).rejects.toThrow();
+
+    expect(await readFile(join(root, "argus.yaml"), "utf8")).toBe("existing config");
+    expect(await readFile(join(root, "secrets.env"), "utf8")).toBe("existing secrets");
+    expect(await readdir(root)).toEqual(["argus.yaml", "secrets.env"]);
+  });
+
+  it("fsyncs the containing directory after each renamed file", async () => {
+    const root = await mkdtemp(join(tmpdir(), "argus-instance-"));
+    roots.push(root);
+    const originalOpen = nodeInstanceIO.open;
+    let directorySyncs = 0;
+    let directoryCloses = 0;
+    const open = vi.spyOn(nodeInstanceIO, "open").mockImplementation(async (...args) => {
+      const handle = await originalOpen(...args);
+      if (args[0] === root && args[1] === "r") {
+        const sync = handle.sync.bind(handle);
+        const close = handle.close.bind(handle);
+        vi.spyOn(handle, "sync").mockImplementation(async () => {
+          directorySyncs += 1;
+          await sync();
+        });
+        vi.spyOn(handle, "close").mockImplementation(async () => {
+          directoryCloses += 1;
+          await close();
+        });
+      }
+      return handle;
+    });
+
+    await writeInstanceFiles({ root, rendered, io: nodeInstanceIO });
+    await saveDeploymentState(root, {
+      schemaVersion: 1,
+      argusVersion: "0.1.0",
+      composeProject: "argus",
+      configHash: "abc123",
+      services: {},
+      updatedAt: "2026-08-01T00:00:00.000Z",
+    });
+
+    expect(open.mock.calls.filter(([path, flags]) => path === root && flags === "r")).toHaveLength(3);
+    expect(directorySyncs).toBe(3);
+    expect(directoryCloses).toBe(3);
   });
 
   it("uses fixed paths below the instance root", () => {
