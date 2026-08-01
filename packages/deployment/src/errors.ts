@@ -25,10 +25,12 @@ export class DeploymentError extends Error {
   readonly recovery: string | undefined;
 
   constructor(code: string, message: string, options: DeploymentErrorOptions = {}) {
-    super(redact(message, options.secrets ?? []));
+    const secrets = options.secrets ?? [];
+    super(redact(message, secrets));
     this.name = "DeploymentError";
     this.code = code;
-    this.recovery = options.recovery;
+    this.recovery =
+      options.recovery === undefined ? undefined : redact(options.recovery, secrets);
   }
 
   toJSON(): DeploymentErrorJSON {
