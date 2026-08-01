@@ -89,6 +89,7 @@ describe("deployment reconciliation", () => {
     `ghcr.io/gpsxtreme/argus@sha256:${"a".repeat(64)}`,
     `docker.io/library/postgres@sha256:${"b".repeat(64)}`,
     `localhost:5000/argus/service@sha256:${"c".repeat(64)}`,
+    `registry:5000/org/image@sha256:${"d".repeat(64)}`,
   ])("accepts a restrictive digest-pinned OCI image reference: %s", (reference) => {
     expect(isPinnedImageReference(reference)).toBe(true);
   });
@@ -103,6 +104,9 @@ describe("deployment reconciliation", () => {
     `ghcr.io/gpsxtreme/argus@sha256:${"a".repeat(64)}#fragment`,
     `ghcr.io/gpsxtreme/argus@sha256:${"a".repeat(64)}\n`,
     `argus@sha256:${"a".repeat(64)}`,
+    `registry/org/image@sha256:${"a".repeat(64)}`,
+    `registry:0/org/image@sha256:${"a".repeat(64)}`,
+    `registry:65536/org/image@sha256:${"a".repeat(64)}`,
   ])("rejects unsafe or malformed image reference: %s", (reference) => {
     expect(isPinnedImageReference(reference)).toBe(false);
   });
