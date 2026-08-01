@@ -364,12 +364,24 @@ export class SqliteRepository implements StorageRepository {
   async queryArtifacts(
     input: QueryArtifactsInput,
   ): Promise<Page<DerivedArtifact>> {
+    const conditions = [
+      `EXISTS (
+        SELECT 1
+        FROM json_each(artifacts.record_ids_json) AS artifact_record
+        JOIN records ON records.id = artifact_record.value
+      )`,
+    ];
+    const parameters: unknown[] = [];
+    if (input.kind) {
+      conditions.push("kind = ?");
+      parameters.push(input.kind);
+    }
     const rows = this.database
       .prepare(
-        `SELECT * FROM artifacts ${input.kind ? "WHERE kind = ?" : ""}
+        `SELECT * FROM artifacts WHERE ${conditions.join(" AND ")}
          ORDER BY created_at DESC, id LIMIT ?`,
       )
-      .all(...(input.kind ? [input.kind] : []), input.limit ?? 50) as Array<
+      .all(...parameters, input.limit ?? 50) as Array<
       Record<string, unknown>
     >;
     return {
@@ -435,5 +447,36 @@ export class SqliteRepository implements StorageRepository {
     return row ? { id: row.id, targetId: row.target_id, source: row.source as DiagnosticWatch["source"], target: JSON.parse(row.target_json) as Record<string, unknown>, status: row.status as DiagnosticWatch["status"], createdAt: row.created_at, updatedAt: row.updated_at } : undefined;
   }
   async cancelDiagnosticWatch(targetId: string): Promise<void> { this.database.transaction(() => { this.database.prepare("UPDATE diagnostic_watches SET status='cancelled',updated_at=? WHERE target_id=? AND status='active'").run(new Date().toISOString(), targetId); this.database.prepare("UPDATE jobs SET status='complete',error='diagnostic cancelled',lease_owner=NULL,lease_expires_at=NULL WHERE target_id=? AND status IN ('queued','running')").run(targetId); })(); }
-  async cleanupDiagnosticWatch(targetId: string): Promise<void> { this.database.transaction(() => { /* Artifacts can reference user and diagnostic record IDs; preserve them rather than deleting user-owned data. */ this.database.prepare("DELETE FROM records WHERE target_id=?").run(targetId); this.database.prepare("DELETE FROM checkpoints WHERE target_id=?").run(targetId); this.database.prepare("DELETE FROM jobs WHERE target_id=?").run(targetId); this.database.prepare("DELETE FROM diagnostic_watches WHERE target_id=?").run(targetId); })(); }
+  async cleanupDiagnosticWatch(targetId: string): Promise<void> {
+    this.database.transaction(() => {
+      const diagnosticRecordIds = new Set(
+        (
+          this.database
+            .prepare("SELECT id FROM records WHERE target_id=?")
+            .all(targetId) as Array<{ id: string }>
+        ).map(({ id }) => id),
+      );
+      if (diagnosticRecordIds.size > 0) {
+        const artifacts = this.database
+          .prepare("SELECT id, record_ids_json FROM artifacts")
+          .all() as Array<{ id: string; record_ids_json: string }>;
+        const removeArtifact = this.database.prepare(
+          "DELETE FROM artifacts WHERE id=?",
+        );
+        for (const artifact of artifacts) {
+          const recordIds = JSON.parse(artifact.record_ids_json) as string[];
+          if (
+            recordIds.length > 0 &&
+            recordIds.every((recordId) => diagnosticRecordIds.has(recordId))
+          ) {
+            removeArtifact.run(artifact.id);
+          }
+        }
+      }
+      this.database.prepare("DELETE FROM records WHERE target_id=?").run(targetId);
+      this.database.prepare("DELETE FROM checkpoints WHERE target_id=?").run(targetId);
+      this.database.prepare("DELETE FROM jobs WHERE target_id=?").run(targetId);
+      this.database.prepare("DELETE FROM diagnostic_watches WHERE target_id=?").run(targetId);
+    })();
+  }
 }

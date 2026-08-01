@@ -6,8 +6,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { RecordEnvelope } from "@argus/contracts";
 import {
   createSqliteRepository,
-  type SqliteRepository,
+  SqliteRepository,
 } from "../src/index.js";
+import { openSqlite } from "../src/db.js";
 
 const repositories: SqliteRepository[] = [];
 const temporaryDirectories: string[] = [];
@@ -114,6 +115,7 @@ describe("SQLite repository", () => {
 
   it("stores and lists derived artifacts separately from source records", async () => {
     const repo = await createRepo();
+    await repo.upsertRecord(record("artifact-source"));
     await repo.saveArtifact({
       id: "summary-1",
       recordIds: ["x:target-1:post-9"],
@@ -139,5 +141,84 @@ describe("SQLite repository", () => {
     await repo.cleanupDiagnosticWatch("__diagnostic:1");
     await repo.cleanupDiagnosticWatch("__diagnostic:1");
     expect(await repo.getDiagnosticWatch("__diagnostic:1")).toBeUndefined();
+  });
+
+  it("rolls back a diagnostic watch when its job ID conflicts", async () => {
+    const repo = await createRepo();
+    const now = new Date().toISOString();
+    await repo.enqueueJob({
+      id: "conflicting-job",
+      targetId: "user-target",
+      source: "web",
+      status: "queued",
+      attempt: 0,
+      runAt: now,
+    });
+
+    await expect(
+      repo.createDiagnosticWatch({
+        id: "diagnostic-conflict",
+        targetId: "__argus_doctor:conflict",
+        source: "web",
+        target: { kind: "url", value: "https://example.test" },
+        status: "active",
+        createdAt: now,
+        updatedAt: now,
+        job: {
+          id: "conflicting-job",
+          targetId: "__argus_doctor:conflict",
+          source: "web",
+          status: "queued",
+          attempt: 0,
+          runAt: now,
+        },
+      }),
+    ).rejects.toThrow();
+    expect(
+      await repo.getDiagnosticWatch("__argus_doctor:conflict"),
+    ).toBeUndefined();
+  });
+
+  it("terminally cancels a claimed diagnostic job and cleanup is idempotent", async () => {
+    const database = openSqlite(":memory:");
+    const repo = new SqliteRepository(database);
+    repositories.push(repo);
+    const now = new Date().toISOString();
+    await repo.createDiagnosticWatch({
+      id: "claimed",
+      targetId: "__argus_doctor:claimed",
+      source: "web",
+      target: { kind: "url", value: "https://example.test" },
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+      job: {
+        id: "claimed-job",
+        targetId: "__argus_doctor:claimed",
+        source: "web",
+        status: "queued",
+        attempt: 0,
+        runAt: now,
+      },
+    });
+    expect(await repo.claimJobs("worker", 1, 30_000)).toHaveLength(1);
+
+    await repo.cancelDiagnosticWatch("__argus_doctor:claimed");
+    expect(
+      database
+        .prepare(
+          "SELECT status, lease_owner, lease_expires_at FROM jobs WHERE id=?",
+        )
+        .get("claimed-job"),
+    ).toEqual({
+      status: "complete",
+      lease_owner: null,
+      lease_expires_at: null,
+    });
+    await repo.cleanupDiagnosticWatch("__argus_doctor:claimed");
+    await repo.cleanupDiagnosticWatch("__argus_doctor:claimed");
+    expect(
+      database.prepare("SELECT id FROM jobs WHERE id=?").get("claimed-job"),
+    ).toBeUndefined();
   });
 });

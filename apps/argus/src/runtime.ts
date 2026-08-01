@@ -44,31 +44,63 @@ export const processNextJob = async (
 ): Promise<{ status: "idle" | "complete" | "failed" | "cancelled" }> => {
   const job = (await repository.claimJobs(workerId, 1, 60_000))[0];
   if (!job) return { status: "idle" };
-    try {
-      const diagnostic = await repository.getDiagnosticWatch(job.targetId);
-      const target = findTarget(config, job.targetId) ?? await findDiagnosticTarget(repository, job.targetId);
-      if (!target) throw new Error(`Unknown target: ${job.targetId}`);
-      if (diagnostic && diagnostic.status !== "active") { await repository.completeJob(job.id); return { status: "cancelled" }; }
-      const result = await execute(target, config, repository, adapterFactory(target), diagnostic ? async () => (await repository.getDiagnosticWatch(job.targetId))?.status === "active" : undefined);
+  const diagnostic = await repository.getDiagnosticWatch(job.targetId);
+  try {
+    const target =
+      findTarget(config, job.targetId) ??
+      (await findDiagnosticTarget(repository, job.targetId));
+    if (!target) throw new Error(`Unknown target: ${job.targetId}`);
+    if (diagnostic && diagnostic.status !== "active") {
       await repository.completeJob(job.id);
-      logger.info({ jobId: job.id, targetId: job.targetId, ...result }, "job complete");
-      return { status: "complete" };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const retryAt =
-        job.attempt < 5
-          ? new Date(
-              Date.now() +
-                backoffDelay(job.attempt, {
-                  baseMs: 5_000,
-                  maxMs: 15 * 60_000,
-                }),
-            ).toISOString()
-          : undefined;
-      await repository.failJob(job.id, message, retryAt);
-      logger.error({ jobId: job.id, error: message }, "job failed");
-      return { status: "failed" };
+      return { status: "cancelled" };
     }
+    const result = await execute(
+      target,
+      config,
+      repository,
+      adapterFactory(target),
+      diagnostic
+        ? async () =>
+            (await repository.getDiagnosticWatch(job.targetId))?.status ===
+            "active"
+        : undefined,
+    );
+    if (
+      diagnostic &&
+      (await repository.getDiagnosticWatch(job.targetId))?.status !== "active"
+    ) {
+      await repository.completeJob(job.id);
+      return { status: "cancelled" };
+    }
+    await repository.completeJob(job.id);
+    logger.info(
+      { jobId: job.id, targetId: job.targetId, ...result },
+      "job complete",
+    );
+    return { status: "complete" };
+  } catch (error) {
+    if (
+      diagnostic &&
+      (await repository.getDiagnosticWatch(job.targetId))?.status !== "active"
+    ) {
+      await repository.completeJob(job.id);
+      return { status: "cancelled" };
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    const retryAt =
+      job.attempt < 5
+        ? new Date(
+            Date.now() +
+              backoffDelay(job.attempt, {
+                baseMs: 5_000,
+                maxMs: 15 * 60_000,
+              }),
+          ).toISOString()
+        : undefined;
+    await repository.failJob(job.id, message, retryAt);
+    logger.error({ jobId: job.id, error: message }, "job failed");
+    return { status: "failed" };
+  }
 };
 
 const processJobs = async (config: ArgusConfig, repository: StorageRepository): Promise<void> => {
