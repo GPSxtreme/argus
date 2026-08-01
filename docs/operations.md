@@ -98,13 +98,20 @@ on a systemd clean host.
 The smoke first runs the installer's mutation-free inspection and compares
 exact, allowlisted before/after state. The snapshot covers the complete install
 root and wrapper metadata/content, apt sources and keyrings, package inventory,
-installer locks and temp paths, plus Docker binaries, versions, daemon
-availability, and service state. It then installs the wrapper twice, verifies
-its signed-manifest checksum, byte identity, and version after both installs,
-and applies a strict Web-only answers file. Its API token is generated inside
-the disposable host and is not a user or repository secret. Success requires
-`/opt/argus/state.json` to name the expected release and `argus doctor --json`
-to report both `ok: true` and `healthy: true`.
+installer locks and temp paths, plus Docker/containerd binaries, configuration,
+data roots, versions, daemon availability, and service state. The workflow
+provides a fresh isolated host with no workloads. Before and after inspection,
+the smoke takes repeated exact metadata/content-hash snapshots of
+`/var/lib/docker` and `/var/lib/containerd`, allowing bounded startup churn to
+settle and failing closed if the data never becomes stable. Snapshot files stay
+inside the deleted private work directory; only hashes and metadata are
+recorded, and they are never copied into failure artifacts or logs. The smoke
+then installs the wrapper twice, verifies its signed-manifest checksum, byte
+identity, and version after both installs, and applies a strict Web-only answers
+file. Its API token is generated inside the disposable host and is not a user
+or repository secret. Success requires `/opt/argus/state.json` to name the
+expected release and `argus doctor --json` to report both `ok: true` and
+`healthy: true`.
 
 Manual workflow runs resolve the selected tag back to the unique successful
 signed-release workflow that published it across every API result page. They

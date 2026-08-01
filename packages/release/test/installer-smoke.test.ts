@@ -279,7 +279,7 @@ describe("clean-host installer smoke contract", () => {
     );
   });
 
-  it("inspects the clean host before the first mutating installer run", async () => {
+  it("keeps repeated snapshots stable on a Docker-present fixture before mutation", async () => {
     const directory = await mkdtemp(join(tmpdir(), "argus-smoke-inspect-"));
     temporaryDirectories.push(directory);
     const bin = join(directory, "bin");
@@ -300,9 +300,19 @@ describe("clean-host installer smoke contract", () => {
 done
 cp "$ARGUS_FAKE_INSTALLER" "$output"`,
     );
-    for (const name of ["expect", "jq", "openssl", "sha256sum"]) {
+    for (const name of ["expect", "jq", "openssl"]) {
       await command(name, "exit 99");
     }
+    await command(
+      "docker",
+      `case "\${1:-}" in
+  --version) printf 'Docker fixture\\n' ;;
+  info) printf 'daemon-fixture\\n' ;;
+  compose) printf 'compose-fixture\\n' ;;
+  *) exit 1 ;;
+esac`,
+    );
+    await command("systemctl", "printf 'active\\nenabled\\n'");
     const fakeInstaller = join(directory, "install.sh");
     await writeFile(
       fakeInstaller,
@@ -327,7 +337,7 @@ exit 42
       {
         encoding: "utf8",
         env: {
-          PATH: `${bin}:/usr/bin:/bin`,
+          PATH: `${bin}:/usr/bin:/bin:/sbin`,
           TMPDIR: directory,
           ARGUS_FAKE_INSTALLER: fakeInstaller,
           ARGUS_INSPECT_SEQUENCE: sequence,
@@ -355,6 +365,12 @@ exit 42
     "service-unit",
     "apt-metadata",
     "lock-temp-docker-absent",
+    "docker-data-content",
+    "docker-data-metadata",
+    "containerd-data",
+    "containerd-config",
+    "containerd-service-unit",
+    "daemon-data-docker-absent",
   ] as const)(
     "fails inspection when inspect mode mutates %s state",
     async (mutation) => {
@@ -367,6 +383,9 @@ exit 42
       const systemRoot = join(directory, "host");
       const packageMarker = join(directory, "package-mutated");
       const dockerMarker = join(directory, "docker-mutated");
+      const dockerAbsent =
+        mutation === "lock-temp-docker-absent" ||
+        mutation === "daemon-data-docker-absent";
       await mkdir(join(systemRoot, "opt/argus"), { recursive: true });
       await writeFile(
         join(systemRoot, "opt/argus/baseline"),
@@ -380,10 +399,20 @@ exit 42
       await mkdir(join(systemRoot, "var/cache/apt"), { recursive: true });
       await mkdir(join(systemRoot, "usr/local/bin"), { recursive: true });
       await mkdir(join(systemRoot, "var/lib/dpkg"), { recursive: true });
+      if (mutation !== "daemon-data-docker-absent") {
+        await mkdir(join(systemRoot, "var/lib/docker"), { recursive: true });
+        await mkdir(join(systemRoot, "var/lib/containerd"), {
+          recursive: true,
+        });
+      }
+      await mkdir(join(systemRoot, "etc/containerd"), { recursive: true });
       await mkdir(
         join(systemRoot, "usr/lib/systemd/system/docker.service.d"),
         { recursive: true },
       );
+      await mkdir(join(systemRoot, "usr/lib/systemd/system"), {
+        recursive: true,
+      });
       await mkdir(join(systemRoot, "tmp"), { recursive: true });
       await writeFile(
         join(systemRoot, "var/lib/apt/lists/packages"),
@@ -395,6 +424,24 @@ exit 42
           "usr/lib/systemd/system/docker.service.d/override.conf",
         ),
         "[Service]\nEnvironment=BASE=1\n",
+      );
+      if (mutation !== "daemon-data-docker-absent") {
+        await writeFile(
+          join(systemRoot, "var/lib/docker/state.db"),
+          "stable docker daemon state\n",
+        );
+        await writeFile(
+          join(systemRoot, "var/lib/containerd/state.db"),
+          "stable containerd daemon state\n",
+        );
+      }
+      await writeFile(
+        join(systemRoot, "etc/containerd/config.toml"),
+        "version = 2\n",
+      );
+      await writeFile(
+        join(systemRoot, "usr/lib/systemd/system/containerd.service"),
+        "[Service]\nExecStart=/usr/bin/containerd\n",
       );
       await mkdir(bin, { recursive: true });
       const command = async (name: string, source: string) => {
@@ -430,7 +477,7 @@ else
   printf 'base\\n'
 fi`,
       );
-      if (mutation !== "lock-temp-docker-absent") {
+      if (!dockerAbsent) {
         await command(
           "docker",
           `if [ -e "$ARGUS_DOCKER_MARKER" ]; then version=mutated; else version=base; fi
@@ -458,6 +505,20 @@ esac`,
   "$ARGUS_SMOKE_SYSTEM_ROOT/var/lib/apt/lists/packages"`,
         "lock-temp-docker-absent":
           'touch "$ARGUS_SMOKE_SYSTEM_ROOT/tmp/argus-install.mutated"',
+        "docker-data-content": `printf 'changed docker daemon state\\n' > \\
+  "$ARGUS_SMOKE_SYSTEM_ROOT/var/lib/docker/state.db"`,
+        "docker-data-metadata":
+          'chmod 0600 "$ARGUS_SMOKE_SYSTEM_ROOT/var/lib/docker/state.db"',
+        "containerd-data": `printf 'changed containerd daemon state\\n' > \\
+  "$ARGUS_SMOKE_SYSTEM_ROOT/var/lib/containerd/state.db"`,
+        "containerd-config": `printf 'version = 3\\n' > \\
+  "$ARGUS_SMOKE_SYSTEM_ROOT/etc/containerd/config.toml"`,
+        "containerd-service-unit":
+          'chmod 0600 "$ARGUS_SMOKE_SYSTEM_ROOT/usr/lib/systemd/system/containerd.service"',
+        "daemon-data-docker-absent": `mkdir -p \\
+  "$ARGUS_SMOKE_SYSTEM_ROOT/var/lib/docker"
+printf 'created while absent\\n' > \\
+  "$ARGUS_SMOKE_SYSTEM_ROOT/var/lib/docker/state.db"`,
       }[mutation];
       const fakeInstaller = join(directory, "install.sh");
       await writeFile(

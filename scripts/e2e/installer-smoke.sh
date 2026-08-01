@@ -63,6 +63,9 @@ argus_doctor=$argus_work/doctor.json
 argus_inspection=$argus_work/inspection.log
 argus_snapshot_before=$argus_work/inspect.before
 argus_snapshot_after=$argus_work/inspect.after
+argus_daemon_snapshot_before=$argus_work/daemon.before
+argus_daemon_snapshot_after=$argus_work/daemon.after
+argus_daemon_snapshot_probe=$argus_work/daemon.probe
 argus_token=
 mkdir -p "$argus_artifacts"
 chmod 700 "$argus_artifacts"
@@ -204,6 +207,7 @@ argus_snapshot_host() {
     argus_snapshot_path docker-keyring \
       "$(argus_host_path /usr/share/keyrings/docker-archive-keyring.gpg)"
     argus_snapshot_path docker-config "$(argus_host_path /etc/docker)"
+    argus_snapshot_path containerd-config "$(argus_host_path /etc/containerd)"
     argus_snapshot_path dpkg-state "$(argus_host_path /var/lib/dpkg)"
     argus_snapshot_path docker-systemd \
       "$(argus_host_path /etc/systemd/system/docker.service)"
@@ -273,16 +277,59 @@ argus_snapshot_host() {
     argus_snapshot_command systemctl is-enabled docker.service
     argus_snapshot_command systemctl show docker.service \
       --property=ActiveState,SubState,UnitFileState
+    argus_snapshot_command systemctl is-active containerd.service
+    argus_snapshot_command systemctl is-enabled containerd.service
+    argus_snapshot_command systemctl show containerd.service \
+      --property=ActiveState,SubState,UnitFileState
   } > "$argus_snapshot_output"
 }
 
+argus_snapshot_daemon_data() {
+  argus_daemon_snapshot_output=$1
+  {
+    argus_snapshot_path docker-data "$(argus_host_path /var/lib/docker)"
+    argus_snapshot_path containerd-data \
+      "$(argus_host_path /var/lib/containerd)"
+  } > "$argus_daemon_snapshot_output"
+}
+
+argus_wait_for_daemon_quiescence() {
+  argus_daemon_stable_output=$1
+  argus_daemon_attempt=1
+  argus_daemon_have_snapshot=0
+  while [ "$argus_daemon_attempt" -le 5 ]; do
+    argus_daemon_wait=1
+    if argus_snapshot_daemon_data "$argus_daemon_snapshot_probe" 2>/dev/null; then
+      if [ "$argus_daemon_have_snapshot" -eq 1 ] &&
+        cmp -s "$argus_daemon_stable_output" "$argus_daemon_snapshot_probe"
+      then
+        return 0
+      fi
+      cp "$argus_daemon_snapshot_probe" "$argus_daemon_stable_output"
+      [ "$argus_daemon_have_snapshot" -eq 1 ] || argus_daemon_wait=0
+      argus_daemon_have_snapshot=1
+    fi
+    argus_daemon_attempt=$((argus_daemon_attempt + 1))
+    if [ "$argus_daemon_wait" -eq 1 ] &&
+      [ "$argus_daemon_attempt" -le 5 ]
+    then
+      sleep 1
+    fi
+  done
+  argus_die "Docker daemon data did not reach a stable clean-host snapshot"
+}
+
 argus_snapshot_host "$argus_snapshot_before"
+argus_wait_for_daemon_quiescence "$argus_daemon_snapshot_before"
 set +e
 ARGUS_INSTALL_INSPECT=1 sh "$argus_installer" > "$argus_inspection" 2>&1
 argus_inspection_status=$?
 set -e
+argus_wait_for_daemon_quiescence "$argus_daemon_snapshot_after"
 argus_snapshot_host "$argus_snapshot_after"
 cat "$argus_inspection" >> "$argus_artifacts/installer.log"
+cmp -s "$argus_daemon_snapshot_before" "$argus_daemon_snapshot_after" ||
+  argus_die "installer inspection mutated protected host state"
 cmp -s "$argus_snapshot_before" "$argus_snapshot_after" ||
   argus_die "installer inspection mutated protected host state"
 [ "$argus_inspection_status" -eq 0 ] ||
