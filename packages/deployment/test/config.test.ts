@@ -1,4 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { execFileSync } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 import type { OnboardingAnswersV1 } from "../src/contracts.js";
 import { renderInstanceConfig } from "../src/index.js";
 
@@ -17,26 +21,19 @@ const answers: OnboardingAnswersV1 = {
   intelligence: { enabled: false, model: "openai/gpt-4.1-mini" },
 };
 
-// Independent decoder for the Compose env-file single-quote grammar used here:
-// backslashes are literal except when escaping an apostrophe.
-const decodeComposeEnvLine = (line: string): string => {
-  const separator = line.indexOf("=");
-  const encoded = line.slice(separator + 1);
-  if (!encoded.startsWith("'") || !encoded.endsWith("'")) {
-    throw new TypeError("expected a single-quoted Compose env value");
+const roots: string[] = [];
+afterEach(async () => {
+  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true })));
+});
+
+const composeAvailable = (() => {
+  try {
+    execFileSync("docker", ["compose", "version"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
   }
-  const body = encoded.slice(1, -1);
-  let decoded = "";
-  for (let index = 0; index < body.length; index += 1) {
-    if (body[index] === "\\" && body[index + 1] === "'") {
-      decoded += "'";
-      index += 1;
-    } else {
-      decoded += body[index];
-    }
-  }
-  return decoded;
-};
+})();
 
 describe("renderInstanceConfig", () => {
   it("renders runtime config without secret values", () => {
@@ -49,7 +46,7 @@ describe("renderInstanceConfig", () => {
     // biome-ignore lint/suspicious/noTemplateCurlyInString: Secret references intentionally use literal environment-placeholder syntax.
     expect(rendered.yaml).toContain("token: ${ARGUS_API_TOKEN}");
     expect(rendered.yaml).not.toContain("api-secret");
-    expect(rendered.secrets).toContain("ARGUS_API_TOKEN='api-secret'");
+    expect(rendered.secrets).toContain("ARGUS_API_TOKEN=api-secret");
   });
 
   it("renders the configured storage, sources, and API endpoint deterministically", () => {
@@ -143,24 +140,29 @@ api:
       ARGUS_POSTGRES_URL_PASSWORD: "p%40ss%3Aword",
       OPENROUTER_API_KEY: "openrouter-secret",
     });
-    expect(rendered.secrets).toContain("POSTGRES_PASSWORD='p@ss:word'\n");
+    expect(rendered.secrets).toContain("POSTGRES_PASSWORD=p@ss:word\n");
     expect(rendered.secrets).toContain(
-      "ARGUS_POSTGRES_URL_PASSWORD='p%40ss%3Aword'\n",
+      "ARGUS_POSTGRES_URL_PASSWORD=p%40ss%3Aword\n",
     );
     expect(rendered.secrets).toContain(
-      "OPENROUTER_API_KEY='openrouter-secret'\n",
+      "OPENROUTER_API_KEY=openrouter-secret\n",
     );
   });
 
-  it("quotes Compose env-file metacharacters without interpolation or truncation", () => {
+  it("writes one-line values verbatim for Compose raw env-file format", () => {
     const values = [
       String.raw`C:\argus\data`,
+      "trailing\\",
       "apostrophe's value",
+      String.raw`one\'apostrophe`,
+      String.raw`two\\'apostrophe`,
+      String.raw`three\\\'apostrophe`,
+      String.raw`four\\\\'apostrophe`,
       "$TOKEN",
       "#not-a-comment",
       "left=right",
       " leading and trailing ",
-      String.raw`mix\path'$VALUE #tag=yes `,
+      "mix\\path'\"quoted\"$VALUE #tag=yes \\",
     ];
     for (const value of values) {
       const rendered = renderInstanceConfig(answers, {
@@ -168,8 +170,57 @@ api:
         fxembed: "https://argus-fx.workers.dev/api",
         apiToken: value,
       });
-      expect(decodeComposeEnvLine(rendered.secrets.trimEnd())).toBe(value);
+      expect(rendered.secrets).toBe(`ARGUS_API_TOKEN=${value}\n`);
       expect(rendered.secretEnvironment.ARGUS_API_TOKEN).toBe(value);
     }
   });
+
+  it.runIf(composeAvailable)(
+    "round-trips boundary secrets through the authoritative Docker Compose parser",
+    async () => {
+      const values = [
+        "trailing\\",
+        String.raw`one\'apostrophe`,
+        String.raw`two\\'apostrophe`,
+        String.raw`three\\\'apostrophe`,
+        String.raw`many\\\\\\'apostrophe`,
+        "mix\\path'\"quoted\"$VALUE #tag=yes \\",
+      ];
+      for (const value of values) {
+        const root = await mkdtemp(join(tmpdir(), "argus-compose-env-"));
+        roots.push(root);
+        const rendered = renderInstanceConfig(answers, {
+          searxng: "http://searxng:8080",
+          fxembed: "https://argus-fx.workers.dev/api",
+          apiToken: value,
+        });
+        await Promise.all([
+          writeFile(join(root, "secrets.env"), rendered.secrets),
+          writeFile(
+            join(root, "compose.yaml"),
+            "services:\n  probe:\n    image: scratch\n    env_file:\n      - path: secrets.env\n        format: raw\n",
+          ),
+        ]);
+        const parsed = JSON.parse(
+          execFileSync(
+            "docker",
+            [
+              "compose",
+              "-f",
+              join(root, "compose.yaml"),
+              "config",
+              "--format",
+              "json",
+            ],
+            { cwd: root, encoding: "utf8" },
+          ),
+        ) as { services: { probe: { environment: Record<string, string> } } };
+        // Compose's canonical model escapes a literal dollar as `$$`; the
+        // container environment receives the original single dollar.
+        expect(parsed.services.probe.environment.ARGUS_API_TOKEN).toBe(
+          value.replaceAll("$", () => "$$"),
+        );
+      }
+    },
+  );
 });

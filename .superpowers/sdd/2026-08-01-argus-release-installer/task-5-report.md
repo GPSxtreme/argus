@@ -219,6 +219,31 @@ the warning and verified the intended late-rejection contract.
 Round-3 focused GREEN: 13/13 integration and config behavior tests; typecheck
 15/15 packages; lint 162 files clean.
 
+## Formal review fix round 4
+
+The compose-go dotenv scanner was inspected at main revision
+`d70c053ec9cbd7180c7881ba769d277f5cfc6fb5`. Its single-quote state machine
+treats a backslash immediately before a quote as escaping that quote, so no
+single-quoted transform can faithfully represent every trailing-backslash and
+backslash-plus-apostrophe boundary.
+
+Argus now uses the Compose specification's long env-file syntax with
+`format: raw` for both application and Postgres services. One-line secret values
+are written verbatim after the first equals sign, eliminating quoting,
+interpolation, and escape ambiguity.
+
+Deterministic tests cover trailing backslash, one through five backslashes
+before apostrophes, embedded quotes, dollar signs, hashes, equals signs, spaces,
+and mixed values. An available Docker Compose v2.35.1 parser was exercised with
+the same boundary matrix through `docker compose config --format json`; all
+values were accepted and preserved in its canonical model (where literal
+dollars are represented as `$$`).
+
+Round-4 RED evidence: the real Compose parser exposed dollar interpolation in
+the attempted double-quoted encoder. Switching to raw env-file format removed
+that parsing layer. Round-4 focused GREEN: 37/37 config, Compose rendering, and
+reconciliation tests; typecheck 15/15 packages; lint 162 files clean.
+
 ## Concerns
 
 - The GitHub-hosted release, GHCR multi-architecture push, and credentialed

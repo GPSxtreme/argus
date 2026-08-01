@@ -6,7 +6,9 @@ export interface ComposeInput {
 
 const argusService = `  argus:
     image: \${ARGUS_IMAGE}
-    env_file: [secrets.env]
+    env_file:
+      - path: secrets.env
+        format: raw
     environment:
       ARGUS_CONFIG: /app/argus.yaml
       ARGUS_ROLE: all
@@ -21,7 +23,9 @@ const argusService = `  argus:
 
 const postgresService = `  postgres:
     image: \${POSTGRES_IMAGE}
-    env_file: [secrets.env]
+    env_file:
+      - path: secrets.env
+        format: raw
     environment:
       POSTGRES_DB: argus
       POSTGRES_USER: argus
