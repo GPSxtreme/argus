@@ -78,6 +78,42 @@ const composeEnvironment = (desired: DesiredDeployment): Record<string, string> 
   SEARXNG_IMAGE: imageReference(desired.images.searxng),
 });
 
+const splitImageReference = (image: string): ManifestImage => {
+  const separator = image.lastIndexOf("@");
+  const reference = image.slice(0, separator);
+  const digest = image.slice(separator + 1);
+  if (!reference || !/^sha256:[a-f0-9]{64}$/.test(digest)) {
+    throw new Error("Persisted Compose inputs are missing a verified release-manifest image digest.");
+  }
+  return { reference, digest: digest as ManifestImage["digest"] };
+};
+
+const desiredFromState = (state: DeploymentStateV1 | undefined): DesiredDeployment | undefined => {
+  const compose = state?.compose;
+  if (compose === undefined || state === undefined) return undefined;
+  return {
+    version: compose.version,
+    apiPort: compose.apiPort,
+    storage: compose.storage,
+    searxng: compose.searxng,
+    configHash: state.configHash,
+    images: {
+      argus: splitImageReference(compose.images.argus),
+      postgres: splitImageReference(compose.images.postgres),
+      searxng: splitImageReference(compose.images.searxng),
+    },
+  };
+};
+
+const loadDesired = async (context: DeploymentContext): Promise<DesiredDeployment> => {
+  if (context.desired !== undefined) return context.desired;
+  const desired = desiredFromState(await loadDeploymentState(context.root));
+  if (desired === undefined) {
+    throw new Error("Verified Compose inputs are unavailable. Run 'argus onboard' or 'argus repair' first.");
+  }
+  return desired;
+};
+
 const parseStatus = (stdout: string): DeploymentStatus["services"] => {
   if (!stdout.trim()) return [];
   try {
@@ -106,7 +142,7 @@ const parseStatus = (stdout: string): DeploymentStatus["services"] => {
 };
 
 export const getDeploymentStatus = async (context: DeploymentContext): Promise<DeploymentStatus> => {
-  const environment = context.desired === undefined ? undefined : composeEnvironment(context.desired);
+  const environment = composeEnvironment(await loadDesired(context));
   const result = await runCompose(context, ["ps", "--format", "json"], "status inspection", environment);
   const services = parseStatus(result.stdout);
   return {
@@ -184,15 +220,19 @@ export const applyDeployment = async (plan: LifecyclePlan, context: DeploymentCo
     composeProject,
     configHash: plan.desired.configHash,
     services,
+    compose: {
+      version: plan.desired.version,
+      apiPort: plan.desired.apiPort,
+      storage: plan.desired.storage,
+      searxng: plan.desired.searxng,
+      images: {
+        argus: imageReference(plan.desired.images.argus),
+        postgres: imageReference(plan.desired.images.postgres),
+        searxng: imageReference(plan.desired.images.searxng),
+      },
+    },
     updatedAt: new Date().toISOString(),
   });
-};
-
-const requiredDesired = (context: DeploymentContext): DesiredDeployment => {
-  if (context.desired === undefined) {
-    throw new Error("A verified desired deployment is required before changing lifecycle state.");
-  }
-  return context.desired;
 };
 
 const verifyRunning = async (context: DeploymentContext, desired: DesiredDeployment): Promise<void> => {
@@ -218,7 +258,7 @@ const verifyStopped = async (context: DeploymentContext, desired: DesiredDeploym
 };
 
 export const startDeployment = async (context: DeploymentContext): Promise<void> => {
-  const desired = requiredDesired(context);
+  const desired = await loadDesired(context);
   const environment = composeEnvironment(desired);
   await getDeploymentStatus(context);
   await runCompose(context, ["config"], "configuration validation", environment);
@@ -227,7 +267,7 @@ export const startDeployment = async (context: DeploymentContext): Promise<void>
 };
 
 export const stopDeployment = async (context: DeploymentContext): Promise<void> => {
-  const desired = requiredDesired(context);
+  const desired = await loadDesired(context);
   const environment = composeEnvironment(desired);
   await getDeploymentStatus(context);
   await runCompose(context, ["stop"], "stop", environment);
@@ -235,7 +275,7 @@ export const stopDeployment = async (context: DeploymentContext): Promise<void> 
 };
 
 export const restartDeployment = async (context: DeploymentContext): Promise<void> => {
-  const desired = requiredDesired(context);
+  const desired = await loadDesired(context);
   const environment = composeEnvironment(desired);
   await getDeploymentStatus(context);
   await runCompose(context, ["restart"], "restart", environment);

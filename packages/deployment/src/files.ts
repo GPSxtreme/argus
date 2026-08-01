@@ -99,8 +99,12 @@ export const loadDeploymentState = async (root: string): Promise<DeploymentState
     const parsed = deploymentStateSchema.parse(
       JSON.parse(await readFile(instancePaths(root).state, "utf8")),
     );
-    const { fxembed, ...state } = parsed;
-    return fxembed === undefined ? state : { ...state, fxembed };
+    const { fxembed, compose, ...state } = parsed;
+    return {
+      ...state,
+      ...(fxembed === undefined ? {} : { fxembed }),
+      ...(compose === undefined ? {} : { compose }),
+    };
   } catch (error: unknown) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw error;

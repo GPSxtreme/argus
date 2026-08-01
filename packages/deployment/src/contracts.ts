@@ -39,6 +39,13 @@ export interface DeploymentStateV1 {
   composeProject: string;
   configHash: string;
   services: Record<string, { image: string; healthy: boolean }>;
+  compose?: {
+    version: string;
+    apiPort: number;
+    storage: "sqlite" | "postgres";
+    searxng: boolean;
+    images: { argus: string; postgres: string; searxng: string };
+  };
   fxembed?: {
     accountId: string;
     workerName: string;
@@ -191,6 +198,22 @@ export const deploymentStateSchema = z
       z.string(),
       z.object({ image: z.string().min(1), healthy: z.boolean() }).strict(),
     ),
+    compose: z
+      .object({
+        version: z.string().min(1),
+        apiPort: z.number().int().positive().max(65_535),
+        storage: z.enum(["sqlite", "postgres"]),
+        searxng: z.boolean(),
+        images: z
+          .object({
+            argus: z.string().min(1),
+            postgres: z.string().min(1),
+            searxng: z.string().min(1),
+          })
+          .strict(),
+      })
+      .strict()
+      .optional(),
     fxembed: z
       .object({
         accountId: z.string().min(1),

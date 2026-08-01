@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -6,6 +6,7 @@ import {
   applyDeployment,
   getDeploymentStatus,
   inspectDeployment,
+  loadDeploymentState,
   planDeployment,
   restartDeployment,
   startDeployment,
@@ -123,6 +124,34 @@ describe("deployment reconciliation", () => {
       ARGUS_VERSION: `0.2.0@sha256:${"a".repeat(64)}`,
       SEARXNG_IMAGE: `docker.io/searxng/searxng@sha256:${"b".repeat(64)}`,
     });
+  });
+
+  it("loads persisted non-secret Compose inputs in a fresh lifecycle context", async () => {
+    const { context } = await contextFor();
+    await applyDeployment(planDeployment(await inspectDeployment(context), desired), context);
+    const freshExecutor = new FixtureExecutor();
+    const freshContext: DeploymentContext = { root: context.root, executor: freshExecutor };
+
+    await getDeploymentStatus(freshContext);
+    await startDeployment(freshContext);
+
+    expect(freshExecutor.calls.every((call) => call.env?.ARGUS_API_PORT === "8788")).toBe(true);
+    expect(freshExecutor.calls[0]?.env).toMatchObject({
+      ARGUS_VERSION: `0.2.0@sha256:${"a".repeat(64)}`,
+      SEARXNG_IMAGE: `docker.io/searxng/searxng@sha256:${"b".repeat(64)}`,
+    });
+    expect((await loadDeploymentState(context.root))?.compose).toEqual({
+      apiPort: 8788,
+      version: "0.2.0",
+      storage: "sqlite",
+      searxng: true,
+      images: {
+        argus: `ghcr.io/gpsxtreme/argus@sha256:${"a".repeat(64)}`,
+        postgres: `docker.io/library/postgres@sha256:${"c".repeat(64)}`,
+        searxng: `docker.io/searxng/searxng@sha256:${"b".repeat(64)}`,
+      },
+    });
+    expect(await readFile(join(context.root, "state.json"), "utf8")).not.toContain("secret");
   });
 
   it.each([
