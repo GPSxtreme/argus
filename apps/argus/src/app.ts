@@ -5,13 +5,15 @@ import { OpenRouterClient } from "@argus/intelligence";
 import { QueryService } from "@argus/query";
 import { enqueueWatchNow, targetsFromConfig } from "@argus/scheduler";
 import { Hono } from "hono";
+import { safeDiagnosticWebTarget, type DiagnosticResolver } from "./web-safety.js";
 
 export interface CreateAppInput {
   config: ArgusConfig;
   repository: StorageRepository;
+  diagnosticResolver?: DiagnosticResolver;
 }
 
-export const createApp = ({ config, repository }: CreateAppInput): Hono => {
+export const createApp = ({ config, repository, diagnosticResolver }: CreateAppInput): Hono => {
   const app = new Hono();
   const query = new QueryService(repository);
 
@@ -95,11 +97,7 @@ export const createApp = ({ config, repository }: CreateAppInput): Hono => {
     const target = typeof body.targetId === "string" ? targetsFromConfig(config).find((candidate) => candidate.id === body.targetId && candidate.source === body.source) : undefined;
     if (!target) return context.json({ error: "configured enabled diagnostic target was not found" }, 404);
     if (target.source === "web" && target.kind === "url") {
-      try {
-        const url = new URL(target.value);
-        const privateHost = /^(localhost|127\.|0\.0\.0\.0|::1$|fc|fd|fe80)/i.test(url.hostname);
-        if (url.username || url.password || privateHost) return context.json({ error: "configured web diagnostic target is not permitted" }, 400);
-      } catch { return context.json({ error: "configured web diagnostic target is not permitted" }, 400); }
+      if (!(await safeDiagnosticWebTarget(target.value, diagnosticResolver))) return context.json({ error: "configured web diagnostic target is not permitted" }, 400);
     }
     const id = randomUUID();
     const targetId = `__argus_doctor:${id}`;
