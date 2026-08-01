@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { loadConfig } from "@argus/config";
 import { afterEach, describe, expect, it } from "vitest";
 import type { OnboardingAnswersV1 } from "../src/contracts.js";
 import { renderInstanceConfig } from "../src/index.js";
@@ -120,9 +121,7 @@ api:
 
     expect(rendered.yaml).toContain("adapter: postgres");
     expect(rendered.yaml).toContain(
-      ["postgres://argus:$", "{ARGUS_POSTGRES_URL_PASSWORD}@postgres:5432/argus"].join(
-        "",
-      ),
+      ["url: $", "{ARGUS_POSTGRES_URL}"].join(""),
     );
     expect(rendered.yaml).toContain("id: research");
     expect(rendered.yaml).toContain("accounts:");
@@ -137,16 +136,47 @@ api:
     expect(rendered.secretEnvironment).toEqual({
       ARGUS_API_TOKEN: "api-secret",
       POSTGRES_PASSWORD: "p@ss:word",
-      ARGUS_POSTGRES_URL_PASSWORD: "p%40ss%3Aword",
+      ARGUS_POSTGRES_URL: "postgres://argus:p%40ss%3Aword@postgres:5432/argus",
       OPENROUTER_API_KEY: "openrouter-secret",
     });
     expect(rendered.secrets).toContain("POSTGRES_PASSWORD=p@ss:word\n");
     expect(rendered.secrets).toContain(
-      "ARGUS_POSTGRES_URL_PASSWORD=p%40ss%3Aword\n",
+      "ARGUS_POSTGRES_URL=postgres://argus:p%40ss%3Aword@postgres:5432/argus\n",
     );
     expect(rendered.secrets).toContain(
       "OPENROUTER_API_KEY=openrouter-secret\n",
     );
+  });
+
+  it("loads a whole managed Postgres URL with reserved password characters", async () => {
+    const root = await mkdtemp(join(tmpdir(), "argus-postgres-config-"));
+    roots.push(root);
+    const password = "p@ss:/?#[]% word";
+    const rendered = renderInstanceConfig(
+      {
+        ...answers,
+        deployment: { ...answers.deployment, storage: "postgres" },
+      },
+      {
+        searxng: "http://searxng:8080",
+        fxembed: "https://argus-fx.workers.dev/api",
+        apiToken: "api-secret",
+        postgresPassword: password,
+      },
+    );
+    const path = join(root, "argus.yaml");
+    await writeFile(path, rendered.yaml);
+
+    const loaded = await loadConfig(path, rendered.secretEnvironment);
+    expect(loaded.storage).toEqual({
+      adapter: "postgres",
+      url: `postgres://argus:${encodeURIComponent(password)}@postgres:5432/argus`,
+    });
+    const connection = new URL(loaded.storage.url);
+    expect(connection.username).toBe("argus");
+    expect(decodeURIComponent(connection.password)).toBe(password);
+    expect(rendered.yaml).not.toContain(password);
+    expect(rendered.secrets).toContain(`POSTGRES_PASSWORD=${password}\n`);
   });
 
   it("writes one-line values verbatim for Compose raw env-file format", () => {

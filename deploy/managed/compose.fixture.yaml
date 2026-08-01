@@ -13,16 +13,17 @@ services:
       - argus-data:/app/data
     ports:
       - "${ARGUS_API_PORT}:8788"
-    networks: [argus-private]
+    networks: [argus-private, argus-egress]
     restart: unless-stopped
   searxng:
     image: ${SEARXNG_IMAGE}
     volumes:
       - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
-    networks: [argus-private]
+    networks: [argus-private, argus-egress]
     restart: unless-stopped
 networks:
   argus-private:
     internal: true
+  argus-egress: {}
 volumes:
   argus-data:

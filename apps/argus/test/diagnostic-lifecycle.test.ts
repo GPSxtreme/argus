@@ -172,13 +172,16 @@ describe("diagnostic watch lifecycle", () => {
       "mixed-artifact",
       "user-artifact",
     ]);
-    await repository.failJob(
-      "user-job",
-      "make due for assertion",
-      "2026-08-01T00:00:00.000Z",
-    );
+    await repository.enqueueJob({
+      id: "user-assertion-job",
+      targetId: "user-target",
+      source: "web",
+      status: "queued",
+      attempt: 0,
+      runAt: "2026-08-01T00:00:00.000Z",
+    });
     expect((await repository.claimJobs("user-worker", 1, 30_000))[0]?.id).toBe(
-      "user-job",
+      "user-assertion-job",
     );
   });
 

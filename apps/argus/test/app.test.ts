@@ -89,6 +89,57 @@ describe("Argus API", () => {
     expect(response.status).toBe(400);
   });
 
+  it("serves versioned record cursors and rejects legacy or malformed cursors", async () => {
+    const repository = await createSqliteRepository({ filename: ":memory:" });
+    repositories.push(repository);
+    for (const [id, ingestedAt] of [
+      ["new", "2026-08-01T01:00:00.000Z"],
+      ["old", "2026-08-01T00:00:00.000Z"],
+    ] as const) {
+      await repository.upsertRecord({
+        id,
+        source: "web",
+        targetId: "site",
+        externalId: id,
+        url: `https://example.com/${id}`,
+        text: id,
+        raw: {},
+        watchIds: ["argus"],
+        contentHash: id,
+        ingestedAt,
+      });
+    }
+    const app = createApp({ config, repository });
+    const first = await app.request("/v1/records?limit=1", {
+      headers: { authorization: "Bearer secret" },
+    });
+    const firstBody = (await first.json()) as {
+      items: Array<{ id: string }>;
+      nextCursor: string;
+    };
+    expect(firstBody.items.map(({ id }) => id)).toEqual(["new"]);
+    const second = await app.request(
+      `/v1/records?limit=1&cursor=${encodeURIComponent(firstBody.nextCursor)}`,
+      { headers: { authorization: "Bearer secret" } },
+    );
+    expect(second.status).toBe(200);
+    expect(((await second.json()) as { items: Array<{ id: string }> }).items).toEqual([
+      expect.objectContaining({ id: "old" }),
+    ]);
+
+    for (const cursor of [
+      Buffer.from("1").toString("base64url"),
+      "not+base64url",
+    ]) {
+      const invalid = await app.request(
+        `/v1/records?cursor=${encodeURIComponent(cursor)}`,
+        { headers: { authorization: "Bearer secret" } },
+      );
+      expect(invalid.status).toBe(400);
+      expect(await invalid.json()).toEqual({ error: "invalid records cursor" });
+    }
+  });
+
   it("creates and only tombstones its authenticated temporary diagnostic watch", async () => {
     const repository = await createSqliteRepository({ filename: ":memory:" });
     repositories.push(repository);

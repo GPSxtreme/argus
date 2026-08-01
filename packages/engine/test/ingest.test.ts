@@ -63,4 +63,25 @@ describe("ingestion engine", () => {
     expect((await repository.queryRecords({})).items).toHaveLength(2);
     expect(await repository.getCheckpoint("news")).toEqual({ last: "43" });
   });
+
+  it("fails closed when a diagnostic commit is missing its lease identity", async () => {
+    const repository = await createSqliteRepository({ filename: ":memory:" });
+    repositories.push(repository);
+    async function* items(): AsyncIterable<SourceItem> {
+      yield item;
+    }
+    await expect(
+      ingestItems({
+        source: "web",
+        targetId: "__argus_doctor:missing-lease",
+        watchIds: ["diagnostic"],
+        keywords: [],
+        items: items(),
+        checkpoint: {},
+        repository,
+        diagnosticJobId: "diagnostic-job",
+      }),
+    ).rejects.toThrow("Diagnostic ingestion requires a fenced job lease");
+    expect(await repository.queryRecords({})).toEqual({ items: [] });
+  });
 });

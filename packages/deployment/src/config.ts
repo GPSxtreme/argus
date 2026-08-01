@@ -37,7 +37,7 @@ export const renderInstanceConfig = (
   const storageUrl =
     answers.deployment.storage === "sqlite"
       ? "/app/data/argus.db"
-      : `postgres://argus:${environmentReference("ARGUS_POSTGRES_URL_PASSWORD")}@postgres:5432/argus`;
+      : environmentReference("ARGUS_POSTGRES_URL");
   const telegramEnabled = answers.watches.some(
     (watch) => watch.telegram.channels.length > 0,
   );
@@ -116,7 +116,7 @@ export const renderInstanceConfig = (
       ? {}
       : {
           POSTGRES_PASSWORD: postgresPassword,
-          ARGUS_POSTGRES_URL_PASSWORD: encodeURIComponent(postgresPassword),
+          ARGUS_POSTGRES_URL: `postgres://argus:${encodeURIComponent(postgresPassword)}@postgres:5432/argus`,
         }),
     ...(openrouterApiKey === undefined
       ? {}

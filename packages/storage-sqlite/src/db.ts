@@ -32,6 +32,21 @@ export const openSqlite = (filename: string): Database.Database => {
         .run();
     }
   }
+  const hasJobs = (
+    database
+      .prepare(
+        "SELECT 1 AS found FROM sqlite_master WHERE type='table' AND name='jobs'",
+      )
+      .get() as { found: number } | undefined
+  )?.found;
+  if (hasJobs) {
+    const columns = database.pragma("table_info(jobs)") as Array<{
+      name: string;
+    }>;
+    if (!columns.some(({ name }) => name === "lease_token")) {
+      database.exec("ALTER TABLE jobs ADD COLUMN lease_token TEXT");
+    }
+  }
   database.exec(SQLITE_SCHEMA);
   return database;
 };

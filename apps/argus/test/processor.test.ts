@@ -91,9 +91,12 @@ describe("scheduled summary processor", () => {
         runAt: now,
       },
     });
-    await repository.claimJobs("worker", 1, 30_000);
+    const lease = (await repository.claimJobs("worker", 1, 30_000))[0];
+    if (!lease?.leaseToken) throw new Error("Expected diagnostic lease");
     await repository.commitDiagnosticIngestion({
       jobId: "summary-isolation-job",
+      leaseOwner: "worker",
+      leaseToken: lease.leaseToken,
       targetId,
       records: [
         {

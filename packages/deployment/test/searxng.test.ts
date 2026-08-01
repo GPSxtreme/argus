@@ -89,13 +89,13 @@ class ThrowingExecutor implements CommandExecutor {
 }
 
 describe("managed SearXNG", () => {
-  it("renders JSON search settings and keeps the managed service private", () => {
+  it("renders JSON search settings with private service access and controlled egress", () => {
     const settings = renderSearxngSettings();
     const compose = renderCompose({ version: "0.2.0", storage: "sqlite", searxng: true });
 
     expect(settings).toContain("formats: [html, json]");
     expect(settings).toContain("limiter: true");
-    expect(compose).toContain("networks: [argus-private]");
+    expect(compose).toContain("networks: [argus-private, argus-egress]");
     expect(compose).toContain("internal: true");
     expect(compose).not.toContain('"8080:8080"');
   });

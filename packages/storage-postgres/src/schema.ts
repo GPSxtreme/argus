@@ -46,9 +46,11 @@ CREATE TABLE IF NOT EXISTS jobs (
   attempt integer NOT NULL,
   run_at timestamptz NOT NULL,
   lease_owner text,
+  lease_token text,
   lease_expires_at timestamptz,
   error text
 );
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS lease_token text;
 CREATE INDEX IF NOT EXISTS jobs_due_idx ON jobs(status, run_at, lease_expires_at);
 CREATE TABLE IF NOT EXISTS diagnostic_watches (
  id text PRIMARY KEY, target_id text NOT NULL UNIQUE, source text NOT NULL, target_json jsonb NOT NULL,

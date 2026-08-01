@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { ArgusConfig } from "@argus/config";
-import type { StorageRepository } from "@argus/contracts";
+import {
+  InvalidRecordsCursorError,
+  type StorageRepository,
+} from "@argus/contracts";
 import { OpenRouterClient } from "@argus/intelligence";
 import { QueryService } from "@argus/query";
 import { enqueueWatchNow, targetsFromConfig } from "@argus/scheduler";
@@ -54,23 +57,30 @@ export const createApp = ({ config, repository, diagnosticResolver }: CreateAppI
     if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
       return context.json({ error: "limit must be an integer from 1 to 200" }, 400);
     }
-    const result = await query.search({
-      ...(text ? { text } : {}),
-      ...(sources?.length
-        ? {
-            sources: sources.filter(
-              (source): source is "x" | "telegram" | "web" =>
-                source === "x" || source === "telegram" || source === "web",
-            ),
-          }
-        : {}),
-      ...(targets?.length ? { targetIds: targets } : {}),
-      ...(since ? { since } : {}),
-      ...(until ? { until } : {}),
-      ...(cursor ? { cursor } : {}),
-      limit,
-    });
-    return context.json(result);
+    try {
+      const result = await query.search({
+        ...(text ? { text } : {}),
+        ...(sources?.length
+          ? {
+              sources: sources.filter(
+                (source): source is "x" | "telegram" | "web" =>
+                  source === "x" || source === "telegram" || source === "web",
+              ),
+            }
+          : {}),
+        ...(targets?.length ? { targetIds: targets } : {}),
+        ...(since ? { since } : {}),
+        ...(until ? { until } : {}),
+        ...(cursor ? { cursor } : {}),
+        limit,
+      });
+      return context.json(result);
+    } catch (error) {
+      if (error instanceof InvalidRecordsCursorError) {
+        return context.json({ error: "invalid records cursor" }, 400);
+      }
+      throw error;
+    }
   });
 
   app.get("/v1/artifacts", async (context) => {

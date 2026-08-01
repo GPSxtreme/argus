@@ -28,6 +28,14 @@ const record = (hash: string, text = "Solana release"): RecordEnvelope => ({
   ingestedAt: "2026-07-31T00:00:00.000Z",
 });
 
+const recordAt = (id: string, ingestedAt: string): RecordEnvelope => ({
+  ...record(id, id),
+  id,
+  externalId: id,
+  contentHash: id,
+  ingestedAt,
+});
+
 const createRepo = async (): Promise<SqliteRepository> => {
   const repo = await createSqliteRepository({ filename: ":memory:" });
   repositories.push(repo);
@@ -85,6 +93,41 @@ describe("SQLite repository", () => {
     migrated.close();
   });
 
+  it("adds lease fencing to an existing jobs table without losing jobs", () => {
+    const directory = mkdtempSync(join(tmpdir(), "argus-jobs-migration-"));
+    temporaryDirectories.push(directory);
+    const filename = join(directory, "argus.db");
+    const legacy = new Database(filename);
+    legacy.exec(`
+      CREATE TABLE jobs (
+        id TEXT PRIMARY KEY,
+        target_id TEXT NOT NULL,
+        source TEXT NOT NULL,
+        status TEXT NOT NULL,
+        attempt INTEGER NOT NULL,
+        run_at TEXT NOT NULL,
+        lease_owner TEXT,
+        lease_expires_at TEXT,
+        error TEXT
+      );
+      INSERT INTO jobs
+        (id,target_id,source,status,attempt,run_at)
+      VALUES
+        ('legacy-job','target','web','queued',0,'2026-08-01T00:00:00.000Z');
+    `);
+    legacy.close();
+
+    const migrated = openSqlite(filename);
+    const columns = migrated.pragma("table_info(jobs)") as Array<{
+      name: string;
+    }>;
+    expect(columns.map(({ name }) => name)).toContain("lease_token");
+    expect(
+      migrated.prepare("SELECT id FROM jobs WHERE id='legacy-job'").get(),
+    ).toEqual({ id: "legacy-job" });
+    migrated.close();
+  });
+
   it("deduplicates records and preserves revisions when content changes", async () => {
     const repo = await createRepo();
     const first = await repo.upsertRecord(record("a"));
@@ -120,6 +163,49 @@ describe("SQLite repository", () => {
     ).toHaveLength(1);
   });
 
+  it("uses a strict keyset cursor across inserts and equal timestamps", async () => {
+    const repo = await createRepo();
+    await Promise.all([
+      repo.upsertRecord(recordAt("a", "2026-08-01T03:00:00.000Z")),
+      repo.upsertRecord(recordAt("b", "2026-08-01T02:00:00.000Z")),
+      repo.upsertRecord(recordAt("c", "2026-08-01T02:00:00.000Z")),
+      repo.upsertRecord(recordAt("d", "2026-08-01T01:00:00.000Z")),
+    ]);
+    const first = await repo.queryRecords({ limit: 2 });
+    expect(first.items.map(({ id }) => id)).toEqual(["a", "b"]);
+    expect(first.nextCursor).toBeTruthy();
+    if (!first.nextCursor) throw new Error("Expected a keyset cursor");
+    await repo.upsertRecord(recordAt("newer", "2026-08-01T04:00:00.000Z"));
+
+    const second = await repo.queryRecords({
+      limit: 2,
+      cursor: first.nextCursor,
+    });
+    expect(second.items.map(({ id }) => id)).toEqual(["c", "d"]);
+    expect(
+      [...first.items, ...second.items].map(({ id }) => id),
+    ).toEqual(["a", "b", "c", "d"]);
+  });
+
+  it("fails closed for malformed and version-mismatched record cursors", async () => {
+    const repo = await createRepo();
+    for (const cursor of [
+      Buffer.from("1").toString("base64url"),
+      Buffer.from(
+        JSON.stringify({
+          v: 2,
+          ingestedAt: "2026-08-01T00:00:00.000Z",
+          id: "a",
+        }),
+      ).toString("base64url"),
+      "not+base64url",
+    ]) {
+      await expect(repo.queryRecords({ cursor })).rejects.toMatchObject({
+        code: "RECORDS_CURSOR_INVALID",
+      });
+    }
+  });
+
   it("leases due jobs to only one worker", async () => {
     const repo = await createRepo();
     await repo.enqueueJob({
@@ -131,8 +217,89 @@ describe("SQLite repository", () => {
       runAt: "2026-07-31T00:00:00.000Z",
     });
 
-    expect(await repo.claimJobs("worker-a", 10, 30_000)).toHaveLength(1);
-    expect(await repo.claimJobs("worker-b", 10, 30_000)).toHaveLength(0);
+    const claims = await Promise.all([
+      repo.claimJobs("worker-a", 10, 30_000),
+      repo.claimJobs("worker-b", 10, 30_000),
+    ]);
+    expect(claims.flat()).toHaveLength(1);
+  });
+
+  it("reclaims an expired worker lease and fences stale settlement", async () => {
+    const repo = await createRepo();
+    const id = randomUUID();
+    await repo.enqueueJob({
+      id,
+      targetId: "target-1",
+      source: "x",
+      status: "queued",
+      attempt: 0,
+      runAt: "2026-07-31T00:00:00.000Z",
+    });
+    const original = (await repo.claimJobs("worker-a", 1, 1))[0];
+    if (!original?.leaseToken) throw new Error("Expected a fenced lease");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const reclaimed = (await repo.claimJobs("worker-b", 1, 30_000))[0];
+    if (!reclaimed?.leaseToken) throw new Error("Expected a reclaimed lease");
+
+    expect(reclaimed.id).toBe(id);
+    expect(reclaimed.attempt).toBe(1);
+    expect(reclaimed.leaseToken).not.toBe(original.leaseToken);
+    await expect(
+      repo.completeJob(id, "worker-a", original.leaseToken),
+    ).resolves.toBe(false);
+    await expect(
+      repo.failJob(
+        id,
+        "worker-a",
+        original.leaseToken,
+        "stale failure",
+      ),
+    ).resolves.toBe(false);
+    await expect(
+      repo.completeJob(id, "worker-b", reclaimed.leaseToken),
+    ).resolves.toBe(true);
+  });
+
+  it("allows only the current lease owner to fail and retry a job", async () => {
+    const repo = await createRepo();
+    const id = randomUUID();
+    await repo.enqueueJob({
+      id,
+      targetId: "target-1",
+      source: "x",
+      status: "queued",
+      attempt: 0,
+      runAt: "2026-07-31T00:00:00.000Z",
+    });
+    const claimed = (await repo.claimJobs("worker-a", 1, 30_000))[0];
+    if (!claimed?.leaseToken) throw new Error("Expected a fenced lease");
+    await expect(
+      repo.failJob(
+        id,
+        "worker-a",
+        claimed.leaseToken,
+        "retry",
+        "2026-07-31T00:00:00.000Z",
+      ),
+    ).resolves.toBe(true);
+    const retry = (await repo.claimJobs("worker-b", 1, 30_000))[0];
+    expect(retry?.attempt).toBe(1);
+  });
+
+  it("does not reclaim an expired job after its retry budget is exhausted", async () => {
+    const repo = await createRepo();
+    await repo.enqueueJob({
+      id: randomUUID(),
+      targetId: "target-1",
+      source: "x",
+      status: "running",
+      attempt: 5,
+      runAt: "2026-07-31T00:00:00.000Z",
+      leaseOwner: "crashed-worker",
+      leaseToken: randomUUID(),
+      leaseExpiresAt: "2026-07-31T00:00:00.000Z",
+    });
+    await expect(repo.claimJobs("replacement", 1, 30_000)).resolves.toEqual([]);
   });
 
   it("commits records and checkpoint as one ingestion unit", async () => {
@@ -282,11 +449,15 @@ describe("SQLite repository", () => {
         runAt: now,
       },
     });
+    const lease = (await repo.claimJobs("worker", 1, 30_000))[0];
+    if (!lease?.leaseToken) throw new Error("Expected diagnostic lease");
     await repo.cancelDiagnosticWatch(targetId);
 
     expect(
       await repo.commitDiagnosticIngestion({
         jobId: "atomic-job",
+        leaseOwner: "worker",
+        leaseToken: lease.leaseToken,
         targetId,
         records: [{ ...record("diagnostic"), id: "diagnostic", targetId }],
         checkpoint: { lastId: "post-9" },
@@ -322,8 +493,12 @@ describe("SQLite repository", () => {
         runAt: now,
       },
     });
+    const lease = (await repo.claimJobs("worker", 1, 30_000))[0];
+    if (!lease?.leaseToken) throw new Error("Expected diagnostic lease");
     await repo.commitDiagnosticIngestion({
       jobId: "isolation-job",
+      leaseOwner: "worker",
+      leaseToken: lease.leaseToken,
       targetId,
       records: [{ ...record("diagnostic"), id: "diagnostic", targetId }],
       checkpoint: {},

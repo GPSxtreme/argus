@@ -15,6 +15,10 @@ import type {
   RecordRevision,
   StorageRepository,
 } from "@argus/contracts";
+import {
+  decodeRecordsCursor,
+  encodeRecordsCursor,
+} from "@argus/contracts";
 
 type RecordRow = {
   id: string;
@@ -41,12 +45,6 @@ type RevisionRow = {
   text: string;
   raw_json: string;
   created_at: string;
-};
-
-const decodeOffset = (cursor?: string): number => {
-  if (!cursor) return 0;
-  const value = Number(Buffer.from(cursor, "base64url").toString("utf8"));
-  return Number.isSafeInteger(value) && value >= 0 ? value : 0;
 };
 
 const mapRecord = (row: RecordRow): RecordEnvelope => ({
@@ -243,21 +241,29 @@ export class SqliteRepository implements StorageRepository {
       conditions.push("ingested_at <= ?");
       parameters.push(input.until);
     }
-    const offset = decodeOffset(input.cursor);
+    const cursor = decodeRecordsCursor(input.cursor);
+    if (cursor) {
+      conditions.push(
+        "(ingested_at < ? OR (ingested_at = ? AND id > ?))",
+      );
+      parameters.push(cursor.ingestedAt, cursor.ingestedAt, cursor.id);
+    }
     const limit = Math.min(Math.max(input.limit ?? 50, 1), 200);
     const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
     const rows = this.database
       .prepare(
         `SELECT * FROM records ${where}
-         ORDER BY ingested_at DESC, id ASC LIMIT ? OFFSET ?`,
+         ORDER BY ingested_at DESC, id ASC LIMIT ?`,
       )
-      .all(...parameters, limit + 1, offset) as RecordRow[];
+      .all(...parameters, limit + 1) as RecordRow[];
     const hasMore = rows.length > limit;
+    const items = rows.slice(0, limit).map(mapRecord);
+    const lastItem = items[items.length - 1];
     return {
-      items: rows.slice(0, limit).map(mapRecord),
-      ...(hasMore
+      items,
+      ...(hasMore && lastItem
         ? {
-            nextCursor: Buffer.from(String(offset + limit)).toString("base64url"),
+            nextCursor: encodeRecordsCursor(lastItem),
           }
         : {}),
     };
@@ -286,7 +292,8 @@ export class SqliteRepository implements StorageRepository {
         .prepare(
           `INSERT OR IGNORE INTO jobs
           (id, target_id, source, status, attempt, run_at, lease_owner,
-           lease_expires_at, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           lease_token, lease_expires_at, error)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           job.id,
@@ -296,6 +303,7 @@ export class SqliteRepository implements StorageRepository {
           job.attempt,
           job.runAt,
           job.leaseOwner ?? null,
+          job.leaseToken ?? null,
           job.leaseExpiresAt ?? null,
           job.error ?? null,
         ).changes === 1
@@ -305,47 +313,83 @@ export class SqliteRepository implements StorageRepository {
   async claimJobs(owner: string, limit: number, leaseMs: number): Promise<Job[]> {
     return this.database.transaction(() => {
       const now = new Date().toISOString();
+      this.database
+        .prepare(
+          `UPDATE jobs SET status='failed',error='worker lease expired',
+           lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL
+           WHERE status='running' AND lease_expires_at < ? AND attempt >= 5`,
+        )
+        .run(now);
       const rows = this.database
         .prepare(
-          `SELECT * FROM jobs WHERE status = 'queued' AND run_at <= ?
-           AND (lease_expires_at IS NULL OR lease_expires_at < ?)
+          `SELECT * FROM jobs WHERE
+           (status='queued' AND run_at <= ?)
+           OR (status='running' AND lease_expires_at < ? AND attempt < 5)
            ORDER BY run_at, id LIMIT ?`,
         )
         .all(now, now, limit) as Array<Record<string, unknown>>;
       const expires = new Date(Date.now() + leaseMs).toISOString();
       const update = this.database.prepare(
-        "UPDATE jobs SET status='running', lease_owner=?, lease_expires_at=? WHERE id=?",
+        `UPDATE jobs SET status='running',attempt=?,
+         lease_owner=?,lease_token=?,lease_expires_at=? WHERE id=?`,
       );
-      for (const row of rows) update.run(owner, expires, row.id);
-      return rows.map((row): Job => ({
+      const claimed = rows.map((row) => {
+        const leaseToken = randomUUID();
+        const attempt =
+          (row.attempt as number) + (row.status === "running" ? 1 : 0);
+        update.run(attempt, owner, leaseToken, expires, row.id);
+        return { row, leaseToken, attempt };
+      });
+      return claimed.map(({ row, leaseToken, attempt }): Job => ({
         id: row.id as string,
         targetId: row.target_id as string,
         source: row.source as Job["source"],
         status: "running",
-        attempt: row.attempt as number,
+        attempt,
         runAt: row.run_at as string,
         leaseOwner: owner,
+        leaseToken,
         leaseExpiresAt: expires,
         ...(row.error ? { error: row.error as string } : {}),
       }));
     })();
   }
 
-  async completeJob(id: string): Promise<void> {
-    this.database
+  async completeJob(
+    id: string,
+    owner: string,
+    leaseToken: string,
+  ): Promise<boolean> {
+    return this.database
       .prepare(
-        "UPDATE jobs SET status='complete', lease_owner=NULL, lease_expires_at=NULL WHERE id=?",
+        `UPDATE jobs SET status='complete',lease_owner=NULL,lease_token=NULL,
+         lease_expires_at=NULL
+         WHERE id=? AND status='running' AND lease_owner=? AND lease_token=?`,
       )
-      .run(id);
+      .run(id, owner, leaseToken).changes === 1;
   }
 
-  async failJob(id: string, error: string, retryAt?: string): Promise<void> {
-    this.database
+  async failJob(
+    id: string,
+    owner: string,
+    leaseToken: string,
+    error: string,
+    retryAt?: string,
+  ): Promise<boolean> {
+    return this.database
       .prepare(
         `UPDATE jobs SET status=?, error=?, attempt=attempt+1, run_at=?,
-         lease_owner=NULL, lease_expires_at=NULL WHERE id=?`,
+         lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL
+         WHERE id=? AND status='running' AND lease_owner=? AND lease_token=?`,
       )
-      .run(retryAt ? "queued" : "failed", error, retryAt ?? new Date().toISOString(), id);
+      .run(
+        retryAt ? "queued" : "failed",
+        error,
+        retryAt ?? new Date().toISOString(),
+        id,
+        owner,
+        leaseToken,
+      ).changes === 1;
   }
 
   async saveArtifact(artifact: DerivedArtifact): Promise<void> {
@@ -462,7 +506,7 @@ export class SqliteRepository implements StorageRepository {
         new Date(new Date(input.createdAt).getTime() + 15 * 60_000).toISOString();
       const created = this.database.prepare("INSERT INTO diagnostic_watches(id,target_id,source,target_json,status,created_at,updated_at,expires_at) VALUES(?,?,?,?,?,?,?,?)").run(input.id, input.targetId, input.source, JSON.stringify(input.target), input.status, input.createdAt, input.updatedAt, expiresAt).changes === 1;
       if (!created) return false;
-      const queued = this.database.prepare("INSERT INTO jobs(id,target_id,source,status,attempt,run_at,lease_owner,lease_expires_at,error) VALUES(?,?,?,?,?,?,?,?,?)").run(input.job.id, input.job.targetId, input.job.source, input.job.status, input.job.attempt, input.job.runAt, null, null, null).changes === 1;
+      const queued = this.database.prepare("INSERT INTO jobs(id,target_id,source,status,attempt,run_at,lease_owner,lease_token,lease_expires_at,error) VALUES(?,?,?,?,?,?,?,?,?,?)").run(input.job.id, input.job.targetId, input.job.source, input.job.status, input.job.attempt, input.job.runAt, null, null, null, null).changes === 1;
       if (!queued) throw new Error("Diagnostic watch job could not be enqueued.");
       return true;
     })();
@@ -484,9 +528,25 @@ export class SqliteRepository implements StorageRepository {
     return rows.map(mapRecord);
   }
   async commitDiagnosticIngestion(
-    input: IngestionCommit & { jobId: string },
+    input: IngestionCommit & {
+      jobId: string;
+      leaseOwner: string;
+      leaseToken: string;
+    },
   ): Promise<IngestionCommitResult | undefined> {
     return this.database.transaction(() => {
+      const leased = this.database
+        .prepare(
+          `SELECT 1 FROM jobs WHERE id=? AND target_id=? AND status='running'
+           AND lease_owner=? AND lease_token=?`,
+        )
+        .get(
+          input.jobId,
+          input.targetId,
+          input.leaseOwner,
+          input.leaseToken,
+        );
+      if (!leased) return undefined;
       const watch = this.database
         .prepare(
           "SELECT status FROM diagnostic_watches WHERE target_id=? AND expires_at>?",
@@ -498,10 +558,16 @@ export class SqliteRepository implements StorageRepository {
         this.database
           .prepare(
             `UPDATE jobs SET status='complete',error='diagnostic cancelled',
-             lease_owner=NULL,lease_expires_at=NULL
-             WHERE id=? AND target_id=? AND status IN ('queued','running')`,
+             lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL
+             WHERE id=? AND target_id=? AND status='running'
+             AND lease_owner=? AND lease_token=?`,
           )
-          .run(input.jobId, input.targetId);
+          .run(
+            input.jobId,
+            input.targetId,
+            input.leaseOwner,
+            input.leaseToken,
+          );
         return undefined;
       }
       const result: IngestionCommitResult = {
@@ -529,9 +595,16 @@ export class SqliteRepository implements StorageRepository {
       this.database
         .prepare(
           `UPDATE jobs SET status='complete',error=NULL,lease_owner=NULL,
-           lease_expires_at=NULL WHERE id=? AND target_id=? AND status='running'`,
+           lease_token=NULL,lease_expires_at=NULL
+           WHERE id=? AND target_id=? AND status='running'
+           AND lease_owner=? AND lease_token=?`,
         )
-        .run(input.jobId, input.targetId);
+        .run(
+          input.jobId,
+          input.targetId,
+          input.leaseOwner,
+          input.leaseToken,
+        );
       this.database
         .prepare(
           "UPDATE diagnostic_watches SET status='complete',updated_at=? WHERE target_id=? AND status='active'",
@@ -540,7 +613,7 @@ export class SqliteRepository implements StorageRepository {
       return result;
     })();
   }
-  async cancelDiagnosticWatch(targetId: string): Promise<void> { this.database.transaction(() => { this.database.prepare("UPDATE diagnostic_watches SET status='cancelled',updated_at=? WHERE target_id=? AND status='active'").run(new Date().toISOString(), targetId); this.database.prepare("UPDATE jobs SET status='complete',error='diagnostic cancelled',lease_owner=NULL,lease_expires_at=NULL WHERE target_id=? AND status IN ('queued','running')").run(targetId); })(); }
+  async cancelDiagnosticWatch(targetId: string): Promise<void> { this.database.transaction(() => { this.database.prepare("UPDATE diagnostic_watches SET status='cancelled',updated_at=? WHERE target_id=? AND status='active'").run(new Date().toISOString(), targetId); this.database.prepare("UPDATE jobs SET status='complete',error='diagnostic cancelled',lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL WHERE target_id=? AND status IN ('queued','running')").run(targetId); })(); }
   async cleanupDiagnosticWatch(targetId: string): Promise<void> {
     this.database.transaction(() => {
       this.cleanupDiagnosticWatchSync(targetId);
@@ -594,7 +667,7 @@ export class SqliteRepository implements StorageRepository {
         this.database
           .prepare(
             `UPDATE jobs SET status='complete',error='diagnostic expired',
-             lease_owner=NULL,lease_expires_at=NULL
+             lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL
              WHERE target_id=? AND status IN ('queued','running')`,
           )
           .run(targetId);

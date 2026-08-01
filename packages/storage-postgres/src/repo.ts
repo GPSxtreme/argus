@@ -15,6 +15,10 @@ import type {
   RecordRevision,
   StorageRepository,
 } from "@argus/contracts";
+import {
+  decodeRecordsCursor,
+  encodeRecordsCursor,
+} from "@argus/contracts";
 import { POSTGRES_SCHEMA } from "./schema.js";
 
 type Row = Record<string, unknown>;
@@ -258,24 +262,30 @@ export class PostgresRepository implements StorageRepository {
       );
     if (input.since) clauses.push(`ingested_at >= ${bind(input.since)}`);
     if (input.until) clauses.push(`ingested_at <= ${bind(input.until)}`);
-    const offset = input.cursor
-      ? Number(Buffer.from(input.cursor, "base64url").toString("utf8"))
-      : 0;
+    const cursor = decodeRecordsCursor(input.cursor);
+    if (cursor) {
+      const timestamp = bind(cursor.ingestedAt);
+      const id = bind(cursor.id);
+      clauses.push(
+        `(ingested_at < ${timestamp} OR (ingested_at = ${timestamp} AND id > ${id}))`,
+      );
+    }
     const limit = Math.min(Math.max(input.limit ?? 50, 1), 200);
     const limitBind = bind(limit + 1);
-    const offsetBind = bind(Number.isSafeInteger(offset) && offset >= 0 ? offset : 0);
     const result = await this.pool.query<Row>(
       `SELECT * FROM records
        ${clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""}
-       ORDER BY ingested_at DESC, id ASC LIMIT ${limitBind} OFFSET ${offsetBind}`,
+       ORDER BY ingested_at DESC, id ASC LIMIT ${limitBind}`,
       values,
     );
     const hasMore = result.rows.length > limit;
+    const items = result.rows.slice(0, limit).map(mapRecord);
+    const lastItem = items[items.length - 1];
     return {
-      items: result.rows.slice(0, limit).map(mapRecord),
-      ...(hasMore
+      items,
+      ...(hasMore && lastItem
         ? {
-            nextCursor: Buffer.from(String(offset + limit)).toString("base64url"),
+            nextCursor: encodeRecordsCursor(lastItem),
           }
         : {}),
     };
@@ -301,8 +311,9 @@ export class PostgresRepository implements StorageRepository {
   async enqueueJob(job: Job): Promise<boolean> {
     const result = await this.pool.query(
       `INSERT INTO jobs
-       (id,target_id,source,status,attempt,run_at,lease_owner,lease_expires_at,error)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING`,
+       (id,target_id,source,status,attempt,run_at,lease_owner,lease_token,
+        lease_expires_at,error)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT DO NOTHING`,
       [
         job.id,
         job.targetId,
@@ -311,6 +322,7 @@ export class PostgresRepository implements StorageRepository {
         job.attempt,
         job.runAt,
         job.leaseOwner ?? null,
+        job.leaseToken ?? null,
         job.leaseExpiresAt ?? null,
         job.error ?? null,
       ],
@@ -319,45 +331,93 @@ export class PostgresRepository implements StorageRepository {
   }
 
   async claimJobs(owner: string, limit: number, leaseMs: number): Promise<Job[]> {
-    const result = await this.pool.query<Row>(
-      `WITH claimed AS (
-        SELECT id FROM jobs WHERE status='queued' AND run_at <= now()
-        AND (lease_expires_at IS NULL OR lease_expires_at < now())
-        ORDER BY run_at,id FOR UPDATE SKIP LOCKED LIMIT $2
-      )
-      UPDATE jobs SET status='running',lease_owner=$1,
-        lease_expires_at=now() + ($3 * interval '1 millisecond')
-      WHERE id IN (SELECT id FROM claimed) RETURNING *`,
-      [owner, limit, leaseMs],
-    );
-    return result.rows.map(
-      (row): Job => ({
-        id: row.id as string,
-        targetId: row.target_id as string,
-        source: row.source as Job["source"],
-        status: "running",
-        attempt: row.attempt as number,
-        runAt: iso(row.run_at),
-        leaseOwner: owner,
-        leaseExpiresAt: iso(row.lease_expires_at),
-        ...(row.error == null ? {} : { error: row.error as string }),
-      }),
-    );
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        `UPDATE jobs SET status='failed',error='worker lease expired',
+         lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL
+         WHERE status='running' AND lease_expires_at < now() AND attempt >= 5`,
+      );
+      const candidates = await client.query<Row>(
+        `SELECT * FROM jobs WHERE
+         (status='queued' AND run_at <= now())
+         OR (status='running' AND lease_expires_at < now() AND attempt < 5)
+         ORDER BY run_at,id FOR UPDATE SKIP LOCKED LIMIT $1`,
+        [limit],
+      );
+      const rows: Row[] = [];
+      for (const candidate of candidates.rows) {
+        const result = await client.query<Row>(
+          `UPDATE jobs SET status='running',
+           attempt=attempt + CASE WHEN status='running' THEN 1 ELSE 0 END,
+           lease_owner=$2,lease_token=$3,
+           lease_expires_at=now() + ($4 * interval '1 millisecond')
+           WHERE id=$1 RETURNING *`,
+          [candidate.id, owner, randomUUID(), leaseMs],
+        );
+        const row = result.rows[0];
+        if (!row) throw new Error("Claimed job disappeared during update");
+        rows.push(row);
+      }
+      await client.query("COMMIT");
+      return rows.map(
+        (row): Job => ({
+          id: row.id as string,
+          targetId: row.target_id as string,
+          source: row.source as Job["source"],
+          status: "running",
+          attempt: row.attempt as number,
+          runAt: iso(row.run_at),
+          leaseOwner: owner,
+          leaseToken: row.lease_token as string,
+          leaseExpiresAt: iso(row.lease_expires_at),
+          ...(row.error == null ? {} : { error: row.error as string }),
+        }),
+      );
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
-  async completeJob(id: string): Promise<void> {
-    await this.pool.query(
-      "UPDATE jobs SET status='complete',lease_owner=NULL,lease_expires_at=NULL WHERE id=$1",
-      [id],
+  async completeJob(
+    id: string,
+    owner: string,
+    leaseToken: string,
+  ): Promise<boolean> {
+    const result = await this.pool.query(
+      `UPDATE jobs SET status='complete',lease_owner=NULL,lease_token=NULL,
+       lease_expires_at=NULL
+       WHERE id=$1 AND status='running' AND lease_owner=$2 AND lease_token=$3`,
+      [id, owner, leaseToken],
     );
+    return result.rowCount === 1;
   }
 
-  async failJob(id: string, error: string, retryAt?: string): Promise<void> {
-    await this.pool.query(
+  async failJob(
+    id: string,
+    owner: string,
+    leaseToken: string,
+    error: string,
+    retryAt?: string,
+  ): Promise<boolean> {
+    const result = await this.pool.query(
       `UPDATE jobs SET status=$2,error=$3,attempt=attempt+1,run_at=$4,
-       lease_owner=NULL,lease_expires_at=NULL WHERE id=$1`,
-      [id, retryAt ? "queued" : "failed", error, retryAt ?? new Date()],
+       lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL
+       WHERE id=$1 AND status='running' AND lease_owner=$5 AND lease_token=$6`,
+      [
+        id,
+        retryAt ? "queued" : "failed",
+        error,
+        retryAt ?? new Date(),
+        owner,
+        leaseToken,
+      ],
     );
+    return result.rowCount === 1;
   }
 
   async saveArtifact(artifact: DerivedArtifact): Promise<void> {
@@ -532,11 +592,26 @@ export class PostgresRepository implements StorageRepository {
   }
 
   async commitDiagnosticIngestion(
-    input: IngestionCommit & { jobId: string },
+    input: IngestionCommit & {
+      jobId: string;
+      leaseOwner: string;
+      leaseToken: string;
+    },
   ): Promise<IngestionCommitResult | undefined> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
+      const leased = (
+        await client.query<Row>(
+          `SELECT 1 FROM jobs WHERE id=$1 AND target_id=$2 AND status='running'
+           AND lease_owner=$3 AND lease_token=$4 FOR UPDATE`,
+          [input.jobId, input.targetId, input.leaseOwner, input.leaseToken],
+        )
+      ).rows[0];
+      if (!leased) {
+        await client.query("COMMIT");
+        return undefined;
+      }
       const watch = (
         await client.query<Row>(
           `SELECT status FROM diagnostic_watches
@@ -547,9 +622,10 @@ export class PostgresRepository implements StorageRepository {
       if (watch?.status !== "active") {
         await client.query(
           `UPDATE jobs SET status='complete',error='diagnostic cancelled',
-           lease_owner=NULL,lease_expires_at=NULL
-           WHERE id=$1 AND target_id=$2 AND status IN ('queued','running')`,
-          [input.jobId, input.targetId],
+           lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL
+           WHERE id=$1 AND target_id=$2 AND status='running'
+           AND lease_owner=$3 AND lease_token=$4`,
+          [input.jobId, input.targetId, input.leaseOwner, input.leaseToken],
         );
         await client.query("COMMIT");
         return undefined;
@@ -557,9 +633,10 @@ export class PostgresRepository implements StorageRepository {
       const result = await this.commitRecords(client, input);
       await client.query(
         `UPDATE jobs SET status='complete',error=NULL,lease_owner=NULL,
-         lease_expires_at=NULL
-         WHERE id=$1 AND target_id=$2 AND status='running'`,
-        [input.jobId, input.targetId],
+         lease_token=NULL,lease_expires_at=NULL
+         WHERE id=$1 AND target_id=$2 AND status='running'
+         AND lease_owner=$3 AND lease_token=$4`,
+        [input.jobId, input.targetId, input.leaseOwner, input.leaseToken],
       );
       await client.query(
         `UPDATE diagnostic_watches SET status='complete',updated_at=now()
@@ -662,7 +739,7 @@ export class PostgresRepository implements StorageRepository {
       );
       await client.query(
         `UPDATE jobs SET status='complete',error='diagnostic cancelled',
-         lease_owner=NULL,lease_expires_at=NULL
+         lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL
          WHERE target_id=$1 AND status IN ('queued','running')`,
         [targetId],
       );
@@ -737,7 +814,7 @@ export class PostgresRepository implements StorageRepository {
         const targetId = row.target_id as string;
         await client.query(
           `UPDATE jobs SET status='complete',error='diagnostic expired',
-           lease_owner=NULL,lease_expires_at=NULL
+           lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL
            WHERE target_id=$1 AND status IN ('queued','running')`,
           [targetId],
         );

@@ -238,6 +238,52 @@ describe("safe web requests", () => {
     expect(resolver).toHaveBeenCalledTimes(1);
   });
 
+  it("enforces one hard deadline while response headers are stalled", async () => {
+    const close = vi.fn(async () => undefined);
+    const started = Date.now();
+    await expect(
+      safeHttpGet("https://public.example/stalled-headers", {
+        resolver: async () => publicAnswer,
+        dispatcherFactory: () => ({ close }),
+        timeoutMs: 20,
+        request: async () => await new Promise<Response>(() => undefined),
+      }),
+    ).rejects.toMatchObject({ code: "WEB_REQUEST_FAILED" });
+
+    expect(Date.now() - started).toBeLessThan(250);
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("enforces the same hard deadline while body and cancellation are stalled", async () => {
+    const close = vi.fn(async () => undefined);
+    const body = new ReadableStream<Uint8Array>({
+      pull: async () => await new Promise<void>(() => undefined),
+      cancel: async () => await new Promise<void>(() => undefined),
+    });
+    const started = Date.now();
+    await expect(
+      safeHttpGet("https://public.example/stalled-body", {
+        resolver: async () => publicAnswer,
+        dispatcherFactory: () => ({ close }),
+        timeoutMs: 20,
+        request: async () => new Response(body),
+      }),
+    ).rejects.toMatchObject({ code: "WEB_REQUEST_FAILED" });
+
+    expect(Date.now() - started).toBeLessThan(250);
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("bounds response bytes independently of transport behavior", async () => {
+    await expect(
+      safeHttpGet("https://public.example/large", {
+        resolver: async () => publicAnswer,
+        maxBodyBytes: 4,
+        request: async () => new Response("12345"),
+      }),
+    ).rejects.toMatchObject({ code: "WEB_RESPONSE_TOO_LARGE" });
+  });
+
   it("revalidates redirects and blocks a public-to-private hop", async () => {
     const resolver = vi
       .fn()

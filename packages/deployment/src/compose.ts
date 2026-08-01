@@ -17,7 +17,7 @@ const argusService = `  argus:
       - argus-data:/app/data
     ports:
       - "\${ARGUS_API_PORT}:8788"
-    networks: [argus-private]
+    networks: [argus-private, argus-egress]
     restart: unless-stopped
 `;
 
@@ -39,7 +39,7 @@ const searxngService = `  searxng:
     image: \${SEARXNG_IMAGE}
     volumes:
       - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
-    networks: [argus-private]
+    networks: [argus-private, argus-egress]
     restart: unless-stopped
 `;
 
@@ -56,6 +56,7 @@ services:
 ${services.join("")}networks:
   argus-private:
     internal: true
+  argus-egress: {}
 volumes:
 ${volumes.join("\n")}
 `;

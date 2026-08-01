@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   attempt INTEGER NOT NULL,
   run_at TEXT NOT NULL,
   lease_owner TEXT,
+  lease_token TEXT,
   lease_expires_at TEXT,
   error TEXT
 );

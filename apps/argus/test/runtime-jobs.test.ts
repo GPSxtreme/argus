@@ -1,11 +1,15 @@
 import { validateConfig } from "@argus/config";
 import { createSqliteRepository } from "@argus/storage-sqlite";
 import { describe, expect, it } from "vitest";
-import { processNextJob } from "../src/runtime.js";
+import { SAFE_HTTP_MAX_TIMEOUT_MS } from "@argus/source-web";
+import { JOB_LEASE_MS, processNextJob } from "../src/runtime.js";
 
 const config = validateConfig({ version: 1, storage: { adapter: "sqlite", url: ":memory:" }, sources: { web: { enabled: true } }, watches: [{ id: "watch", schedule: "* * * * *", inputs: { web: { urls: ["https://example.com"] } } }] });
 
 describe("processNextJob", () => {
+  it("keeps the job lease safely beyond the maximum web request deadline", () => {
+    expect(JOB_LEASE_MS).toBeGreaterThan(SAFE_HTTP_MAX_TIMEOUT_MS * 2);
+  });
   it("returns idle when no job exists", async () => {
     const repo = await createSqliteRepository({ filename: ":memory:" });
     expect(await processNextJob(config, repo)).toEqual({ status: "idle" });

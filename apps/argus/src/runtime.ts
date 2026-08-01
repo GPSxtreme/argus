@@ -3,6 +3,7 @@ import { serve, type ServerType } from "@hono/node-server";
 import { loadConfig, reconcileConfig, type ArgusConfig } from "@argus/config";
 import type { StorageRepository } from "@argus/contracts";
 import { backoffDelay, enqueueDueTargets } from "@argus/scheduler";
+import { SAFE_HTTP_MAX_TIMEOUT_MS } from "@argus/source-web";
 import pino from "pino";
 import { Cron } from "croner";
 import { createApp } from "./app.js";
@@ -11,6 +12,7 @@ import { openRepository, type RepositoryHandle } from "./repository.js";
 import { createAdapterFactory, findDiagnosticTarget, findTarget, runTarget, type AdapterFactory } from "./worker.js";
 
 const logger = pino({ name: "argus" });
+export const JOB_LEASE_MS = SAFE_HTTP_MAX_TIMEOUT_MS * 3;
 
 export const resolveRuntimeRole = (
   config: ArgusConfig,
@@ -43,12 +45,13 @@ export const processNextJob = async (
   { runTarget: execute = runTarget, adapterFactory, workerId = `${hostname()}:${process.pid}` }: ProcessNextJobDependencies = {},
 ): Promise<{ status: "idle" | "complete" | "failed" | "cancelled" }> => {
   const adapters = adapterFactory ?? createAdapterFactory(config);
-  const job = (await repository.claimJobs(workerId, 1, 60_000))[0];
+  const job = (await repository.claimJobs(workerId, 1, JOB_LEASE_MS))[0];
   if (!job) return { status: "idle" };
+  if (!job.leaseToken) throw new Error("Claimed job is missing its lease token");
   const isDiagnostic = job.targetId.startsWith("__argus_doctor:");
   const diagnostic = await repository.getDiagnosticWatch(job.targetId);
   if (isDiagnostic && diagnostic?.status !== "active") {
-    await repository.completeJob(job.id);
+    await repository.completeJob(job.id, workerId, job.leaseToken);
     return { status: "cancelled" };
   }
   try {
@@ -67,6 +70,7 @@ export const processNextJob = async (
             "active"
         : undefined,
       isDiagnostic ? job.id : undefined,
+      isDiagnostic ? { owner: workerId, token: job.leaseToken } : undefined,
     );
     if (diagnostic && result.diagnosticCommitted === false) {
       return { status: "cancelled" };
@@ -76,11 +80,11 @@ export const processNextJob = async (
       result.diagnosticCommitted === undefined &&
       (await repository.getDiagnosticWatch(job.targetId))?.status !== "active"
     ) {
-      await repository.completeJob(job.id);
+      await repository.completeJob(job.id, workerId, job.leaseToken);
       return { status: "cancelled" };
     }
     if (!isDiagnostic || result.diagnosticCommitted === undefined) {
-      await repository.completeJob(job.id);
+      await repository.completeJob(job.id, workerId, job.leaseToken);
     }
     logger.info(
       { jobId: job.id, targetId: job.targetId, ...result },
@@ -92,7 +96,7 @@ export const processNextJob = async (
       isDiagnostic &&
       (await repository.getDiagnosticWatch(job.targetId))?.status !== "active"
     ) {
-      await repository.completeJob(job.id);
+      await repository.completeJob(job.id, workerId, job.leaseToken);
       return { status: "cancelled" };
     }
     const message = error instanceof Error ? error.message : String(error);
@@ -106,7 +110,13 @@ export const processNextJob = async (
               }),
           ).toISOString()
         : undefined;
-    await repository.failJob(job.id, message, retryAt);
+    await repository.failJob(
+      job.id,
+      workerId,
+      job.leaseToken,
+      message,
+      retryAt,
+    );
     logger.error({ jobId: job.id, error: message }, "job failed");
     return { status: "failed" };
   }

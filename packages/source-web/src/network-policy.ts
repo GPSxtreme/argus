@@ -19,6 +19,7 @@ export class SafeWebError extends Error {
       | "WEB_REDIRECT_INVALID"
       | "WEB_REDIRECT_LOOP"
       | "WEB_TOO_MANY_REDIRECTS"
+      | "WEB_RESPONSE_TOO_LARGE"
       | "WEB_REQUEST_FAILED",
   ) {
     super("Web request was rejected by the destination policy");

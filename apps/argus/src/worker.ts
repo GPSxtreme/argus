@@ -61,6 +61,7 @@ export const runTarget = async (
   adapter?: AnyAdapter,
   isActive: (() => Promise<boolean>) | undefined = undefined,
   diagnosticJobId?: string,
+  diagnosticLease?: { owner: string; token: string },
 ): Promise<{
   inserted: number;
   revised: number;
@@ -102,7 +103,13 @@ export const runTarget = async (
       observedAt: new Date().toISOString(),
     },
     repository,
-    ...(diagnosticJobId ? { diagnosticJobId } : {}),
+    ...(diagnosticJobId && diagnosticLease
+      ? {
+          diagnosticJobId,
+          diagnosticLeaseOwner: diagnosticLease.owner,
+          diagnosticLeaseToken: diagnosticLease.token,
+        }
+      : {}),
   });
   if (!diagnosticJobId) return result;
   return {

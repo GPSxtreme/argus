@@ -16,6 +16,8 @@ export interface IngestItemsInput {
   checkpoint: unknown;
   repository: StorageRepository;
   diagnosticJobId?: string;
+  diagnosticLeaseOwner?: string;
+  diagnosticLeaseToken?: string;
   now?: () => string;
 }
 
@@ -47,10 +49,15 @@ export const ingestItems = async (
     checkpoint: input.checkpoint,
   };
   if (input.diagnosticJobId) {
+    if (!input.diagnosticLeaseOwner || !input.diagnosticLeaseToken) {
+      throw new Error("Diagnostic ingestion requires a fenced job lease");
+    }
     return (
       (await input.repository.commitDiagnosticIngestion({
         ...commit,
         jobId: input.diagnosticJobId,
+        leaseOwner: input.diagnosticLeaseOwner,
+        leaseToken: input.diagnosticLeaseToken,
       })) ?? { inserted: 0, revised: 0, duplicates: 0 }
     );
   }
