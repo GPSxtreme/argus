@@ -8,7 +8,7 @@ import { Cron } from "croner";
 import { createApp } from "./app.js";
 import { runSummaryProcessor } from "./processor.js";
 import { openRepository, type RepositoryHandle } from "./repository.js";
-import { adapterFor, findDiagnosticTarget, findTarget, runTarget, type AdapterFactory } from "./worker.js";
+import { createAdapterFactory, findDiagnosticTarget, findTarget, runTarget, type AdapterFactory } from "./worker.js";
 
 const logger = pino({ name: "argus" });
 
@@ -40,8 +40,9 @@ export interface ProcessNextJobDependencies {
 export const processNextJob = async (
   config: ArgusConfig,
   repository: StorageRepository,
-  { runTarget: execute = runTarget, adapterFactory = adapterFor, workerId = `${hostname()}:${process.pid}` }: ProcessNextJobDependencies = {},
+  { runTarget: execute = runTarget, adapterFactory, workerId = `${hostname()}:${process.pid}` }: ProcessNextJobDependencies = {},
 ): Promise<{ status: "idle" | "complete" | "failed" | "cancelled" }> => {
+  const adapters = adapterFactory ?? createAdapterFactory(config);
   const job = (await repository.claimJobs(workerId, 1, 60_000))[0];
   if (!job) return { status: "idle" };
   const isDiagnostic = job.targetId.startsWith("__argus_doctor:");
@@ -59,7 +60,7 @@ export const processNextJob = async (
       target,
       config,
       repository,
-      adapterFactory(target),
+      adapters(target),
       diagnostic
         ? async () =>
             (await repository.getDiagnosticWatch(job.targetId))?.status ===
@@ -111,9 +112,13 @@ export const processNextJob = async (
   }
 };
 
-const processJobs = async (config: ArgusConfig, repository: StorageRepository): Promise<void> => {
+const processJobs = async (
+  config: ArgusConfig,
+  repository: StorageRepository,
+  adapterFactory: AdapterFactory,
+): Promise<void> => {
   await repository.reapExpiredDiagnosticWatches();
-  for (let index = 0; index < 10; index += 1) if ((await processNextJob(config, repository)).status === "idle") return;
+  for (let index = 0; index < 10; index += 1) if ((await processNextJob(config, repository, { adapterFactory })).status === "idle") return;
 };
 
 export interface RuntimeHandle {
@@ -126,6 +131,10 @@ export interface RuntimeHandle {
 export const startRuntime = async (configPath: string): Promise<RuntimeHandle> => {
   const loaded = await loadConfig(configPath);
   const config = resolveRuntimeRole(loaded, process.env.ARGUS_ROLE);
+  const adapterFactory =
+    config.runtime.role === "all" || config.runtime.role === "worker"
+      ? createAdapterFactory(config)
+      : undefined;
   const repository = await openRepository(config);
   await reconcileConfig(repository.repository, config);
   await repository.repository.reapExpiredDiagnosticWatches();
@@ -150,8 +159,9 @@ export const startRuntime = async (configPath: string): Promise<RuntimeHandle> =
     timers.push(setInterval(tick, 30_000));
   }
   if (config.runtime.role === "all" || config.runtime.role === "worker") {
+    if (!adapterFactory) throw new Error("Worker adapter factory is unavailable");
     const tick = () =>
-      void processJobs(config, repository.repository).catch((error) =>
+      void processJobs(config, repository.repository, adapterFactory).catch((error) =>
         logger.error({ error }, "worker tick failed"),
       );
     tick();

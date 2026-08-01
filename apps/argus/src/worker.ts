@@ -7,17 +7,32 @@ import type {
 import { ingestItems } from "@argus/engine";
 import { type ScheduledTarget, targetsFromConfig } from "@argus/scheduler";
 import { TelegramAdapter } from "@argus/source-telegram";
-import { WebAdapter } from "@argus/source-web";
+import {
+  createTrustedServiceOrigin,
+  WebAdapter,
+  type WebAdapterOptions,
+} from "@argus/source-web";
 import { XAdapter } from "@argus/source-x";
 
 // biome-ignore lint/suspicious/noExplicitAny: Runtime dispatch intentionally erases source-specific adapter types.
 type AnyAdapter = SourceAdapter<any, any>;
 export type AdapterFactory = (target: ScheduledTarget) => AnyAdapter;
 
-export const adapterFor: AdapterFactory = (target) => {
-  if (target.source === "x") return new XAdapter();
-  if (target.source === "telegram") return new TelegramAdapter();
-  return new WebAdapter();
+export const createAdapterFactory = (
+  config: ArgusConfig,
+  webOptions: Omit<WebAdapterOptions, "trustedSearchOrigin"> = {},
+): AdapterFactory => {
+  const trustedSearchOrigin = config.sources.web.searchEndpoint
+    ? createTrustedServiceOrigin(config.sources.web.searchEndpoint)
+    : undefined;
+  return (target) => {
+    if (target.source === "x") return new XAdapter();
+    if (target.source === "telegram") return new TelegramAdapter();
+    return new WebAdapter({
+      ...webOptions,
+      ...(trustedSearchOrigin ? { trustedSearchOrigin } : {}),
+    });
+  };
 };
 
 const adapterConfig = (
@@ -35,7 +50,6 @@ const adapterConfig = (
   return {
     kind: target.kind,
     value: target.value,
-    searchEndpoint: config.sources.web.searchEndpoint,
     userAgent: config.sources.web.userAgent,
   };
 };
@@ -44,7 +58,7 @@ export const runTarget = async (
   target: ScheduledTarget,
   config: ArgusConfig,
   repository: StorageRepository,
-  adapter: AnyAdapter = adapterFor(target),
+  adapter?: AnyAdapter,
   isActive: (() => Promise<boolean>) | undefined = undefined,
   diagnosticJobId?: string,
 ): Promise<{
@@ -53,12 +67,13 @@ export const runTarget = async (
   duplicates: number;
   diagnosticCommitted?: boolean;
 }> => {
+  const sourceAdapter = adapter ?? createAdapterFactory(config)(target);
   if (isActive && !(await isActive())) return { inserted: 0, revised: 0, duplicates: 0 };
   const checkpoint = await repository.getCheckpoint<{ lastId?: string }>(
     target.id,
   );
   const items: SourceItem[] = [];
-  for await (const item of adapter.pull({
+  for await (const item of sourceAdapter.pull({
     targetId: target.id,
     config: adapterConfig(target, config),
     ...(checkpoint ? { checkpoint } : {}),

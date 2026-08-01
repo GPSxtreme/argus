@@ -1,32 +1,26 @@
 import type { SourceItem } from "@argus/contracts";
-import { safeHttpGet, type SafeHttpOptions } from "./safe-http.js";
+import {
+  requestTrustedSearch,
+  type TrustedServiceOrigin,
+  type TrustedServiceRequestOptions,
+} from "./trusted-service.js";
 
 export const searchSearxng = async (
-  endpoint: string,
+  origin: TrustedServiceOrigin,
   query: string,
-  options: SafeHttpOptions | typeof fetch = {},
+  options: TrustedServiceRequestOptions = {},
 ): Promise<SourceItem[]> => {
-  const url = new URL("/search", endpoint);
-  url.searchParams.set("q", query);
-  url.searchParams.set("format", "json");
-  const response =
-    typeof options === "function"
-      ? await options(url, { headers: { accept: "application/json" } }).then(
-          async (result) => ({
-            ok: result.ok,
-            status: result.status,
-            body: await result.text(),
-          }),
-        )
-      : await safeHttpGet(url, {
-          ...options,
-          headers: { ...options.headers, accept: "application/json" },
-        });
+  const response = await requestTrustedSearch(origin, query, options);
   if (!response.ok)
     throw new Error(`SearXNG request failed (${response.status})`);
-  const body = JSON.parse(response.body) as {
+  let body: {
     results?: Array<{ url?: string; title?: string; content?: string }>;
   };
+  try {
+    body = JSON.parse(response.body) as typeof body;
+  } catch {
+    throw new Error("SearXNG returned an invalid response");
+  }
   return (body.results ?? [])
     .filter((result): result is typeof result & { url: string } =>
       Boolean(result.url),

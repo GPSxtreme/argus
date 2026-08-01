@@ -2,8 +2,12 @@ import { validateConfig } from "@argus/config";
 import type { SourceItem } from "@argus/contracts";
 import type { ScheduledTarget } from "@argus/scheduler";
 import { createSqliteRepository } from "@argus/storage-sqlite";
-import { afterEach, describe, expect, it } from "vitest";
-import { findDiagnosticTarget, runTarget } from "../src/worker.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  createAdapterFactory,
+  findDiagnosticTarget,
+  runTarget,
+} from "../src/worker.js";
 
 const repositories: Awaited<ReturnType<typeof createSqliteRepository>>[] = [];
 afterEach(() => {
@@ -11,6 +15,57 @@ afterEach(() => {
 });
 
 describe("target worker", () => {
+  it("creates a query adapter capability from the configured SearXNG origin", async () => {
+    const config = validateConfig({
+      version: 1,
+      storage: { adapter: "sqlite", url: ":memory:" },
+      sources: {
+        web: {
+          enabled: true,
+          searchEndpoint: "http://searxng:8080",
+        },
+      },
+      watches: [],
+    });
+    const request = vi.fn(async (_url: URL) =>
+      Response.json({
+        results: [
+          {
+            url: "https://example.com/argus",
+            title: "Argus",
+            content: "result",
+          },
+        ],
+      }),
+    );
+    const adapter = createAdapterFactory(config, {
+      trustedService: { request },
+    })({
+      id: "search",
+      source: "web",
+      watchId: "watch",
+      schedule: "* * * * *",
+      kind: "query",
+      value: "argus",
+      keywords: [],
+    });
+    await expect(
+      adapter.validate({ kind: "query", value: "argus" }),
+    ).resolves.toEqual({ valid: true, errors: [] });
+    const pull = adapter
+      .pull({
+        targetId: "search",
+        config: { kind: "query", value: "argus" },
+      })
+      [Symbol.asyncIterator]();
+    await expect(pull.next()).resolves.toMatchObject({
+      value: { url: "https://example.com/argus" },
+    });
+    expect(String(request.mock.calls[0]?.[0])).toBe(
+      "http://searxng:8080/search?q=argus&format=json",
+    );
+  });
+
   it("advances a chronological Telegram checkpoint to the newest item", async () => {
     const repository = await createSqliteRepository({ filename: ":memory:" });
     repositories.push(repository);

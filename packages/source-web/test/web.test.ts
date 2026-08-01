@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  createTrustedServiceOrigin,
   extractPage,
   isPublicIpAddress,
   parseFeed,
@@ -37,21 +38,106 @@ describe("web source", () => {
   });
 
   it("discovers URLs through SearXNG", async () => {
-    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+    const request = vi.fn().mockResolvedValue(
       Response.json({
         results: [
           { url: "https://example.com/a", title: "A", content: "Result A" },
         ],
       }),
     );
+    const origin = createTrustedServiceOrigin("http://searxng:8080");
     expect(
-      await searchSearxng("http://searxng:8080", "argus", fetcher),
+      await searchSearxng(origin, "argus", { request }),
     ).toEqual([
       expect.objectContaining({
         externalId: "https://example.com/a",
         text: "Result A",
       }),
     ]);
+    expect(String(request.mock.calls[0]?.[0])).toBe(
+      "http://searxng:8080/search?q=argus&format=json",
+    );
+    expect(request.mock.calls[0]?.[1]).toMatchObject({
+      method: "GET",
+      redirect: "manual",
+    });
+  });
+
+  it("scopes trusted search transport to an exact configured origin", async () => {
+    for (const endpoint of [
+      "http://user:pass@searxng:8080",
+      "http://searxng:8080/search",
+      "http://searxng:8080/?next=http://attacker",
+      "file:///tmp/search",
+    ]) {
+      expect(() => createTrustedServiceOrigin(endpoint)).toThrowError(
+        expect.objectContaining({ code: "TRUSTED_SERVICE_ORIGIN_INVALID" }),
+      );
+    }
+
+    const origin = createTrustedServiceOrigin("http://searxng:8080");
+    await expect(
+      searchSearxng(
+        {} as ReturnType<typeof createTrustedServiceOrigin>,
+        "argus",
+        { request: vi.fn() },
+      ),
+    ).rejects.toMatchObject({ code: "TRUSTED_SERVICE_ORIGIN_INVALID" });
+    await expect(
+      searchSearxng(origin, "argus", {
+        request: async () =>
+          new Response(null, {
+            status: 302,
+            headers: { location: "http://attacker.example/search" },
+          }),
+      }),
+    ).rejects.toMatchObject({ code: "TRUSTED_SERVICE_REDIRECT" });
+  });
+
+  it("bounds trusted search time and response size", async () => {
+    const origin = createTrustedServiceOrigin("https://search.example");
+    await expect(
+      searchSearxng(origin, "argus", {
+        timeoutMs: 5,
+        request: async (_url, init) =>
+          new Promise<Response>((_resolve, reject) => {
+            init.signal.addEventListener("abort", () =>
+              reject(new Error("aborted")),
+            );
+          }),
+      }),
+    ).rejects.toMatchObject({ code: "TRUSTED_SERVICE_REQUEST_FAILED" });
+    await expect(
+      searchSearxng(origin, "argus", {
+        maxBodyBytes: 16,
+        request: async () => new Response("x".repeat(17)),
+      }),
+    ).rejects.toMatchObject({ code: "TRUSTED_SERVICE_RESPONSE_TOO_LARGE" });
+  });
+
+  it("does not grant trusted transport to attacker-controlled result URLs", async () => {
+    const origin = createTrustedServiceOrigin("http://searxng:8080");
+    const [result] = await searchSearxng(origin, "argus", {
+      request: async () =>
+        Response.json({
+          results: [
+            {
+              url: "http://127.0.0.1/admin",
+              title: "attacker result",
+              content: "not fetched",
+            },
+          ],
+        }),
+    });
+    expect(result?.url).toBe("http://127.0.0.1/admin");
+    await expect(
+      safeHttpGet(result?.url ?? "", {
+        resolver: async () => [
+          { address: "93.184.216.34", family: 4 as const },
+        ],
+        request: vi.fn(),
+      }),
+    ).rejects.toMatchObject({ code: "WEB_DESTINATION_NOT_PUBLIC" });
   });
 });
 
@@ -242,7 +328,7 @@ describe("safe web requests", () => {
     ).rejects.toMatchObject({ code: "WEB_REDIRECT_INVALID" });
   });
 
-  it("applies the policy to normal page and feed ingestion", async () => {
+  it("applies the public policy to normal page and feed ingestion", async () => {
     const request = vi.fn();
     const adapter = new WebAdapter({
       resolver: async () => [{ address: "127.0.0.1", family: 4 }],
@@ -252,11 +338,6 @@ describe("safe web requests", () => {
     for (const config of [
       { kind: "url" as const, value: "https://blocked.example/page" },
       { kind: "feed" as const, value: "https://blocked.example/feed" },
-      {
-        kind: "query" as const,
-        value: "blocked",
-        searchEndpoint: "https://blocked.example",
-      },
     ]) {
       const pull = adapter.pull({
         config,
