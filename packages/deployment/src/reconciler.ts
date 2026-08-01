@@ -116,6 +116,11 @@ const loadDesired = async (context: DeploymentContext): Promise<DesiredDeploymen
   return desired;
 };
 
+/** Loads only validated, persisted Compose interpolation values for a targeted repair. */
+export const loadPersistedComposeEnvironment = async (
+  context: DeploymentContext,
+): Promise<Record<string, string>> => composeEnvironment(await loadDesired(context));
+
 const parseStatus = (stdout: string): DeploymentStatus["services"] => {
   if (!stdout.trim()) return [];
   try {

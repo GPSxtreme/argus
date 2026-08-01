@@ -8,6 +8,7 @@ import {
   renderCompose,
   renderSearxngSettings,
   repairSearxng,
+  saveDeploymentState,
   type CommandExecutor,
   type CommandResult,
 } from "../src/index.js";
@@ -24,19 +25,55 @@ const jsonResponse = (body: unknown, status = 200): Response =>
   });
 
 class FixtureExecutor implements CommandExecutor {
-  readonly calls: Array<{ command: string; args: string[]; cwd: string | undefined }> = [];
+  readonly calls: Array<{
+    command: string;
+    args: string[];
+    cwd: string | undefined;
+    env: Record<string, string> | undefined;
+  }> = [];
 
-  constructor(private readonly response: CommandResult = { exitCode: 0, stdout: "", stderr: "" }) {}
+  constructor(
+    private readonly response: CommandResult = { exitCode: 0, stdout: "", stderr: "" },
+    private readonly responses: CommandResult[] = [],
+  ) {}
 
   async run(
     command: string,
     args: string[],
-    options?: { cwd?: string },
+    options?: { cwd?: string; env?: Record<string, string> },
   ): Promise<CommandResult> {
-    this.calls.push({ command, args, cwd: options?.cwd });
-    return this.response;
+    this.calls.push({ command, args, cwd: options?.cwd, env: options?.env });
+    return this.responses.shift() ?? this.response;
   }
 }
+
+const persistComposeInputs = async (root: string): Promise<void> => {
+  await saveDeploymentState(root, {
+    schemaVersion: 1,
+    argusVersion: "0.2.0",
+    composeProject: "argus",
+    configHash: "config-v1",
+    services: {
+      argus: { image: `ghcr.io/gpsxtreme/argus@sha256:${"a".repeat(64)}`, healthy: true },
+      searxng: {
+        image: `docker.io/searxng/searxng@sha256:${"b".repeat(64)}`,
+        healthy: true,
+      },
+    },
+    compose: {
+      version: "0.2.0",
+      apiPort: 8788,
+      storage: "sqlite",
+      searxng: true,
+      images: {
+        argus: `ghcr.io/gpsxtreme/argus@sha256:${"a".repeat(64)}`,
+        postgres: `docker.io/library/postgres@sha256:${"c".repeat(64)}`,
+        searxng: `docker.io/searxng/searxng@sha256:${"b".repeat(64)}`,
+      },
+    },
+    updatedAt: "2026-08-01T00:00:00.000Z",
+  });
+};
 
 class ThrowingExecutor implements CommandExecutor {
   async run(): Promise<CommandResult> {
@@ -86,9 +123,25 @@ describe("managed SearXNG", () => {
     expect(JSON.stringify(health)).not.toContain("upstream-secret");
   });
 
+  it("times out a fetcher that ignores abort signals", async () => {
+    let signal: AbortSignal | undefined;
+    const health = checkSearxngHealth(
+      "http://searxng:8080",
+      async (_input, init) => {
+        signal = init?.signal ?? undefined;
+        return await new Promise<Response>(() => undefined);
+      },
+      { requestTimeoutMs: 10 },
+    );
+
+    await expect(health).resolves.toEqual({ healthy: false, resultCount: 0 });
+    expect(signal?.aborted).toBe(true);
+  }, 200);
+
   it("rewrites only managed settings, recreates SearXNG, and retries health with a bound", async () => {
     const root = await mkdtemp(join(tmpdir(), "argus-searxng-"));
     roots.push(root);
+    await persistComposeInputs(root);
     const executor = new FixtureExecutor();
     let attempts = 0;
     const diagnostic = await repairSearxng({
@@ -109,8 +162,25 @@ describe("managed SearXNG", () => {
     expect(executor.calls).toEqual([
       {
         command: "docker",
+        args: ["compose", "-p", "argus", "config"],
+        cwd: root,
+        env: {
+          ARGUS_API_PORT: "8788",
+          ARGUS_VERSION: `0.2.0@sha256:${"a".repeat(64)}`,
+          POSTGRES_IMAGE: `docker.io/library/postgres@sha256:${"c".repeat(64)}`,
+          SEARXNG_IMAGE: `docker.io/searxng/searxng@sha256:${"b".repeat(64)}`,
+        },
+      },
+      {
+        command: "docker",
         args: ["compose", "-p", "argus", "up", "-d", "--force-recreate", "searxng"],
         cwd: root,
+        env: {
+          ARGUS_API_PORT: "8788",
+          ARGUS_VERSION: `0.2.0@sha256:${"a".repeat(64)}`,
+          POSTGRES_IMAGE: `docker.io/library/postgres@sha256:${"c".repeat(64)}`,
+          SEARXNG_IMAGE: `docker.io/searxng/searxng@sha256:${"b".repeat(64)}`,
+        },
       },
     ]);
     expect(attempts).toBe(3);
@@ -131,9 +201,16 @@ describe("managed SearXNG", () => {
   it("returns redacted structured diagnostics when recreation or health fails", async () => {
     const root = await mkdtemp(join(tmpdir(), "argus-searxng-"));
     roots.push(root);
+    await persistComposeInputs(root);
     const diagnostic = await repairSearxng({
       root,
-      executor: new FixtureExecutor({ exitCode: 1, stdout: "token=secret", stderr: "raw failure" }),
+      executor: new FixtureExecutor(
+        { exitCode: 0, stdout: "", stderr: "" },
+        [
+          { exitCode: 0, stdout: "", stderr: "" },
+          { exitCode: 1, stdout: "token=secret", stderr: "raw failure" },
+        ],
+      ),
       fetcher: async () => jsonResponse({ error: "response-secret" }, 503),
       sleep: async () => undefined,
     });
@@ -159,6 +236,7 @@ describe("managed SearXNG", () => {
   it("contains command execution errors in a structured diagnostic", async () => {
     const root = await mkdtemp(join(tmpdir(), "argus-searxng-"));
     roots.push(root);
+    await persistComposeInputs(root);
 
     await expect(
       repairSearxng({ root, executor: new ThrowingExecutor(), sleep: async () => undefined }),
@@ -168,5 +246,19 @@ describe("managed SearXNG", () => {
         checks: [expect.objectContaining({ code: "SEARXNG_RECREATE_FAILED" })],
       }),
     );
+  });
+
+  it("refuses repair when validated pinned Compose inputs are not persisted", async () => {
+    const root = await mkdtemp(join(tmpdir(), "argus-searxng-"));
+    roots.push(root);
+    const executor = new FixtureExecutor();
+
+    await expect(repairSearxng({ root, executor })).resolves.toEqual(
+      expect.objectContaining({
+        healthy: false,
+        checks: [expect.objectContaining({ code: "SEARXNG_COMPOSE_INPUTS_UNAVAILABLE" })],
+      }),
+    );
+    expect(executor.calls).toEqual([]);
   });
 });

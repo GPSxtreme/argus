@@ -1,14 +1,94 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { execa } from "execa";
 import { describe, expect, it } from "vitest";
-import { checkSearxngHealth } from "../src/index.js";
+import { isPinnedImageReference, renderSearxngSettings } from "../src/index.js";
 
 const enabled = process.env.ARGUS_SEARXNG_TEST === "1";
+const searxngImage = process.env.ARGUS_SEARXNG_IMAGE;
+const clientImage = process.env.ARGUS_SEARXNG_SMOKE_CLIENT_IMAGE;
 
-describe.skipIf(!enabled)("managed SearXNG live smoke", () => {
-  it("returns at least one JSON result", async () => {
-    const endpoint = process.env.ARGUS_SEARXNG_ENDPOINT ?? "http://localhost:8080";
-    const health = await checkSearxngHealth(endpoint);
+const prerequisites = async (): Promise<string | undefined> => {
+  if (!enabled) return "Set ARGUS_SEARXNG_TEST=1 to opt into this Docker smoke test.";
+  if (!searxngImage || !isPinnedImageReference(searxngImage)) {
+    return "Set ARGUS_SEARXNG_IMAGE to a validated digest-pinned SearXNG image.";
+  }
+  if (!clientImage || !isPinnedImageReference(clientImage)) {
+    return "Set ARGUS_SEARXNG_SMOKE_CLIENT_IMAGE to a validated digest-pinned HTTP client image.";
+  }
+  if ((await execa("docker", ["info"], { reject: false })).exitCode !== 0) {
+    return "Start a reachable Docker daemon before running the managed SearXNG smoke test.";
+  }
+  for (const image of [searxngImage, clientImage]) {
+    if ((await execa("docker", ["image", "inspect", image], { reject: false })).exitCode !== 0) {
+      return `Pull the required pinned image before running the smoke test: ${image}`;
+    }
+  }
+  return undefined;
+};
 
-    expect(health.healthy).toBe(true);
-    expect(health.resultCount).toBeGreaterThan(0);
+describe("managed SearXNG live smoke", () => {
+  it("serves JSON over the private digest-pinned Compose network", async (context) => {
+    const reason = await prerequisites();
+    if (reason) return context.skip(reason);
+    const pinnedSearxngImage = searxngImage as string;
+    const pinnedClientImage = clientImage as string;
+    const root = await mkdtemp(join(tmpdir(), "argus-searxng-live-"));
+    const project = `argus-searxng-${process.pid}-${Date.now()}`;
+    const compose = join(root, "compose.yaml");
+    const network = `${project}_argus-private`;
+
+    await writeFile(join(root, "settings.yml"), renderSearxngSettings(), "utf8");
+    await writeFile(
+      compose,
+      `name: ${project}
+services:
+  searxng:
+    image: ${pinnedSearxngImage}
+    volumes:
+      - ./settings.yml:/etc/searxng/settings.yml:ro
+    networks: [argus-private]
+networks:
+  argus-private:
+    internal: true
+`,
+      "utf8",
+    );
+
+    try {
+      const config = await execa("docker", ["compose", "-f", compose, "config"]);
+      expect(config.stdout).toContain("internal: true");
+      expect(config.stdout).toContain(pinnedSearxngImage);
+      await execa("docker", ["compose", "-f", compose, "up", "-d", "searxng"]);
+
+      let results: unknown;
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        const response = await execa(
+          "docker",
+          [
+            "run",
+            "--rm",
+            "--network",
+            network,
+            pinnedClientImage,
+            "-fsS",
+            "http://searxng:8080/search?q=argus&format=json",
+          ],
+          { reject: false },
+        );
+        if (response.exitCode === 0) {
+          results = JSON.parse(response.stdout) as { results?: unknown };
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+      }
+
+      expect(results).toMatchObject({ results: expect.any(Array) });
+      expect((results as { results: unknown[] }).results.length).toBeGreaterThan(0);
+    } finally {
+      await execa("docker", ["compose", "-f", compose, "down", "-v"], { reject: false });
+      await rm(root, { force: true, recursive: true });
+    }
   }, 30_000);
 });
