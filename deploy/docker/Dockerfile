@@ -4,8 +4,10 @@
 # linux/amd64 and linux/arm64/v8 manifests and is shared by every stage.
 FROM --platform=$BUILDPLATFORM node:24-bookworm-slim@sha256:235600a8101ab264e117b1768e925532262668dc9b581ef1dd7d96ced463b8e7 AS build
 
-ARG TARGETARCH
-RUN apt-get update \
+ARG DEBIAN_SNAPSHOT=20260731T000000Z
+COPY deploy/docker/configure-snapshot.sh /usr/local/bin/configure-snapshot.sh
+RUN DEBIAN_SNAPSHOT="$DEBIAN_SNAPSHOT" sh /usr/local/bin/configure-snapshot.sh \
+  && apt-get update \
   && apt-get install -y --no-install-recommends \
     build-essential=12.9 \
     file=1:5.44-3 \
@@ -27,8 +29,9 @@ COPY packages/source-web/package.json packages/source-web/package.json
 COPY packages/source-x/package.json packages/source-x/package.json
 COPY packages/storage-postgres/package.json packages/storage-postgres/package.json
 COPY packages/storage-sqlite/package.json packages/storage-sqlite/package.json
-RUN pnpm install --frozen-lockfile
+RUN pnpm install --frozen-lockfile --ignore-scripts
 
+COPY deploy/docker/generate-third-party-notices.mjs /workspace/generate-third-party-notices.mjs
 COPY apps/argus apps/argus
 COPY packages/config packages/config
 COPY packages/contracts packages/contracts
@@ -62,30 +65,58 @@ RUN pnpm --filter @argus/app... build \
     --packages=bundle \
     --platform=node \
     --target=node24 \
-  && pnpm --filter @argus/app deploy --legacy --prod /workspace/deployed
+  && pnpm --config.ignore-scripts=true --filter @argus/app deploy --legacy --prod /workspace/deployed
+RUN node /workspace/generate-third-party-notices.mjs \
+    /workspace/deployed/node_modules /workspace/notices app
 
-# Rebuild the only native runtime module for the requested target without
-# executing that target binary in the build-platform stage.
+# Native compilation runs under the target platform (QEMU when cross-building).
+# The package source came from the integrity-verified pnpm lockfile and install
+# scripts were disabled, so no native artifact is downloaded or executed.
+FROM --platform=$TARGETPLATFORM node:24-bookworm-slim@sha256:235600a8101ab264e117b1768e925532262668dc9b581ef1dd7d96ced463b8e7 AS native-build
+
+ARG TARGETARCH
+ARG DEBIAN_SNAPSHOT=20260731T000000Z
+COPY deploy/docker/configure-snapshot.sh /usr/local/bin/configure-snapshot.sh
+RUN DEBIAN_SNAPSHOT="$DEBIAN_SNAPSHOT" sh /usr/local/bin/configure-snapshot.sh \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends \
+    build-essential=12.9 \
+    file=1:5.44-3 \
+    python3=3.11.2-1+b1 \
+  && rm -rf /var/lib/apt/lists/*
+COPY --from=build /workspace/deployed /workspace/deployed
 RUN case "$TARGETARCH" in \
-      amd64) node_arch=x64; expected="x86-64" ;; \
-      arm64) node_arch=arm64; expected="ARM aarch64" ;; \
+      amd64) expected="x86-64" ;; \
+      arm64) expected="ARM aarch64" ;; \
       *) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
     esac \
-  && staged_native="$(find /workspace/deployed/node_modules/.pnpm -path '*/better-sqlite3/build/Release/better_sqlite3.node' -type f -print -quit)" \
-  && test -n "$staged_native" \
-  && package_dir="$(dirname "$(dirname "$(dirname "$staged_native")")")" \
-  && unlink "$staged_native" \
-  && (cd "$package_dir" && npm_config_arch="$node_arch" node ../prebuild-install/bin.js) \
+  && package_dir="$(find /workspace/deployed/node_modules/.pnpm -path '*/node_modules/better-sqlite3' -type d -print -quit)" \
+  && test -n "$package_dir" \
+  && find "$package_dir" -name '*.node' -type f -delete \
+  && (cd "$package_dir" \
+    && npm_config_build_from_source=true \
+      npm_config_nodedir=/usr/local \
+      node /usr/local/lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js rebuild --release) \
   && native_module="$(find /workspace/deployed/node_modules/.pnpm -path '*/better-sqlite3/build/Release/better_sqlite3.node' -type f -print -quit)" \
   && test -n "$native_module" \
   && file "$native_module" | grep -F "$expected" \
-  && mkdir -p /workspace/runtime-node-modules \
-  && cp -RL "$(find /workspace/deployed/node_modules/.pnpm -path '*/node_modules/better-sqlite3' -type d -print -quit)" /workspace/runtime-node-modules/better-sqlite3 \
-  && cp -RL "$(find /workspace/deployed/node_modules/.pnpm -path '*/node_modules/bindings' -type d -print -quit)" /workspace/runtime-node-modules/bindings \
-  && cp -RL "$(find /workspace/deployed/node_modules/.pnpm -path '*/node_modules/file-uri-to-path' -type d -print -quit)" /workspace/runtime-node-modules/file-uri-to-path
+  && install -d /workspace/runtime-node-modules/better-sqlite3/build/Release \
+    /workspace/runtime-node-modules/better-sqlite3/lib \
+    /workspace/runtime-node-modules/bindings \
+    /workspace/runtime-node-modules/file-uri-to-path \
+  && cp -R "$package_dir/lib/." /workspace/runtime-node-modules/better-sqlite3/lib/ \
+  && cp "$package_dir/package.json" "$package_dir/LICENSE" /workspace/runtime-node-modules/better-sqlite3/ \
+  && cp "$native_module" /workspace/runtime-node-modules/better-sqlite3/build/Release/ \
+  && bindings_dir="$(find /workspace/deployed/node_modules/.pnpm -path '*/node_modules/bindings' -type d -print -quit)" \
+  && cp "$bindings_dir/bindings.js" "$bindings_dir/package.json" "$bindings_dir/LICENSE.md" /workspace/runtime-node-modules/bindings/ \
+  && file_uri_dir="$(find /workspace/deployed/node_modules/.pnpm -path '*/node_modules/file-uri-to-path' -type d -print -quit)" \
+  && cp "$file_uri_dir/index.js" "$file_uri_dir/package.json" "$file_uri_dir/LICENSE" /workspace/runtime-node-modules/file-uri-to-path/ \
+  && ! find /workspace/runtime-node-modules -type f \
+    \( -name '*.gyp' -o -name '*.cpp' -o -name '*.c' -o -name '*.h' \) | grep .
 
 FROM --platform=$TARGETPLATFORM node:24-bookworm-slim@sha256:235600a8101ab264e117b1768e925532262668dc9b581ef1dd7d96ced463b8e7 AS runtime
 
+ARG DEBIAN_SNAPSHOT=20260731T000000Z
 ARG ARGUS_VERSION=0.0.0-dev
 ARG ARGUS_REVISION=unknown
 ARG ARGUS_SOURCE=https://github.com/gpsxtreme/argus
@@ -95,7 +126,9 @@ LABEL org.opencontainers.image.title="Argus" \
   org.opencontainers.image.revision="$ARGUS_REVISION" \
   org.opencontainers.image.version="$ARGUS_VERSION"
 
-RUN apt-get update \
+COPY deploy/docker/configure-snapshot.sh /usr/local/bin/configure-snapshot.sh
+RUN DEBIAN_SNAPSHOT="$DEBIAN_SNAPSHOT" sh /usr/local/bin/configure-snapshot.sh \
+  && apt-get update \
   && apt-get install -y --no-install-recommends \
     ca-certificates=20230311+deb12u1 \
     tini=0.19.0-1+b3 \
@@ -108,7 +141,11 @@ RUN apt-get update \
 COPY --from=build --chown=10001:10001 /workspace/app-main.js /app/apps/argus/dist/main.js
 COPY --from=build --chown=10001:10001 /workspace/xhr-sync-worker.js /app/apps/argus/dist/xhr-sync-worker.js
 COPY --from=build --chown=10001:10001 /workspace/apps/argus/package.json /app/apps/argus/package.json
-COPY --from=build --chown=10001:10001 /workspace/runtime-node-modules/ /app/node_modules/
+COPY --from=native-build --chown=10001:10001 /workspace/runtime-node-modules/ /app/node_modules/
+COPY --from=build --chown=10001:10001 /workspace/notices/THIRD_PARTY_NOTICES.md /app/THIRD_PARTY_NOTICES.md
+COPY --from=build --chown=10001:10001 /workspace/notices/licenses/ /app/licenses/
+RUN cp /usr/share/doc/tini/copyright /app/licenses/tini-copyright \
+  && chown 10001:10001 /app/licenses/tini-copyright
 
 ENV NODE_ENV="production"
 ENV ARGUS_CONFIG="/app/argus.yaml"

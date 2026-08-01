@@ -1,6 +1,8 @@
-import { execFile, execFileSync } from "node:child_process";
+import { execFile, execFileSync, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   chmodSync,
+  existsSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -16,6 +18,29 @@ const appDockerfilePath = join(repositoryRoot, "deploy/docker/Dockerfile");
 const cliDockerfilePath = join(repositoryRoot, "deploy/docker/Dockerfile.cli");
 const appDockerfile = readFileSync(appDockerfilePath, "utf8");
 const cliDockerfile = readFileSync(cliDockerfilePath, "utf8");
+const snapshotScriptPath = join(
+  repositoryRoot,
+  "deploy/docker/configure-snapshot.sh",
+);
+const snapshotScript = existsSync(snapshotScriptPath)
+  ? readFileSync(snapshotScriptPath, "utf8")
+  : "";
+const imageMatrixPath = join(
+  repositoryRoot,
+  "deploy/docker/build-matrix.json",
+);
+const imageMatrix = existsSync(imageMatrixPath)
+  ? (JSON.parse(readFileSync(imageMatrixPath, "utf8")) as {
+      platforms: string[];
+    })
+  : { platforms: [] };
+const crossBuildScriptPath = join(
+  repositoryRoot,
+  "deploy/docker/verify-multiarch.sh",
+);
+const crossBuildScript = existsSync(crossBuildScriptPath)
+  ? readFileSync(crossBuildScriptPath, "utf8")
+  : "";
 const pinnedNodeBase =
   "node:24-bookworm-slim@sha256:235600a8101ab264e117b1768e925532262668dc9b581ef1dd7d96ced463b8e7";
 
@@ -53,11 +78,52 @@ describe("production image definitions", () => {
       expect(dockerfile).not.toMatch(/(?:FROM|image:)[^\n]*:latest\b/u);
       expect(dockerfile).toContain("ARG TARGETARCH");
       expect(dockerfile).toContain("pnpm install --frozen-lockfile");
-      expect(dockerfile).toContain("prebuild-install/bin.js");
+      expect(dockerfile).toContain("pnpm --config.ignore-scripts=true");
+      expect(dockerfile).not.toContain("prebuild-install");
+      expect(dockerfile).toContain("npm_config_build_from_source=true");
+      expect(dockerfile).toMatch(
+        /FROM --platform=\$TARGETPLATFORM [^\n]+ AS native-build/u,
+      );
       expect(dockerfile).toContain('file "$native_module"');
       expect(dockerfile).toMatch(/ca-certificates=[^\s\\]+/u);
       expect(dockerfile).toMatch(/python3=[^\s\\]+/u);
+      expect(dockerfile).toContain("ARG DEBIAN_SNAPSHOT=");
+      expect(dockerfile).toContain("configure-snapshot.sh");
+      expect(dockerfile).not.toMatch(
+        /(?:deb\.debian\.org|security\.debian\.org)/u,
+      );
+      expect(dockerfile).toContain("THIRD_PARTY_NOTICES.md");
+      expect(dockerfile).toContain("/app/licenses");
     }
+  });
+
+  it("uses a dated, signed Debian snapshot with bounded downloads", () => {
+    expect(snapshotScript).toMatch(
+      /snapshot\.debian\.org\/archive\/debian\/\$\{DEBIAN_SNAPSHOT\}/u,
+    );
+    expect(snapshotScript).toMatch(
+      /snapshot\.debian\.org\/archive\/debian-security\/\$\{DEBIAN_SNAPSHOT\}/u,
+    );
+    expect(snapshotScript).toContain(
+      "Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg",
+    );
+    expect(snapshotScript).toMatch(
+      /Acquire::Check-Valid-Until\s+"false"/u,
+    );
+    expect(snapshotScript).toMatch(/Acquire::http::Timeout\s+"30"/u);
+    expect(snapshotScript).not.toMatch(/trusted=yes|allow-unauthenticated/u);
+    expect(snapshotScript).not.toMatch(
+      /(?:deb\.debian\.org|security\.debian\.org)/u,
+    );
+  });
+
+  it("declares both release architectures for opt-in buildx verification", () => {
+    expect(imageMatrix.platforms).toEqual(["linux/amd64", "linux/arm64"]);
+    expect(crossBuildScript).toContain(
+      "ARGUS_IMAGE_PLATFORMS:-linux/amd64,linux/arm64",
+    );
+    expect(crossBuildScript).toContain("docker buildx build");
+    expect(crossBuildScript).toContain("Dockerfile.cli");
   });
 
   it("runs the application as a fixed non-root user with its runtime contract", () => {
@@ -87,14 +153,33 @@ describe("production image definitions", () => {
 
 const liveImages = process.env.ARGUS_IMAGE_TEST === "1";
 const live = liveImages ? describe : describe.skip;
-const appImage = "argus-app:test";
-const cliImage = "argus-cli:test";
-const containerName = `argus-image-test-${process.pid}`;
-const dataVolume = `argus-image-test-data-${process.pid}`;
+const resourceSuffix = `${process.pid}-${randomUUID()}`;
+const appImage = `argus-app:image-test-${resourceSuffix}`;
+const cliImage = `argus-cli:image-test-${resourceSuffix}`;
+const containerName = `argus-image-test-${resourceSuffix}`;
+const dataVolume = `argus-image-test-data-${resourceSuffix}`;
 let fixtureDirectory: string | undefined;
+let appImageOwned = false;
+let cliImageOwned = false;
+let containerOwned = false;
+let volumeOwned = false;
 
 live("built production images", () => {
   beforeAll(async () => {
+    for (const [kind, name] of [
+      ["image", appImage],
+      ["image", cliImage],
+      ["container", containerName],
+      ["volume", dataVolume],
+    ] as const) {
+      expect(
+        spawnSync("docker", [kind, "inspect", name], {
+          cwd: repositoryRoot,
+          stdio: "ignore",
+          timeout: 30_000,
+        }).status,
+      ).not.toBe(0);
+    }
     await dockerAsync(
       [
         "build",
@@ -111,6 +196,7 @@ live("built production images", () => {
       ],
       600_000,
     );
+    appImageOwned = true;
     await dockerAsync(
       [
         "build",
@@ -127,27 +213,28 @@ live("built production images", () => {
       ],
       600_000,
     );
+    cliImageOwned = true;
   }, 1_200_000);
 
   afterAll(() => {
-    try {
-      docker(["container", "rm", "--force", containerName], 30_000);
-    } catch {
-      // The container is absent when startup itself failed.
-    }
-    try {
-      docker(["volume", "rm", dataVolume], 30_000);
-    } catch {
-      // The volume is absent when startup itself failed.
-    }
-    for (const image of [appImage, cliImage]) {
+    const cleanupErrors: Error[] = [];
+    const cleanup = (arguments_: string[]) => {
       try {
-        docker(["image", "rm", image], 30_000);
-      } catch {
-        // A failed build does not leave the requested image tag behind.
+        docker(arguments_, 30_000);
+      } catch (error) {
+        cleanupErrors.push(
+          error instanceof Error ? error : new Error(String(error)),
+        );
       }
-    }
+    };
+    if (containerOwned) cleanup(["container", "rm", "--force", containerName]);
+    if (volumeOwned) cleanup(["volume", "rm", dataVolume]);
+    if (appImageOwned) cleanup(["image", "rm", appImage]);
+    if (cliImageOwned) cleanup(["image", "rm", cliImage]);
     if (fixtureDirectory) rmSync(fixtureDirectory, { recursive: true });
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(cleanupErrors, "owned Docker resource cleanup failed");
+    }
   });
 
   it("publishes non-root application metadata and reaches healthy state", async () => {
@@ -200,6 +287,8 @@ api: { host: 0.0.0.0, port: 8788 }
       `type=volume,source=${dataVolume},target=/app/data`,
       appImage,
     ]);
+    containerOwned = true;
+    volumeOwned = true;
 
     const deadline = Date.now() + 60_000;
     let status = "";
@@ -229,6 +318,33 @@ api: { host: 0.0.0.0, port: 8788 }
         "test ! -e /app/src && test ! -e /app/.env",
       ]),
     ).toBe("");
+    expect(
+      docker([
+        "exec",
+        containerName,
+        "node",
+        "-e",
+        "const Database=require('better-sqlite3');const db=new Database(':memory:');db.prepare('select 1').get();db.close()",
+      ]),
+    ).toBe("");
+    expect(
+      docker([
+        "exec",
+        containerName,
+        "sh",
+        "-c",
+        "! find /app/node_modules -type f \\( -name '*.gyp' -o -name '*.cpp' -o -name '*.c' -o -name '*.h' \\) | grep .",
+      ]),
+    ).toBe("");
+    const notices = docker([
+      "exec",
+      containerName,
+      "cat",
+      "/app/THIRD_PARTY_NOTICES.md",
+    ]);
+    for (const dependency of ["hono@", "yaml@", "zod@", "better-sqlite3@", "Tini"]) {
+      expect(notices).toContain(dependency);
+    }
   }, 90_000);
 
   it("runs the compiled management CLI with all required host tools", () => {
@@ -268,6 +384,28 @@ api: { host: 0.0.0.0, port: 8788 }
         cliImage,
         "-c",
         "! command -v dockerd",
+      ]),
+    ).toBe("");
+    const notices = docker([
+      "run",
+      "--rm",
+      "--entrypoint",
+      "cat",
+      cliImage,
+      "/app/THIRD_PARTY_NOTICES.md",
+    ]);
+    for (const dependency of ["Docker CLI", "Docker Compose", "better-sqlite3@"]) {
+      expect(notices).toContain(dependency);
+    }
+    expect(
+      docker([
+        "run",
+        "--rm",
+        "--entrypoint",
+        "sh",
+        cliImage,
+        "-c",
+        "test -s /app/licenses/docker-cli-LICENSE && test -s /app/licenses/docker-compose-LICENSE",
       ]),
     ).toBe("");
   }, 120_000);

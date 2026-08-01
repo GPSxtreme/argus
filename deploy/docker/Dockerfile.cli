@@ -2,8 +2,10 @@
 
 FROM --platform=$BUILDPLATFORM node:24-bookworm-slim@sha256:235600a8101ab264e117b1768e925532262668dc9b581ef1dd7d96ced463b8e7 AS build
 
-ARG TARGETARCH
-RUN apt-get update \
+ARG DEBIAN_SNAPSHOT=20260731T000000Z
+COPY deploy/docker/configure-snapshot.sh /usr/local/bin/configure-snapshot.sh
+RUN DEBIAN_SNAPSHOT="$DEBIAN_SNAPSHOT" sh /usr/local/bin/configure-snapshot.sh \
+  && apt-get update \
   && apt-get install -y --no-install-recommends \
     build-essential=12.9 \
     file=1:5.44-3 \
@@ -27,8 +29,9 @@ COPY packages/source-web/package.json packages/source-web/package.json
 COPY packages/source-x/package.json packages/source-x/package.json
 COPY packages/storage-postgres/package.json packages/storage-postgres/package.json
 COPY packages/storage-sqlite/package.json packages/storage-sqlite/package.json
-RUN pnpm install --frozen-lockfile
+RUN pnpm install --frozen-lockfile --ignore-scripts
 
+COPY deploy/docker/generate-third-party-notices.mjs /workspace/generate-third-party-notices.mjs
 COPY apps/argus apps/argus
 COPY apps/cli apps/cli
 COPY packages/config packages/config
@@ -64,37 +67,69 @@ RUN pnpm --filter @argus/cli... build \
     --packages=bundle \
     --platform=node \
     --target=node24 \
-  && pnpm --filter @argus/cli deploy --legacy --prod /workspace/deployed
+  && pnpm --config.ignore-scripts=true --filter @argus/cli deploy --legacy --prod /workspace/deployed
 
+RUN node /workspace/generate-third-party-notices.mjs \
+    /workspace/deployed/node_modules /workspace/notices cli
+
+FROM --platform=$TARGETPLATFORM node:24-bookworm-slim@sha256:235600a8101ab264e117b1768e925532262668dc9b581ef1dd7d96ced463b8e7 AS native-build
+
+ARG TARGETARCH
+ARG DEBIAN_SNAPSHOT=20260731T000000Z
+COPY deploy/docker/configure-snapshot.sh /usr/local/bin/configure-snapshot.sh
+RUN DEBIAN_SNAPSHOT="$DEBIAN_SNAPSHOT" sh /usr/local/bin/configure-snapshot.sh \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends \
+    build-essential=12.9 \
+    file=1:5.44-3 \
+    python3=3.11.2-1+b1 \
+  && rm -rf /var/lib/apt/lists/*
+COPY --from=build /workspace/deployed /workspace/deployed
 RUN case "$TARGETARCH" in \
-      amd64) node_arch=x64; expected="x86-64" ;; \
-      arm64) node_arch=arm64; expected="ARM aarch64" ;; \
+      amd64) expected="x86-64" ;; \
+      arm64) expected="ARM aarch64" ;; \
       *) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
     esac \
-  && staged_native="$(find /workspace/deployed/node_modules/.pnpm -path '*/better-sqlite3/build/Release/better_sqlite3.node' -type f -print -quit)" \
-  && test -n "$staged_native" \
-  && package_dir="$(dirname "$(dirname "$(dirname "$staged_native")")")" \
-  && unlink "$staged_native" \
-  && (cd "$package_dir" && npm_config_arch="$node_arch" node ../prebuild-install/bin.js) \
+  && package_dir="$(find /workspace/deployed/node_modules/.pnpm -path '*/node_modules/better-sqlite3' -type d -print -quit)" \
+  && test -n "$package_dir" \
+  && find "$package_dir" -name '*.node' -type f -delete \
+  && (cd "$package_dir" \
+    && npm_config_build_from_source=true \
+      npm_config_nodedir=/usr/local \
+      node /usr/local/lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js rebuild --release) \
   && native_module="$(find /workspace/deployed/node_modules/.pnpm -path '*/better-sqlite3/build/Release/better_sqlite3.node' -type f -print -quit)" \
   && test -n "$native_module" \
   && file "$native_module" | grep -F "$expected" \
-  && mkdir -p /workspace/runtime-node-modules \
-  && cp -RL "$(find /workspace/deployed/node_modules/.pnpm -path '*/node_modules/better-sqlite3' -type d -print -quit)" /workspace/runtime-node-modules/better-sqlite3 \
-  && cp -RL "$(find /workspace/deployed/node_modules/.pnpm -path '*/node_modules/bindings' -type d -print -quit)" /workspace/runtime-node-modules/bindings \
-  && cp -RL "$(find /workspace/deployed/node_modules/.pnpm -path '*/node_modules/file-uri-to-path' -type d -print -quit)" /workspace/runtime-node-modules/file-uri-to-path
+  && install -d /workspace/runtime-node-modules/better-sqlite3/build/Release \
+    /workspace/runtime-node-modules/better-sqlite3/lib \
+    /workspace/runtime-node-modules/bindings \
+    /workspace/runtime-node-modules/file-uri-to-path \
+  && cp -R "$package_dir/lib/." /workspace/runtime-node-modules/better-sqlite3/lib/ \
+  && cp "$package_dir/package.json" "$package_dir/LICENSE" /workspace/runtime-node-modules/better-sqlite3/ \
+  && cp "$native_module" /workspace/runtime-node-modules/better-sqlite3/build/Release/ \
+  && bindings_dir="$(find /workspace/deployed/node_modules/.pnpm -path '*/node_modules/bindings' -type d -print -quit)" \
+  && cp "$bindings_dir/bindings.js" "$bindings_dir/package.json" "$bindings_dir/LICENSE.md" /workspace/runtime-node-modules/bindings/ \
+  && file_uri_dir="$(find /workspace/deployed/node_modules/.pnpm -path '*/node_modules/file-uri-to-path' -type d -print -quit)" \
+  && cp "$file_uri_dir/index.js" "$file_uri_dir/package.json" "$file_uri_dir/LICENSE" /workspace/runtime-node-modules/file-uri-to-path/ \
+  && ! find /workspace/runtime-node-modules -type f \
+    \( -name '*.gyp' -o -name '*.cpp' -o -name '*.c' -o -name '*.h' \) | grep .
 
 FROM --platform=$BUILDPLATFORM node:24-bookworm-slim@sha256:235600a8101ab264e117b1768e925532262668dc9b581ef1dd7d96ced463b8e7 AS management-tools
 
 ARG TARGETARCH
+ARG DEBIAN_SNAPSHOT=20260731T000000Z
 ARG DOCKER_VERSION=29.7.1
 ARG DOCKER_AMD64_SHA256=0fcea2a8b4d1b54ccc9010e3451b78504a369d414f37eb3bb79300e1b5c22ce6
 ARG DOCKER_ARM64_SHA256=4eb4d1b21131897ed3990aac31039161bf4bdd07fcfb733e996010319ff4e069
 ARG COMPOSE_VERSION=2.39.1
 ARG COMPOSE_AMD64_SHA256=a5ea28722d5da628b59226626f7d6c33c89a7ed19e39f750645925242044c9d2
 ARG COMPOSE_ARM64_SHA256=7b2627ed76f7dcb0d93f649f185af912372229b4c09762a3cd1db5be5255632b
+ARG DOCKER_LICENSE_SHA256=2d81ea060825006fc8f3fe28aa5dc0ffeb80faf325b612c955229157b8c10dc0
+ARG COMPOSE_LICENSE_SHA256=58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd
 
-RUN apt-get update \
+COPY deploy/docker/configure-snapshot.sh /usr/local/bin/configure-snapshot.sh
+RUN DEBIAN_SNAPSHOT="$DEBIAN_SNAPSHOT" sh /usr/local/bin/configure-snapshot.sh \
+  && apt-get update \
   && apt-get install -y --no-install-recommends \
     ca-certificates=20230311+deb12u1 \
     curl=7.88.1-10+deb12u15 \
@@ -115,10 +150,21 @@ RUN case "$TARGETARCH" in \
     "https://github.com/docker/compose/releases/download/v${COMPOSE_VERSION}/docker-compose-linux-${asset_arch}" \
     --output /tmp/docker-compose \
   && echo "${compose_sha}  /tmp/docker-compose" | sha256sum --check --strict \
-  && install -D -m 0755 /tmp/docker-compose /out/usr/local/lib/docker/cli-plugins/docker-compose
+  && install -D -m 0755 /tmp/docker-compose /out/usr/local/lib/docker/cli-plugins/docker-compose \
+  && curl --connect-timeout 15 --fail --location --max-time 60 --retry 3 --show-error \
+    "https://raw.githubusercontent.com/docker/cli/v${DOCKER_VERSION}/LICENSE" \
+    --output /tmp/docker-license \
+  && echo "${DOCKER_LICENSE_SHA256}  /tmp/docker-license" | sha256sum --check --strict \
+  && install -D -m 0644 /tmp/docker-license /out/app/licenses/docker-cli-LICENSE \
+  && curl --connect-timeout 15 --fail --location --max-time 60 --retry 3 --show-error \
+    "https://raw.githubusercontent.com/docker/compose/v${COMPOSE_VERSION}/LICENSE" \
+    --output /tmp/compose-license \
+  && echo "${COMPOSE_LICENSE_SHA256}  /tmp/compose-license" | sha256sum --check --strict \
+  && install -D -m 0644 /tmp/compose-license /out/app/licenses/docker-compose-LICENSE
 
 FROM --platform=$TARGETPLATFORM node:24-bookworm-slim@sha256:235600a8101ab264e117b1768e925532262668dc9b581ef1dd7d96ced463b8e7 AS runtime
 
+ARG DEBIAN_SNAPSHOT=20260731T000000Z
 ARG ARGUS_VERSION=0.0.0-dev
 ARG ARGUS_REVISION=unknown
 ARG ARGUS_SOURCE=https://github.com/gpsxtreme/argus
@@ -131,7 +177,9 @@ LABEL org.opencontainers.image.title="Argus CLI" \
 # This image intentionally runs as root: the host wrapper grants it only the
 # Docker socket, /opt/argus, and read-only host inspection mounts. It contains
 # the Docker client and Compose v2 plugin, never a Docker daemon.
-RUN apt-get update \
+COPY deploy/docker/configure-snapshot.sh /usr/local/bin/configure-snapshot.sh
+RUN DEBIAN_SNAPSHOT="$DEBIAN_SNAPSHOT" sh /usr/local/bin/configure-snapshot.sh \
+  && apt-get update \
   && apt-get install -y --no-install-recommends \
     bash=5.2.15-2+b13 \
     ca-certificates=20230311+deb12u1 \
@@ -147,7 +195,9 @@ RUN apt-get update \
 COPY --from=build /workspace/cli-main.js /app/apps/cli/dist/main.js
 COPY --from=build /workspace/xhr-sync-worker.js /app/apps/cli/dist/xhr-sync-worker.js
 COPY --from=build /workspace/apps/cli/package.json /app/apps/cli/package.json
-COPY --from=build /workspace/runtime-node-modules/ /app/node_modules/
+COPY --from=native-build /workspace/runtime-node-modules/ /app/node_modules/
+COPY --from=build /workspace/notices/THIRD_PARTY_NOTICES.md /app/THIRD_PARTY_NOTICES.md
+COPY --from=build /workspace/notices/licenses/ /app/licenses/
 COPY --from=management-tools /out/ /
 
 ENV NODE_ENV="production" \
