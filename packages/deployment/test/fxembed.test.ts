@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -12,13 +13,25 @@ import {
 
 const token = "cloudflare-token-that-must-stay-secret";
 const accountId = "0123456789abcdef0123456789abcdef";
-const currentHash = "a".repeat(64);
-const changedHash = "b".repeat(64);
+const currentScript = new TextEncoder().encode(
+  "export default { fetch: () => new Response('ok') };",
+);
+const changedScript = new TextEncoder().encode(
+  "export default { fetch: () => new Response('changed') };",
+);
+const digest = (script: Uint8Array): string =>
+  createHash("sha256").update(script).digest("hex");
+const currentHash = digest(currentScript);
+const changedHash = digest(changedScript);
 
-const bundle = (sha256 = currentHash): FxEmbedBundle => ({
-  script: new TextEncoder().encode("export default { fetch: () => new Response('ok') };"),
+const bundle = ({
+  script = currentScript,
+  sha256 = digest(script),
+  compatibilityDate = "2026-07-31",
+}: Partial<FxEmbedBundle> = {}): FxEmbedBundle => ({
+  script,
   sha256,
-  compatibilityDate: "2026-07-31",
+  compatibilityDate,
 });
 
 class FixtureClient implements CloudflareWorkersClient {
@@ -29,6 +42,7 @@ class FixtureClient implements CloudflareWorkersClient {
     token: string;
   }> = [];
   readonly enabled: Array<{ accountId: string; name: string; token: string }> = [];
+  readonly gets: Array<{ accountId: string; name: string }> = [];
 
   constructor(
     private readonly existing:
@@ -36,7 +50,11 @@ class FixtureClient implements CloudflareWorkersClient {
       | undefined,
   ) {}
 
-  async getWorker(): Promise<{ etag?: string; bundleHash?: string } | undefined> {
+  async getWorker(
+    fetchedAccountId: string,
+    name: string,
+  ): Promise<{ etag?: string; bundleHash?: string } | undefined> {
+    this.gets.push({ accountId: fetchedAccountId, name });
     return this.existing;
   }
 
@@ -113,13 +131,79 @@ describe("managed FxEmbed", () => {
       accountId,
       workerName: ARGUS_FXEMBED_WORKER_NAME,
       token,
-      bundle: bundle(changedHash),
+      bundle: bundle({ script: changedScript }),
       client,
     });
 
     expect(client.puts).toHaveLength(1);
     expect(client.puts[0]?.bundle.sha256).toBe(changedHash);
     expect(result.changed).toBe(true);
+  });
+
+  it("rejects a mismatched bundle digest before any client call", async () => {
+    const client = new FixtureClient(undefined);
+
+    const result = reconcileFxEmbed({
+      accountId,
+      workerName: ARGUS_FXEMBED_WORKER_NAME,
+      token,
+      bundle: bundle({ sha256: "a".repeat(64) }),
+      client,
+    });
+
+    await expect(result).rejects.toMatchObject({
+      code: "FXEMBED_BUNDLE_HASH_MISMATCH",
+      message: "Managed FxEmbed bundle SHA-256 does not match its script.",
+    });
+    await result.catch((error: unknown) => {
+      expect(String(error)).not.toContain(token);
+      expect(JSON.stringify(error)).not.toContain(token);
+    });
+    expect(client.gets).toHaveLength(0);
+    expect(client.puts).toHaveLength(0);
+    expect(client.enabled).toHaveLength(0);
+  });
+
+  it("hashes exactly the supplied Uint8Array view", async () => {
+    const prefix = new TextEncoder().encode("do-not-hash");
+    const suffix = new TextEncoder().encode("or-this");
+    const backing = new Uint8Array(prefix.length + currentScript.length + suffix.length);
+    backing.set(prefix);
+    backing.set(currentScript, prefix.length);
+    backing.set(suffix, prefix.length + currentScript.length);
+    const exactScriptView = backing.subarray(prefix.length, prefix.length + currentScript.length);
+    const client = new FixtureClient({ bundleHash: digest(exactScriptView) });
+
+    await expect(
+      reconcileFxEmbed({
+        accountId,
+        workerName: ARGUS_FXEMBED_WORKER_NAME,
+        token,
+        bundle: bundle({ script: exactScriptView }),
+        client,
+      }),
+    ).resolves.toMatchObject({ changed: false, bundleHash: digest(currentScript) });
+    expect(client.puts).toHaveLength(0);
+  });
+
+  it("rejects an impossible compatibility date before any client call", async () => {
+    const client = new FixtureClient(undefined);
+
+    await expect(
+      reconcileFxEmbed({
+        accountId,
+        workerName: ARGUS_FXEMBED_WORKER_NAME,
+        token,
+        bundle: bundle({ compatibilityDate: "2026-02-30" }),
+        client,
+      }),
+    ).rejects.toMatchObject({
+      code: "FXEMBED_COMPATIBILITY_DATE_INVALID",
+      message: "Managed FxEmbed bundle must have a real pinned compatibility date.",
+    });
+    expect(client.gets).toHaveLength(0);
+    expect(client.puts).toHaveLength(0);
+    expect(client.enabled).toHaveLength(0);
   });
 
   it("rejects a non-deterministic Worker name before making API calls", async () => {
@@ -172,6 +256,44 @@ describe("managed FxEmbed", () => {
       },
     ]);
     expect(JSON.stringify(client)).not.toContain(token);
+  });
+
+  it.each([
+    null,
+    { annotations: null },
+    { annotations: { "workers/tag": 42 } },
+  ])("rejects malformed Worker settings without leaking response data: %j", async (result) => {
+    const client = new CloudflareWorkersApiClient({
+      token,
+      fetcher: async () =>
+        Response.json({ success: true, result, secret: token }),
+    });
+
+    const request = client.getWorker(accountId, ARGUS_FXEMBED_WORKER_NAME);
+
+    await expect(request).rejects.toMatchObject({
+      code: "CLOUDFLARE_RESPONSE_INVALID",
+      message: "Cloudflare Workers API returned an invalid response.",
+    });
+    await request.catch((error: unknown) => {
+      expect(String(error)).not.toContain(token);
+      expect(JSON.stringify(error)).not.toContain(token);
+    });
+  });
+
+  it("accepts an official non-Argus workers/tag as a changed bundle marker", async () => {
+    const client = new CloudflareWorkersApiClient({
+      token,
+      fetcher: async () =>
+        Response.json({
+          success: true,
+          result: { annotations: { "workers/tag": "v1.0.1" } },
+        }),
+    });
+
+    await expect(client.getWorker(accountId, ARGUS_FXEMBED_WORKER_NAME)).resolves.toEqual({
+      bundleHash: "v1.0.1",
+    });
   });
 
   it("uploads a module as multipart metadata with the pinned compatibility date", async () => {
@@ -260,6 +382,85 @@ describe("managed FxEmbed", () => {
       },
     ]);
   });
+
+  it("rejects malformed workers.dev inspection responses", async () => {
+    const client = new CloudflareWorkersApiClient({
+      token,
+      fetcher: async () =>
+        Response.json({
+          success: true,
+          result: { enabled: "yes", previews_enabled: false, secret: token },
+        }),
+    });
+
+    await expect(
+      client.enableWorkersDev(accountId, ARGUS_FXEMBED_WORKER_NAME, token),
+    ).rejects.toMatchObject({
+      code: "CLOUDFLARE_RESPONSE_INVALID",
+      message: "Cloudflare Workers API returned an invalid response.",
+    });
+  });
+
+  it("requires Cloudflare to confirm workers.dev was enabled", async () => {
+    let calls = 0;
+    const client = new CloudflareWorkersApiClient({
+      token,
+      fetcher: async () => {
+        calls += 1;
+        return calls === 1
+          ? Response.json({
+              success: true,
+              result: { enabled: false, previews_enabled: false },
+            })
+          : Response.json({
+              success: true,
+              result: { enabled: false, previews_enabled: false, secret: token },
+            });
+      },
+    });
+
+    await expect(
+      client.enableWorkersDev(accountId, ARGUS_FXEMBED_WORKER_NAME, token),
+    ).rejects.toMatchObject({
+      code: "CLOUDFLARE_RESPONSE_INVALID",
+      message: "Cloudflare Workers API returned an invalid response.",
+    });
+    expect(calls).toBe(2);
+  });
+
+  it.each([{ result: null }, { result: { subdomain: 42 } }, { result: {} }])(
+    "rejects malformed account subdomain responses without raw errors: %j",
+    async (result) => {
+      let calls = 0;
+      const client = new CloudflareWorkersApiClient({
+        token,
+        fetcher: async () => {
+          calls += 1;
+          return calls === 1
+            ? Response.json({
+                success: true,
+                result: { enabled: true, previews_enabled: false },
+              })
+            : Response.json({ success: true, ...result, secret: token });
+        },
+      });
+
+      const request = client.enableWorkersDev(
+        accountId,
+        ARGUS_FXEMBED_WORKER_NAME,
+        token,
+      );
+
+      await expect(request).rejects.toMatchObject({
+        code: "CLOUDFLARE_RESPONSE_INVALID",
+        message: "Cloudflare Workers API returned an invalid response.",
+      });
+      await request.catch((error: unknown) => {
+        expect(String(error)).not.toContain(token);
+        expect(JSON.stringify(error)).not.toContain(token);
+      });
+    },
+  );
 
   it("bounds HTTP requests and never exposes the token in errors or JSON", async () => {
     let signal: AbortSignal | undefined;

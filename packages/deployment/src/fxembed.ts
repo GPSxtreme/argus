@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { z } from "zod";
 import { DeploymentError } from "./errors.js";
 
 export const ARGUS_FXEMBED_WORKER_NAME = "argus-fxembed";
@@ -41,25 +43,37 @@ export interface CloudflareWorkersApiClientOptions {
   requestTimeoutMs?: number;
 }
 
-interface CloudflareEnvelope<T> {
-  success: boolean;
-  result: T;
-}
+const workerSettingsSchema = z
+  .object({
+    annotations: z
+      .object({
+        "workers/tag": z.string().optional(),
+      })
+      .passthrough()
+      .optional(),
+  })
+  .passthrough();
 
-interface WorkerSettings {
-  annotations?: {
-    "workers/tag"?: string;
-  };
-}
+const workerSubdomainSchema = z
+  .object({
+    enabled: z.boolean(),
+    previews_enabled: z.boolean(),
+  })
+  .passthrough();
 
-interface WorkerSubdomain {
-  enabled: boolean;
-  previews_enabled: boolean;
-}
+const accountSubdomainSchema = z
+  .object({
+    subdomain: z.string().min(1),
+  })
+  .passthrough();
 
-interface AccountSubdomain {
-  subdomain: string;
-}
+const uploadResultSchema = z.object({}).passthrough();
+const cloudflareEnvelopeSchema = z
+  .object({
+    success: z.literal(true),
+    result: z.unknown(),
+  })
+  .passthrough();
 
 const boundedTimeout = (timeoutMs: number | undefined): number => {
   if (timeoutMs === undefined || !Number.isFinite(timeoutMs)) return defaultRequestTimeoutMs;
@@ -68,6 +82,12 @@ const boundedTimeout = (timeoutMs: number | undefined): number => {
 
 const pathSegment = (value: string): string => encodeURIComponent(value);
 
+const isRealCompatibilityDate = (value: string): boolean => {
+  if (!compatibilityDatePattern.test(value)) return false;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
+};
+
 const assertBundle = (bundle: FxEmbedBundle): void => {
   if (!sha256Pattern.test(bundle.sha256)) {
     throw new DeploymentError(
@@ -75,16 +95,23 @@ const assertBundle = (bundle: FxEmbedBundle): void => {
       "Managed FxEmbed bundle must have a lowercase SHA-256 digest.",
     );
   }
-  if (!compatibilityDatePattern.test(bundle.compatibilityDate)) {
+  if (!isRealCompatibilityDate(bundle.compatibilityDate)) {
     throw new DeploymentError(
       "FXEMBED_COMPATIBILITY_DATE_INVALID",
-      "Managed FxEmbed bundle must have a pinned compatibility date.",
+      "Managed FxEmbed bundle must have a real pinned compatibility date.",
     );
   }
   if (bundle.script.byteLength === 0) {
     throw new DeploymentError(
       "FXEMBED_BUNDLE_EMPTY",
       "Managed FxEmbed bundle script must not be empty.",
+    );
+  }
+  const scriptHash = createHash("sha256").update(bundle.script).digest("hex");
+  if (scriptHash !== bundle.sha256) {
+    throw new DeploymentError(
+      "FXEMBED_BUNDLE_HASH_MISMATCH",
+      "Managed FxEmbed bundle SHA-256 does not match its script.",
     );
   }
 };
@@ -124,8 +151,8 @@ export class CloudflareWorkersApiClient implements CloudflareWorkersClient {
       true,
     );
     if (response === undefined) return undefined;
-    const envelope = await this.readEnvelope<WorkerSettings>(response);
-    const bundleHash = envelope.result.annotations?.["workers/tag"];
+    const settings = await this.readEndpoint(response, workerSettingsSchema);
+    const bundleHash = settings.annotations?.["workers/tag"];
     const etag = response.headers.get("etag") ?? undefined;
     return {
       ...(etag === undefined ? {} : { etag }),
@@ -172,7 +199,7 @@ export class CloudflareWorkersApiClient implements CloudflareWorkersClient {
         "Cloudflare Workers API request was rejected.",
       );
     }
-    await this.readEnvelope(response);
+    await this.readEndpoint(response, uploadResultSchema);
   }
 
   async enableWorkersDev(accountId: string, name: string, token: string): Promise<string> {
@@ -185,8 +212,8 @@ export class CloudflareWorkersApiClient implements CloudflareWorkersClient {
         "Cloudflare Workers API request was rejected.",
       );
     }
-    const current = await this.readEnvelope<WorkerSubdomain>(currentResponse);
-    if (!current.result.enabled) {
+    const current = await this.readEndpoint(currentResponse, workerSubdomainSchema);
+    if (!current.enabled) {
       const enabledResponse = await this.request(
         workerPath,
         {
@@ -202,7 +229,10 @@ export class CloudflareWorkersApiClient implements CloudflareWorkersClient {
           "Cloudflare Workers API request was rejected.",
         );
       }
-      await this.readEnvelope<WorkerSubdomain>(enabledResponse);
+      const enabled = await this.readEndpoint(enabledResponse, workerSubdomainSchema);
+      if (!enabled.enabled) {
+        throw this.invalidResponse();
+      }
     }
 
     const accountResponse = await this.request(
@@ -216,14 +246,14 @@ export class CloudflareWorkersApiClient implements CloudflareWorkersClient {
         "Cloudflare Workers API request was rejected.",
       );
     }
-    const account = await this.readEnvelope<AccountSubdomain>(accountResponse);
-    if (!/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i.test(account.result.subdomain)) {
+    const account = await this.readEndpoint(accountResponse, accountSubdomainSchema);
+    if (!/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i.test(account.subdomain)) {
       throw new DeploymentError(
         "CLOUDFLARE_SUBDOMAIN_INVALID",
         "Cloudflare returned an invalid workers.dev account subdomain.",
       );
     }
-    return `https://${name}.${account.result.subdomain}.workers.dev`;
+    return `https://${name}.${account.subdomain}.workers.dev`;
   }
 
   private async request(
@@ -270,14 +300,41 @@ export class CloudflareWorkersApiClient implements CloudflareWorkersClient {
     }
   }
 
-  private async readEnvelope<T>(response: Response): Promise<CloudflareEnvelope<T>> {
+  private async readEndpoint<Schema extends z.ZodType>(
+    response: Response,
+    resultSchema: Schema,
+  ): Promise<z.output<Schema>> {
+    const body = response.body;
+    if (body === null) throw this.invalidResponse();
+    const reader = body.getReader();
     let timer: ReturnType<typeof setTimeout> | undefined;
+    const readBody = (async (): Promise<unknown> => {
+      const chunks: Uint8Array[] = [];
+      let length = 0;
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(value);
+          length += value.byteLength;
+        }
+      } finally {
+        reader.releaseLock();
+      }
+      const bytes = new Uint8Array(length);
+      let offset = 0;
+      for (const chunk of chunks) {
+        bytes.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      return JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+    })();
     try {
-      const envelope = (await Promise.race([
-        response.json(),
+      const raw = await Promise.race([
+        readBody,
         new Promise<never>((_resolve, reject) => {
           timer = setTimeout(() => {
-            void response.body?.cancel().catch(() => undefined);
+            void reader.cancel().catch(() => undefined);
             reject(
               new DeploymentError(
                 "CLOUDFLARE_REQUEST_FAILED",
@@ -286,20 +343,25 @@ export class CloudflareWorkersApiClient implements CloudflareWorkersClient {
             );
           }, this.requestTimeoutMs);
         }),
-      ])) as CloudflareEnvelope<T>;
-      if (envelope.success !== true || envelope.result === undefined) {
-        throw new Error("Invalid Cloudflare response envelope.");
-      }
-      return envelope;
+      ]);
+      const envelope = cloudflareEnvelopeSchema.safeParse(raw);
+      if (!envelope.success) throw this.invalidResponse();
+      const result = resultSchema.safeParse(envelope.data.result);
+      if (!result.success) throw this.invalidResponse();
+      return result.data;
     } catch (error) {
       if (error instanceof DeploymentError) throw error;
-      throw new DeploymentError(
-        "CLOUDFLARE_RESPONSE_INVALID",
-        "Cloudflare Workers API returned an invalid response.",
-      );
+      throw this.invalidResponse();
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }
+  }
+
+  private invalidResponse(): DeploymentError {
+    return new DeploymentError(
+      "CLOUDFLARE_RESPONSE_INVALID",
+      "Cloudflare Workers API returned an invalid response.",
+    );
   }
 }
 
