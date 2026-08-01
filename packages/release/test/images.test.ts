@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import {
   chmodSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -18,6 +19,23 @@ const appDockerfilePath = join(repositoryRoot, "deploy/docker/Dockerfile");
 const cliDockerfilePath = join(repositoryRoot, "deploy/docker/Dockerfile.cli");
 const appDockerfile = readFileSync(appDockerfilePath, "utf8");
 const cliDockerfile = readFileSync(cliDockerfilePath, "utf8");
+const rootManifest = JSON.parse(
+  readFileSync(join(repositoryRoot, "package.json"), "utf8"),
+) as {
+  devDependencies: Record<string, string>;
+  packageManager: string;
+};
+const lockfile = readFileSync(join(repositoryRoot, "pnpm-lock.yaml"), "utf8");
+const noticeGeneratorPath = join(
+  repositoryRoot,
+  "deploy/docker/generate-third-party-notices.mjs",
+);
+const licenseExceptions = JSON.parse(
+  readFileSync(
+    join(repositoryRoot, "deploy/docker/license-exceptions.json"),
+    "utf8",
+  ),
+) as { packages: Record<string, unknown> };
 const snapshotScriptPath = join(
   repositoryRoot,
   "deploy/docker/configure-snapshot.sh",
@@ -78,6 +96,8 @@ describe("production image definitions", () => {
       expect(dockerfile).not.toMatch(/(?:FROM|image:)[^\n]*:latest\b/u);
       expect(dockerfile).toContain("ARG TARGETARCH");
       expect(dockerfile).toContain("pnpm install --frozen-lockfile");
+      expect(dockerfile).not.toMatch(/npm install --global|npm install -g/u);
+      expect(dockerfile).toContain("corepack enable");
       expect(dockerfile).toContain("pnpm --config.ignore-scripts=true");
       expect(dockerfile).not.toContain("prebuild-install");
       expect(dockerfile).toContain("npm_config_build_from_source=true");
@@ -95,6 +115,116 @@ describe("production image definitions", () => {
       expect(dockerfile).toContain("THIRD_PARTY_NOTICES.md");
       expect(dockerfile).toContain("/app/licenses");
     }
+  });
+
+  it("locks builder tooling with registry integrity", () => {
+    expect(rootManifest.packageManager).toMatch(
+      /^pnpm@10\.33\.0\+sha512\.[a-f0-9]{128}$/u,
+    );
+    expect(rootManifest.devDependencies.esbuild).toBe("0.25.10");
+    expect(lockfile).toMatch(
+      /esbuild:\n\s+specifier: 0\.25\.10\n\s+version: 0\.25\.10/u,
+    );
+  });
+
+  it("packages every discovered external license file and rejects omissions", () => {
+    for (const priorOmission of [
+      "@nodable/entities@3.0.0",
+      "boolbase@1.0.0",
+      "pg-types@2.2.0",
+      "pgpass@1.0.5",
+      "saxes@6.0.0",
+    ]) {
+      expect(licenseExceptions.packages).toHaveProperty(priorOmission);
+    }
+    const fixture = mkdtempSync(join(tmpdir(), "argus-license-fixture-"));
+    const modules = join(fixture, "node_modules");
+    const output = join(fixture, "output");
+    const packageDirectory = join(
+      modules,
+      ".pnpm/fixture-package@1.2.3/node_modules/fixture-package",
+    );
+    mkdirSync(packageDirectory, { recursive: true });
+    writeFileSync(
+      join(packageDirectory, "package.json"),
+      JSON.stringify({
+        name: "fixture-package",
+        version: "1.2.3",
+        license: "(MIT OR Apache-2.0)",
+      }),
+    );
+    writeFileSync(join(packageDirectory, "license-mit"), "MIT fixture text");
+    writeFileSync(
+      join(packageDirectory, "NOTICE.Apache.txt"),
+      "Apache fixture text",
+    );
+    execFileSync(
+      "node",
+      [
+        noticeGeneratorPath,
+        modules,
+        output,
+        "app",
+        JSON.stringify({ tini: "9.8.7-test" }),
+      ],
+      { cwd: repositoryRoot },
+    );
+    const generatedFiles = execFileSync(
+      "find",
+      [join(output, "licenses/npm"), "-type", "f"],
+      { encoding: "utf8" },
+    );
+    expect(generatedFiles).toContain("license-mit");
+    expect(generatedFiles).toContain("NOTICE.Apache.txt");
+    expect(
+      readFileSync(join(output, "THIRD_PARTY_NOTICES.md"), "utf8"),
+    ).toContain("Tini 9.8.7-test");
+    const cliOutput = join(fixture, "cli-output");
+    execFileSync(
+      "node",
+      [
+        noticeGeneratorPath,
+        modules,
+        cliOutput,
+        "cli",
+        JSON.stringify({ compose: "8.7.6-test", docker: "7.6.5-test" }),
+      ],
+      { cwd: repositoryRoot },
+    );
+    const cliNotices = readFileSync(
+      join(cliOutput, "THIRD_PARTY_NOTICES.md"),
+      "utf8",
+    );
+    expect(cliNotices).toContain("Docker CLI 7.6.5-test");
+    expect(cliNotices).toContain("Docker Compose 8.7.6-test");
+
+    const missingDirectory = join(
+      modules,
+      ".pnpm/missing-license@1.0.0/node_modules/missing-license",
+    );
+    mkdirSync(missingDirectory, { recursive: true });
+    writeFileSync(
+      join(missingDirectory, "package.json"),
+      JSON.stringify({
+        name: "missing-license",
+        version: "1.0.0",
+        license: "MIT",
+      }),
+    );
+    expect(() =>
+      execFileSync(
+        "node",
+        [
+          noticeGeneratorPath,
+          modules,
+          join(fixture, "missing-output"),
+          "app",
+          JSON.stringify({ tini: "9.8.7-test" }),
+        ],
+        { cwd: repositoryRoot, stdio: "pipe" },
+      ),
+    ).toThrow(/missing-license@1\.0\.0/u);
+    rmSync(fixture, { recursive: true });
   });
 
   it("uses a dated, signed Debian snapshot with bounded downloads", () => {
@@ -120,10 +250,12 @@ describe("production image definitions", () => {
   it("declares both release architectures for opt-in buildx verification", () => {
     expect(imageMatrix.platforms).toEqual(["linux/amd64", "linux/arm64"]);
     expect(crossBuildScript).toContain(
-      "ARGUS_IMAGE_PLATFORMS:-linux/amd64,linux/arm64",
+      "build-matrix.json",
     );
+    expect(crossBuildScript).not.toContain("linux/amd64,linux/arm64");
     expect(crossBuildScript).toContain("docker buildx build");
     expect(crossBuildScript).toContain("Dockerfile.cli");
+    expect(crossBuildScript).toContain("ARGUS_IMAGE_BUILD_TIMEOUT_SECONDS");
   });
 
   it("runs the application as a fixed non-root user with its runtime contract", () => {
@@ -322,9 +454,40 @@ api: { host: 0.0.0.0, port: 8788 }
       docker([
         "exec",
         containerName,
+        "test",
+        "!",
+        "-e",
+        "/usr/local/bin/configure-snapshot.sh",
+      ]),
+    ).toBe("");
+    expect(
+      docker([
+        "exec",
+        containerName,
+        "node",
+        "-e",
+        `const{spawn}=require('node:child_process');const http=require('node:http');const fail=setTimeout(()=>process.exit(1),10000);const server=http.createServer((_,res)=>{res.setHeader('access-control-allow-origin','null');res.end('argus-worker-ok')});server.listen(0,'127.0.0.1',()=>{const port=server.address().port;const child=spawn(process.execPath,['/app/apps/argus/dist/xhr-sync-worker.js']);let out='';child.stdout.on('data',x=>out+=x);child.on('exit',code=>{server.close(()=>{clearTimeout(fail);const payload=JSON.parse(out);const text=Buffer.from(payload.properties.responseBuffer.data).subarray(0,payload.properties.totalReceivedChunkSize).toString();if(code!==0||payload.status!==200||text!=='argus-worker-ok')process.exit(1)})});child.stdin.end(JSON.stringify({method:'GET',uri:\`http://127.0.0.1:\${port}/\`,requestHeaders:{},body:null}))})`,
+      ]),
+    ).toBe("");
+    expect(
+      docker([
+        "exec",
+        containerName,
         "node",
         "-e",
         "const Database=require('better-sqlite3');const db=new Database(':memory:');db.prepare('select 1').get();db.close()",
+      ]),
+    ).toBe("");
+    expect(
+      docker([
+        "run",
+        "--rm",
+        "--entrypoint",
+        "test",
+        cliImage,
+        "!",
+        "-e",
+        "/usr/local/bin/configure-snapshot.sh",
       ]),
     ).toBe("");
     expect(

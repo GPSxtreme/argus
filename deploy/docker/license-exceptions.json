@@ -1,0 +1,44 @@
+{
+  "packages": {
+    "@esbuild/darwin-arm64@0.28.1": {
+      "spdx": "MIT",
+      "source": "https://spdx.org/licenses/MIT.html",
+      "textFile": "./license-texts/MIT.txt"
+    },
+    "@esbuild/linux-arm64@0.28.1": {
+      "spdx": "MIT",
+      "source": "https://spdx.org/licenses/MIT.html",
+      "textFile": "./license-texts/MIT.txt"
+    },
+    "@esbuild/linux-x64@0.28.1": {
+      "spdx": "MIT",
+      "source": "https://spdx.org/licenses/MIT.html",
+      "textFile": "./license-texts/MIT.txt"
+    },
+    "@nodable/entities@3.0.0": {
+      "spdx": "MIT",
+      "source": "https://spdx.org/licenses/MIT.html",
+      "textFile": "./license-texts/MIT.txt"
+    },
+    "boolbase@1.0.0": {
+      "spdx": "ISC",
+      "source": "https://spdx.org/licenses/ISC.html",
+      "textFile": "./license-texts/ISC.txt"
+    },
+    "pg-types@2.2.0": {
+      "spdx": "MIT",
+      "source": "https://spdx.org/licenses/MIT.html",
+      "textFile": "./license-texts/MIT.txt"
+    },
+    "pgpass@1.0.5": {
+      "spdx": "MIT",
+      "source": "https://spdx.org/licenses/MIT.html",
+      "textFile": "./license-texts/MIT.txt"
+    },
+    "saxes@6.0.0": {
+      "spdx": "ISC",
+      "source": "https://spdx.org/licenses/ISC.html",
+      "textFile": "./license-texts/ISC.txt"
+    }
+  }
+}

@@ -1,19 +1,13 @@
 # syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 
+ARG DEBIAN_SNAPSHOT=20260731T000000Z
+ARG TINI_VERSION=0.19.0-1+b3
+
 # The digest is the official Node 24 bookworm-slim OCI index. It contains both
 # linux/amd64 and linux/arm64/v8 manifests and is shared by every stage.
 FROM --platform=$BUILDPLATFORM node:24-bookworm-slim@sha256:235600a8101ab264e117b1768e925532262668dc9b581ef1dd7d96ced463b8e7 AS build
 
-ARG DEBIAN_SNAPSHOT=20260731T000000Z
-COPY deploy/docker/configure-snapshot.sh /usr/local/bin/configure-snapshot.sh
-RUN DEBIAN_SNAPSHOT="$DEBIAN_SNAPSHOT" sh /usr/local/bin/configure-snapshot.sh \
-  && apt-get update \
-  && apt-get install -y --no-install-recommends \
-    build-essential=12.9 \
-    file=1:5.44-3 \
-    python3=3.11.2-1+b1 \
-  && npm install --global esbuild@0.25.10 pnpm@10.33.0 \
-  && rm -rf /var/lib/apt/lists/*
+RUN corepack enable
 
 WORKDIR /workspace
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml turbo.json tsconfig.json ./
@@ -32,6 +26,8 @@ COPY packages/storage-sqlite/package.json packages/storage-sqlite/package.json
 RUN pnpm install --frozen-lockfile --ignore-scripts
 
 COPY deploy/docker/generate-third-party-notices.mjs /workspace/generate-third-party-notices.mjs
+COPY deploy/docker/license-exceptions.json /workspace/license-exceptions.json
+COPY deploy/docker/license-texts /workspace/license-texts
 COPY apps/argus apps/argus
 COPY packages/config packages/config
 COPY packages/contracts packages/contracts
@@ -66,8 +62,10 @@ RUN pnpm --filter @argus/app... build \
     --platform=node \
     --target=node24 \
   && pnpm --config.ignore-scripts=true --filter @argus/app deploy --legacy --prod /workspace/deployed
+ARG TINI_VERSION
 RUN node /workspace/generate-third-party-notices.mjs \
-    /workspace/deployed/node_modules /workspace/notices app
+    /workspace/deployed/node_modules /workspace/notices app \
+    "{\"tini\":\"${TINI_VERSION}\"}"
 
 # Native compilation runs under the target platform (QEMU when cross-building).
 # The package source came from the integrity-verified pnpm lockfile and install
@@ -75,7 +73,7 @@ RUN node /workspace/generate-third-party-notices.mjs \
 FROM --platform=$TARGETPLATFORM node:24-bookworm-slim@sha256:235600a8101ab264e117b1768e925532262668dc9b581ef1dd7d96ced463b8e7 AS native-build
 
 ARG TARGETARCH
-ARG DEBIAN_SNAPSHOT=20260731T000000Z
+ARG DEBIAN_SNAPSHOT
 COPY deploy/docker/configure-snapshot.sh /usr/local/bin/configure-snapshot.sh
 RUN DEBIAN_SNAPSHOT="$DEBIAN_SNAPSHOT" sh /usr/local/bin/configure-snapshot.sh \
   && apt-get update \
@@ -83,6 +81,7 @@ RUN DEBIAN_SNAPSHOT="$DEBIAN_SNAPSHOT" sh /usr/local/bin/configure-snapshot.sh \
     build-essential=12.9 \
     file=1:5.44-3 \
     python3=3.11.2-1+b1 \
+  && rm -f /usr/local/bin/configure-snapshot.sh \
   && rm -rf /var/lib/apt/lists/*
 COPY --from=build /workspace/deployed /workspace/deployed
 RUN case "$TARGETARCH" in \
@@ -116,7 +115,8 @@ RUN case "$TARGETARCH" in \
 
 FROM --platform=$TARGETPLATFORM node:24-bookworm-slim@sha256:235600a8101ab264e117b1768e925532262668dc9b581ef1dd7d96ced463b8e7 AS runtime
 
-ARG DEBIAN_SNAPSHOT=20260731T000000Z
+ARG DEBIAN_SNAPSHOT
+ARG TINI_VERSION
 ARG ARGUS_VERSION=0.0.0-dev
 ARG ARGUS_REVISION=unknown
 ARG ARGUS_SOURCE=https://github.com/gpsxtreme/argus
@@ -131,11 +131,12 @@ RUN DEBIAN_SNAPSHOT="$DEBIAN_SNAPSHOT" sh /usr/local/bin/configure-snapshot.sh \
   && apt-get update \
   && apt-get install -y --no-install-recommends \
     ca-certificates=20230311+deb12u1 \
-    tini=0.19.0-1+b3 \
+    tini="$TINI_VERSION" \
   && groupadd --gid 10001 argus \
   && useradd --uid 10001 --gid 10001 --no-create-home --home-dir /app --shell /usr/sbin/nologin argus \
   && mkdir -p /app/apps/argus/dist /app/data /app/node_modules \
   && chown -R 10001:10001 /app \
+  && rm -f /usr/local/bin/configure-snapshot.sh \
   && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build --chown=10001:10001 /workspace/app-main.js /app/apps/argus/dist/main.js
