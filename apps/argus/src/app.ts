@@ -3,7 +3,7 @@ import type { ArgusConfig } from "@argus/config";
 import type { StorageRepository } from "@argus/contracts";
 import { OpenRouterClient } from "@argus/intelligence";
 import { QueryService } from "@argus/query";
-import { enqueueWatchNow } from "@argus/scheduler";
+import { enqueueWatchNow, targetsFromConfig } from "@argus/scheduler";
 import { Hono } from "hono";
 
 export interface CreateAppInput {
@@ -91,26 +91,24 @@ export const createApp = ({ config, repository }: CreateAppInput): Hono => {
   });
 
   app.post("/v1/diagnostics/smoke-watches", async (context) => {
-    const body: { source?: string; targetUrl?: string } = await context.req.json<{ source?: string; targetUrl?: string }>().catch(() => ({}));
-    if (body.source !== "web" || typeof body.targetUrl !== "string") {
-      return context.json({ error: "only a web diagnostic target URL is supported" }, 400);
-    }
-    let targetUrl: URL;
-    try { targetUrl = new URL(body.targetUrl); } catch { return context.json({ error: "invalid diagnostic target URL" }, 400); }
-    if (!/^https?:$/.test(targetUrl.protocol)) return context.json({ error: "invalid diagnostic target URL" }, 400);
+    const body: { source?: string; targetId?: string } = await context.req.json<{ source?: string; targetId?: string }>().catch(() => ({}));
+    const target = typeof body.targetId === "string" ? targetsFromConfig(config).find((candidate) => candidate.id === body.targetId && candidate.source === body.source) : undefined;
+    if (!target) return context.json({ error: "configured enabled diagnostic target was not found" }, 404);
     const id = randomUUID();
     const targetId = `__argus_doctor:${id}`;
-    await repository.setCheckpoint(targetId, { diagnostic: true, source: "web", kind: "url", value: targetUrl.toString(), watchId: `__argus_doctor:${id}`, deleted: false });
-    await repository.enqueueJob({ id: randomUUID(), targetId, source: "web", status: "queued", attempt: 0, runAt: new Date().toISOString() });
-    return context.json({ id, targetId, expectedUrl: targetUrl.toString() }, 202);
+    const now = new Date().toISOString();
+    const created = await repository.createDiagnosticWatch({ id, targetId, source: target.source, target: { kind: target.kind, value: target.value, keywords: target.keywords, watchId: target.watchId }, status: "active", createdAt: now, updatedAt: now, job: { id: randomUUID(), targetId, source: target.source, status: "queued", attempt: 0, runAt: now } });
+    if (!created) return context.json({ error: "diagnostic watch could not be created" }, 409);
+    return context.json({ id, targetId }, 202);
   });
 
   app.delete("/v1/diagnostics/smoke-watches/:id", async (context) => {
     const id = context.req.param("id");
     const targetId = `__argus_doctor:${id}`;
-    const state = await repository.getCheckpoint<{ diagnostic?: boolean }>(targetId);
-    if (!state?.diagnostic) return context.json({ error: "diagnostic watch not found" }, 404);
-    await repository.setCheckpoint(targetId, { ...state, deleted: true });
+    const state = await repository.getDiagnosticWatch(targetId);
+    if (!state) return context.json({ error: "diagnostic watch not found" }, 404);
+    await repository.cancelDiagnosticWatch(targetId);
+    await repository.cleanupDiagnosticWatch(targetId);
     return context.body(null, 204);
   });
 

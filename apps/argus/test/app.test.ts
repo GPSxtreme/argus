@@ -1,5 +1,6 @@
 import { validateConfig } from "@argus/config";
 import { createSqliteRepository } from "@argus/storage-sqlite";
+import { targetsFromConfig } from "@argus/scheduler";
 import { afterEach, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 
@@ -40,7 +41,8 @@ describe("Argus API", () => {
       contentHash: "hash",
       ingestedAt: "2026-07-31T00:00:00.000Z",
     });
-    const app = createApp({ config, repository });
+    const diagnosticConfig = validateConfig({ version: 1, storage: { adapter: "sqlite", url: ":memory:" }, sources: { web: { enabled: true } }, watches: [{ id: "diagnostic-source", schedule: "* * * * *", inputs: { web: { urls: ["https://example.com/a"] } } }], api: { token: "secret" } });
+    const app = createApp({ config: diagnosticConfig, repository });
     expect((await app.request("/v1/records")).status).toBe(401);
     const response = await app.request("/v1/records?q=Argus", {
       headers: { authorization: "Bearer secret" },
@@ -90,14 +92,15 @@ describe("Argus API", () => {
   it("creates and only tombstones its authenticated temporary diagnostic watch", async () => {
     const repository = await createSqliteRepository({ filename: ":memory:" });
     repositories.push(repository);
-    const app = createApp({ config, repository });
+    const diagnosticConfig = validateConfig({ version: 1, storage: { adapter: "sqlite", url: ":memory:" }, sources: { web: { enabled: true } }, watches: [{ id: "diagnostic-source", schedule: "* * * * *", inputs: { web: { urls: ["https://example.com/a"] } } }], api: { token: "secret" } });
+    const app = createApp({ config: diagnosticConfig, repository });
     expect((await app.request("/v1/diagnostics/smoke-watches", { method: "POST" })).status).toBe(401);
-    const created = await app.request("/v1/diagnostics/smoke-watches", { method: "POST", headers: { authorization: "Bearer secret", "content-type": "application/json" }, body: JSON.stringify({ source: "web", targetUrl: "https://example.com/a#fragment" }) });
+    const created = await app.request("/v1/diagnostics/smoke-watches", { method: "POST", headers: { authorization: "Bearer secret", "content-type": "application/json" }, body: JSON.stringify({ source: "web", targetId: targetsFromConfig(diagnosticConfig)[0]?.id }) });
     expect(created.status).toBe(202);
     const diagnostic = await created.json() as { id: string; targetId: string };
     expect(await repository.claimJobs("worker", 10, 30_000)).toHaveLength(1);
     expect((await app.request(`/v1/diagnostics/smoke-watches/${diagnostic.id}`, { method: "DELETE", headers: { authorization: "Bearer secret" } })).status).toBe(204);
-    expect(await repository.getCheckpoint<{ deleted: boolean }>(diagnostic.targetId)).toMatchObject({ deleted: true });
-    expect(config.watches).toEqual([]);
+    expect(await repository.getDiagnosticWatch(diagnostic.targetId)).toBeUndefined();
+    expect(diagnosticConfig.watches).toHaveLength(1);
   });
 });

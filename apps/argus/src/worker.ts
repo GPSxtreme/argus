@@ -2,7 +2,6 @@ import type { ArgusConfig } from "@argus/config";
 import type {
   SourceAdapter,
   SourceItem,
-  SourceName,
   StorageRepository,
 } from "@argus/contracts";
 import { ingestItems } from "@argus/engine";
@@ -93,7 +92,9 @@ export const findDiagnosticTarget = async (
   targetId: string,
 ): Promise<ScheduledTarget | undefined> => {
   if (!targetId.startsWith("__argus_doctor:")) return undefined;
-  const state = await repository.getCheckpoint<{ diagnostic?: boolean; deleted?: boolean; source?: SourceName; kind?: ScheduledTarget["kind"]; value?: string; watchId?: string }>(targetId);
-  if (!state?.diagnostic || state.deleted || state.source !== "web" || state.kind !== "url" || typeof state.value !== "string" || typeof state.watchId !== "string") return undefined;
-  return { id: targetId, source: "web", kind: "url", value: state.value, watchId: state.watchId, schedule: "* * * * *", keywords: [] };
+  const state = await repository.getDiagnosticWatch(targetId);
+  if (state?.status !== "active") return undefined;
+  const target = state.target;
+  if (typeof target.kind !== "string" || typeof target.value !== "string" || typeof target.watchId !== "string") return undefined;
+  return { id: targetId, source: state.source, kind: target.kind as ScheduledTarget["kind"], value: target.value, watchId: target.watchId, schedule: "* * * * *", keywords: Array.isArray(target.keywords) ? target.keywords.filter((x): x is string => typeof x === "string") : [] };
 };
