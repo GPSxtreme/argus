@@ -96,6 +96,7 @@ third-party public FxTwitter instance.
 ## Development
 
 ```bash
+pnpm lint
 pnpm test
 pnpm typecheck
 pnpm build
