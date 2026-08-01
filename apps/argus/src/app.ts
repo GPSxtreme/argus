@@ -90,6 +90,30 @@ export const createApp = ({ config, repository }: CreateAppInput): Hono => {
     return context.json({ queued, watchId: watch.id }, 202);
   });
 
+  app.post("/v1/diagnostics/smoke-watches", async (context) => {
+    const body: { source?: string; targetUrl?: string } = await context.req.json<{ source?: string; targetUrl?: string }>().catch(() => ({}));
+    if (body.source !== "web" || typeof body.targetUrl !== "string") {
+      return context.json({ error: "only a web diagnostic target URL is supported" }, 400);
+    }
+    let targetUrl: URL;
+    try { targetUrl = new URL(body.targetUrl); } catch { return context.json({ error: "invalid diagnostic target URL" }, 400); }
+    if (!/^https?:$/.test(targetUrl.protocol)) return context.json({ error: "invalid diagnostic target URL" }, 400);
+    const id = randomUUID();
+    const targetId = `__argus_doctor:${id}`;
+    await repository.setCheckpoint(targetId, { diagnostic: true, source: "web", kind: "url", value: targetUrl.toString(), watchId: `__argus_doctor:${id}`, deleted: false });
+    await repository.enqueueJob({ id: randomUUID(), targetId, source: "web", status: "queued", attempt: 0, runAt: new Date().toISOString() });
+    return context.json({ id, targetId, expectedUrl: targetUrl.toString() }, 202);
+  });
+
+  app.delete("/v1/diagnostics/smoke-watches/:id", async (context) => {
+    const id = context.req.param("id");
+    const targetId = `__argus_doctor:${id}`;
+    const state = await repository.getCheckpoint<{ diagnostic?: boolean }>(targetId);
+    if (!state?.diagnostic) return context.json({ error: "diagnostic watch not found" }, 404);
+    await repository.setCheckpoint(targetId, { ...state, deleted: true });
+    return context.body(null, 204);
+  });
+
   app.post("/v1/summaries", async (context) => {
     if (!config.intelligence.enabled || !config.intelligence.apiKey) {
       return context.json({ error: "intelligence is disabled" }, 409);

@@ -86,4 +86,18 @@ describe("Argus API", () => {
     );
     expect(response.status).toBe(400);
   });
+
+  it("creates and only tombstones its authenticated temporary diagnostic watch", async () => {
+    const repository = await createSqliteRepository({ filename: ":memory:" });
+    repositories.push(repository);
+    const app = createApp({ config, repository });
+    expect((await app.request("/v1/diagnostics/smoke-watches", { method: "POST" })).status).toBe(401);
+    const created = await app.request("/v1/diagnostics/smoke-watches", { method: "POST", headers: { authorization: "Bearer secret", "content-type": "application/json" }, body: JSON.stringify({ source: "web", targetUrl: "https://example.com/a#fragment" }) });
+    expect(created.status).toBe(202);
+    const diagnostic = await created.json() as { id: string; targetId: string };
+    expect(await repository.claimJobs("worker", 10, 30_000)).toHaveLength(1);
+    expect((await app.request(`/v1/diagnostics/smoke-watches/${diagnostic.id}`, { method: "DELETE", headers: { authorization: "Bearer secret" } })).status).toBe(204);
+    expect(await repository.getCheckpoint<{ deleted: boolean }>(diagnostic.targetId)).toMatchObject({ deleted: true });
+    expect(config.watches).toEqual([]);
+  });
 });

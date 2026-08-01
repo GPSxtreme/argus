@@ -9,7 +9,7 @@ type Check = DiagnosticReport["checks"][number];
 
 export interface DoctorArgusApi {
   health(): Promise<boolean>;
-  createSmokeWatch(input: { source: Source }): Promise<{ id: string; targetId: string; expectedUrl: string }>;
+  createSmokeWatch(input: { source: Source; targetUrl?: string }): Promise<{ id: string; targetId: string; expectedUrl: string }>;
   pollRecords(input: { targetId: string }): Promise<Array<{ url: string }>>;
   removeSmokeWatch(input: { id: string }): Promise<void>;
 }
@@ -43,8 +43,8 @@ export const createArgusDoctorApi = ({ endpoint, token, fetcher = fetch, request
       try { return (await fetcher(`${base}/health`, { signal: AbortSignal.timeout(bounded(requestTimeoutMs, 5_000, 10_000)) })).ok; }
       catch { return false; }
     },
-    async createSmokeWatch({ source }) {
-      const payload = await (await request("/v1/diagnostics/smoke-watches", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ source }) })).json() as unknown;
+    async createSmokeWatch({ source, targetUrl }) {
+      const payload = await (await request("/v1/diagnostics/smoke-watches", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ source, ...(targetUrl === undefined ? {} : { targetUrl }) }) })).json() as unknown;
       if (!payload || typeof payload !== "object") throw new Error("Argus diagnostic API request failed.");
       const value = payload as Record<string, unknown>;
       if (typeof value.id !== "string" || typeof value.targetId !== "string" || typeof value.expectedUrl !== "string") throw new Error("Argus diagnostic API request failed.");
@@ -66,6 +66,7 @@ export interface DoctorContext {
   storage: "sqlite" | "postgres";
   managed: { searxng: "disabled" | "managed" | "external"; fxembed: "disabled" | "managed" | "external" };
   sources: Partial<Record<Source, boolean>>;
+  smokeTargetUrls?: Partial<Record<Source, string>>;
   searxngEndpoint?: string;
   fxembedEndpoint?: string;
   fetcher?: SearxngFetcher;
@@ -136,7 +137,7 @@ const smokeCheck = async (source: Source, context: DoctorContext): Promise<Check
   let smoke: { id: string; targetId: string; expectedUrl: string } | undefined;
   let outcome: Check | undefined;
   try {
-    smoke = await context.api.createSmokeWatch({ source });
+    smoke = await context.api.createSmokeWatch({ source, ...(context.smokeTargetUrls?.[source] === undefined ? {} : { targetUrl: context.smokeTargetUrls[source] }) });
     const expected = canonicalUrl(smoke.expectedUrl);
     if (!expected) outcome = unhealthy(source, "SOURCE_SMOKE_INVALID_TARGET", "The diagnostic source target URL is invalid.");
     else {
@@ -182,7 +183,7 @@ export const runDoctor = async (context: DoctorContext): Promise<DiagnosticRepor
       try { const result = await context.executor.run("docker", ["info"], { timeoutMs: perCheck }); return result.exitCode === 0 && !result.timedOut ? healthy("docker", "DOCKER_HEALTHY", "Docker is available to the Argus management container.") : unhealthy("docker", "DOCKER_UNAVAILABLE", "Docker is not available to the Argus management container."); } catch { return unhealthy("docker", "DOCKER_UNAVAILABLE", "Docker is not available to the Argus management container."); }
     }],
     ["argus", async () => { try { return await context.api.health() ? healthy("argus", "ARGUS_HEALTHY", "Argus API is healthy.") : unhealthy("argus", "ARGUS_HEALTHCHECK_FAILED", "Argus API did not report healthy."); } catch { return unhealthy("argus", "ARGUS_HEALTHCHECK_FAILED", "Argus API did not report healthy."); } }],
-    ["storage", async () => context.storage === "sqlite" ? healthy("storage", "SQLITE_HEALTHY", "SQLite storage is managed with Argus.") : healthy("storage", "POSTGRES_HEALTHY", "PostgreSQL storage is selected.")],
+    ["storage", async () => { try { const result = await context.executor.run("docker", context.storage === "postgres" ? ["compose", "-p", "argus", "exec", "-T", "postgres", "pg_isready"] : ["compose", "-p", "argus", "exec", "-T", "argus", "test", "-r", "/app/data/argus.db"], { cwd: context.root, timeoutMs: perCheck }); return result.exitCode === 0 && !result.timedOut ? healthy("storage", context.storage === "postgres" ? "POSTGRES_HEALTHY" : "SQLITE_HEALTHY", `${context.storage === "postgres" ? "PostgreSQL" : "SQLite"} storage is reachable.`) : unhealthy("storage", "STORAGE_HEALTHCHECK_FAILED", "Configured storage did not pass its bounded health check."); } catch { return unhealthy("storage", "STORAGE_HEALTHCHECK_FAILED", "Configured storage did not pass its bounded health check."); } }],
     ["searxng", () => endpointCheck("searxng", context.searxngEndpoint, context)],
     ["fxembed", () => endpointCheck("fxembed", context.fxembedEndpoint, context)],
     ["telegram", () => smokeCheck("telegram", context)], ["web", () => smokeCheck("web", context)], ["x", () => smokeCheck("x", context)],

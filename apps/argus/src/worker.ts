@@ -2,6 +2,7 @@ import type { ArgusConfig } from "@argus/config";
 import type {
   SourceAdapter,
   SourceItem,
+  SourceName,
   StorageRepository,
 } from "@argus/contracts";
 import { ingestItems } from "@argus/engine";
@@ -85,3 +86,14 @@ export const findTarget = (
   targetId: string,
 ): ScheduledTarget | undefined =>
   targetsFromConfig(config).find((target) => target.id === targetId);
+
+/** Resolves a server-owned temporary diagnostic target persisted in shared storage. */
+export const findDiagnosticTarget = async (
+  repository: StorageRepository,
+  targetId: string,
+): Promise<ScheduledTarget | undefined> => {
+  if (!targetId.startsWith("__argus_doctor:")) return undefined;
+  const state = await repository.getCheckpoint<{ diagnostic?: boolean; deleted?: boolean; source?: SourceName; kind?: ScheduledTarget["kind"]; value?: string; watchId?: string }>(targetId);
+  if (!state?.diagnostic || state.deleted || state.source !== "web" || state.kind !== "url" || typeof state.value !== "string" || typeof state.watchId !== "string") return undefined;
+  return { id: targetId, source: "web", kind: "url", value: state.value, watchId: state.watchId, schedule: "* * * * *", keywords: [] };
+};

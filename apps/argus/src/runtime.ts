@@ -8,7 +8,7 @@ import { Cron } from "croner";
 import { createApp } from "./app.js";
 import { runSummaryProcessor } from "./processor.js";
 import { openRepository, type RepositoryHandle } from "./repository.js";
-import { findTarget, runTarget } from "./worker.js";
+import { findDiagnosticTarget, findTarget, runTarget } from "./worker.js";
 
 const logger = pino({ name: "argus" });
 
@@ -38,7 +38,7 @@ const processJobs = async (
   const owner = `${hostname()}:${process.pid}`;
   for (const job of await repository.claimJobs(owner, 10, 60_000)) {
     try {
-      const target = findTarget(config, job.targetId);
+      const target = findTarget(config, job.targetId) ?? await findDiagnosticTarget(repository, job.targetId);
       if (!target) throw new Error(`Unknown target: ${job.targetId}`);
       const result = await runTarget(target, config, repository);
       await repository.completeJob(job.id);
