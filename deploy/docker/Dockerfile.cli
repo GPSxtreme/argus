@@ -18,6 +18,7 @@ COPY packages/deployment/package.json packages/deployment/package.json
 COPY packages/engine/package.json packages/engine/package.json
 COPY packages/intelligence/package.json packages/intelligence/package.json
 COPY packages/query/package.json packages/query/package.json
+COPY packages/release/package.json packages/release/package.json
 COPY packages/scheduler/package.json packages/scheduler/package.json
 COPY packages/source-telegram/package.json packages/source-telegram/package.json
 COPY packages/source-web/package.json packages/source-web/package.json
@@ -37,6 +38,7 @@ COPY packages/deployment packages/deployment
 COPY packages/engine packages/engine
 COPY packages/intelligence packages/intelligence
 COPY packages/query packages/query
+COPY packages/release packages/release
 COPY packages/scheduler packages/scheduler
 COPY packages/source-telegram packages/source-telegram
 COPY packages/source-web packages/source-web
@@ -158,6 +160,8 @@ ARG DEBIAN_SNAPSHOT
 ARG ARGUS_VERSION=0.0.0-dev
 ARG ARGUS_REVISION=unknown
 ARG ARGUS_SOURCE=https://github.com/gpsxtreme/argus
+ARG ARGUS_RELEASE_PUBLIC_KEY_B64
+ARG ARGUS_RELEASE_MANIFEST_URL
 LABEL org.opencontainers.image.title="Argus CLI" \
   org.opencontainers.image.description="Root management client for an Argus VPS instance; no Docker daemon is included" \
   org.opencontainers.image.source="$ARGUS_SOURCE" \
@@ -193,7 +197,9 @@ COPY --from=management-tools /out/ /
 
 ENV NODE_ENV="production" \
   ARGUS_INSTALL_ROOT="/opt/argus" \
-  ARGUS_VERSION="$ARGUS_VERSION"
+  ARGUS_VERSION="$ARGUS_VERSION" \
+  ARGUS_RELEASE_PUBLIC_KEY_B64="$ARGUS_RELEASE_PUBLIC_KEY_B64" \
+  ARGUS_RELEASE_MANIFEST_URL="$ARGUS_RELEASE_MANIFEST_URL"
 WORKDIR /opt/argus
 USER 0:0
 

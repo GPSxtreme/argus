@@ -57,4 +57,77 @@ api:
   token: \${ARGUS_API_TOKEN}
 `);
   });
+
+  it("faithfully renders Postgres, watches, processors, and required secrets", () => {
+    const rendered = renderInstanceConfig(
+      {
+        ...answers,
+        deployment: { ...answers.deployment, storage: "postgres" },
+        watches: [
+          {
+            id: "research",
+            enabled: true,
+            schedule: "*/5 * * * *",
+            x: { accounts: ["argus"], queries: ["release"] },
+            telegram: { channels: ["argus_news"] },
+            web: {
+              urls: ["https://example.com/news"],
+              feeds: ["https://example.com/feed.xml"],
+              queries: ["signed releases"],
+            },
+            keywords: ["security"],
+            retentionDays: 30,
+          },
+        ],
+        intelligence: {
+          enabled: true,
+          model: "openai/gpt-4.1-mini",
+          processors: [
+            {
+              id: "daily",
+              schedule: "0 9 * * *",
+              watchIds: ["research"],
+            },
+          ],
+        },
+      },
+      {
+        searxng: "http://searxng:8080",
+        fxembed: "https://argus-fx.workers.dev/api",
+        apiToken: "api-secret",
+        postgresPassword: "p@ss:word",
+        openrouterApiKey: "openrouter-secret",
+      },
+    );
+
+    expect(rendered.yaml).toContain("adapter: postgres");
+    expect(rendered.yaml).toContain(
+      ["postgres://argus:$", "{ARGUS_POSTGRES_URL_PASSWORD}@postgres:5432/argus"].join(
+        "",
+      ),
+    );
+    expect(rendered.yaml).toContain("id: research");
+    expect(rendered.yaml).toContain("accounts:");
+    expect(rendered.yaml).toContain("- argus");
+    expect(rendered.yaml).toContain("id: daily");
+    expect(rendered.yaml).toContain("kind: summary");
+    expect(rendered.yaml).toContain(
+      ["apiKey: $", "{OPENROUTER_API_KEY}"].join(""),
+    );
+    expect(rendered.yaml).not.toContain("p@ss:word");
+    expect(rendered.yaml).not.toContain("openrouter-secret");
+    expect(rendered.secretEnvironment).toEqual({
+      ARGUS_API_TOKEN: "api-secret",
+      POSTGRES_PASSWORD: "p@ss:word",
+      ARGUS_POSTGRES_URL_PASSWORD: "p%40ss%3Aword",
+      OPENROUTER_API_KEY: "openrouter-secret",
+    });
+    expect(rendered.secrets).toContain("POSTGRES_PASSWORD=p@ss:word\n");
+    expect(rendered.secrets).toContain(
+      "ARGUS_POSTGRES_URL_PASSWORD=p%40ss%3Aword\n",
+    );
+    expect(rendered.secrets).toContain(
+      "OPENROUTER_API_KEY=openrouter-secret\n",
+    );
+  });
 });

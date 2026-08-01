@@ -744,6 +744,8 @@ watches: []
     const plan: InstalledConfigPlan = {
       contractVersion: 1,
       planId: "plan-1",
+      path: join(directory, "argus.yaml"),
+      desiredContentHash: "a".repeat(64),
       operations: [
         {
           resource: "applied-config",

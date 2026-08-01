@@ -6,6 +6,12 @@ import { QueryService } from "@argus/query";
 import { enqueueWatchNow, targetsFromConfig } from "@argus/scheduler";
 import { Hono } from "hono";
 import { safeDiagnosticWebTarget, type DiagnosticResolver } from "./web-safety.js";
+import {
+  applyManagementConfig,
+  inspectManagementConfig,
+  type ManagementConfigPlan,
+  verifyManagementConfig,
+} from "./management-config.js";
 
 export interface CreateAppInput {
   config: ArgusConfig;
@@ -135,6 +141,105 @@ export const createApp = ({ config, repository, diagnosticResolver }: CreateAppI
     await repository.cancelDiagnosticWatch(targetId);
     await repository.cleanupDiagnosticWatch(targetId);
     return context.body(null, 204);
+  });
+
+  app.post("/v1/management/config/plan", async (context) => {
+    if (
+      !config.api.token ||
+      context.req.header("authorization") !== `Bearer ${config.api.token}`
+    ) {
+      return context.json({ error: "unauthorized" }, 401);
+    }
+    const body = await context.req.json().catch(() => undefined) as
+      | { path?: unknown; config?: unknown }
+      | undefined;
+    if (
+      !body ||
+      typeof body.path !== "string" ||
+      !body.path.startsWith("/") ||
+      body.config === undefined ||
+      Object.keys(body).some((key) => key !== "path" && key !== "config")
+    ) {
+      return context.json({ error: "invalid configuration plan request" }, 400);
+    }
+    try {
+      const result = await inspectManagementConfig(
+        repository,
+        body.path,
+        body.config,
+      );
+      return context.json(result.plan);
+    } catch {
+      return context.json({ error: "invalid configuration plan request" }, 400);
+    }
+  });
+
+  app.post("/v1/management/config/apply", async (context) => {
+    if (
+      !config.api.token ||
+      context.req.header("authorization") !== `Bearer ${config.api.token}`
+    ) {
+      return context.json({ error: "unauthorized" }, 401);
+    }
+    const body = await context.req.json().catch(() => undefined) as
+      | { path?: unknown; config?: unknown; inspection?: unknown }
+      | undefined;
+    if (
+      !body ||
+      typeof body.path !== "string" ||
+      !body.path.startsWith("/") ||
+      body.config === undefined ||
+      !body.inspection ||
+      typeof body.inspection !== "object" ||
+      Array.isArray(body.inspection) ||
+      Object.keys(body).some(
+        (key) => key !== "path" && key !== "config" && key !== "inspection",
+      )
+    ) {
+      return context.json({ error: "invalid configuration apply request" }, 400);
+    }
+    try {
+      return context.json(
+        await applyManagementConfig(
+          repository,
+          body.path,
+          body.config,
+          body.inspection as ManagementConfigPlan,
+        ),
+      );
+    } catch {
+      return context.json({ error: "configuration plan is stale" }, 409);
+    }
+  });
+
+  app.post("/v1/management/config/verify", async (context) => {
+    if (
+      !config.api.token ||
+      context.req.header("authorization") !== `Bearer ${config.api.token}`
+    ) {
+      return context.json({ error: "unauthorized" }, 401);
+    }
+    const body = await context.req.json().catch(() => undefined) as
+      | { inspection?: unknown }
+      | undefined;
+    if (
+      !body?.inspection ||
+      typeof body.inspection !== "object" ||
+      Array.isArray(body.inspection) ||
+      Object.keys(body).some((key) => key !== "inspection")
+    ) {
+      return context.json({ error: "invalid configuration verify request" }, 400);
+    }
+    try {
+      return context.json(
+        await verifyManagementConfig(
+          repository,
+          body.inspection as ManagementConfigPlan,
+        ),
+      );
+    } catch {
+      return context.json({ error: "configuration plan is stale" }, 409);
+    }
   });
 
   app.post("/v1/summaries", async (context) => {

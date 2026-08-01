@@ -258,6 +258,41 @@ describe("managed FxEmbed", () => {
     expect(JSON.stringify(client)).not.toContain(token);
   });
 
+  it("inspects the deterministic endpoint without querying subdomain state for a missing Worker", async () => {
+    const requests: string[] = [];
+    const client = new CloudflareWorkersApiClient({
+      token,
+      fetcher: async (input) => {
+        const url = requestUrl(input);
+        requests.push(url);
+        if (url.endsWith("/settings")) {
+          return Response.json(
+            { success: false, result: null },
+            { status: 404 },
+          );
+        }
+        if (url.endsWith("/workers/subdomain")) {
+          return Response.json({
+            success: true,
+            result: { subdomain: "argus-test" },
+          });
+        }
+        throw new Error("missing Workers must not have subdomain state");
+      },
+    });
+
+    await expect(
+      client.inspectWorker(accountId, ARGUS_FXEMBED_WORKER_NAME),
+    ).resolves.toEqual({
+      endpoint: "https://argus-fxembed.argus-test.workers.dev",
+      workersDevEnabled: false,
+    });
+    expect(requests).toEqual([
+      `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/argus-fxembed/settings`,
+      `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/subdomain`,
+    ]);
+  });
+
   it.each([
     null,
     { annotations: null },

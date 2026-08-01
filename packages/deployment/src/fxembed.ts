@@ -18,6 +18,14 @@ export interface FxEmbedBundle {
 }
 
 export interface CloudflareWorkersClient {
+  inspectWorker?(
+    accountId: string,
+    name: string,
+  ): Promise<{
+    bundleHash?: string;
+    endpoint: string;
+    workersDevEnabled: boolean;
+  }>;
   getWorker(
     accountId: string,
     name: string,
@@ -157,6 +165,54 @@ export class CloudflareWorkersApiClient implements CloudflareWorkersClient {
     return {
       ...(etag === undefined ? {} : { etag }),
       ...(bundleHash === undefined ? {} : { bundleHash }),
+    };
+  }
+
+  async inspectWorker(
+    accountId: string,
+    name: string,
+  ): Promise<{
+    bundleHash?: string;
+    endpoint: string;
+    workersDevEnabled: boolean;
+  }> {
+    const worker = await this.getWorker(accountId, name);
+    const accountResponse = await this.request(
+      `/accounts/${pathSegment(accountId)}/workers/subdomain`,
+      { method: "GET" },
+      this.#token,
+    );
+    if (accountResponse === undefined) {
+      throw this.invalidResponse();
+    }
+    const account = await this.readEndpoint(
+      accountResponse,
+      accountSubdomainSchema,
+    );
+    if (!/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/iu.test(account.subdomain)) {
+      throw new DeploymentError(
+        "CLOUDFLARE_SUBDOMAIN_INVALID",
+        "Cloudflare returned an invalid workers.dev account subdomain.",
+      );
+    }
+    let workersDevEnabled = false;
+    if (worker !== undefined) {
+      const subdomainResponse = await this.request(
+        `/accounts/${pathSegment(accountId)}/workers/scripts/${pathSegment(name)}/subdomain`,
+        { method: "GET" },
+        this.#token,
+      );
+      if (subdomainResponse === undefined) throw this.invalidResponse();
+      workersDevEnabled = (
+        await this.readEndpoint(subdomainResponse, workerSubdomainSchema)
+      ).enabled;
+    }
+    return {
+      ...(worker?.bundleHash === undefined
+        ? {}
+        : { bundleHash: worker.bundleHash }),
+      endpoint: `https://${name}.${account.subdomain}.workers.dev`,
+      workersDevEnabled,
     };
   }
 

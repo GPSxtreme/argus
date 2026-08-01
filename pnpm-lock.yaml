@@ -92,9 +92,15 @@ importers:
       '@argus/config':
         specifier: workspace:*
         version: link:../../packages/config
+      '@argus/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
       '@argus/deployment':
         specifier: workspace:*
         version: link:../../packages/deployment
+      '@argus/release':
+        specifier: workspace:*
+        version: link:../../packages/release
       '@argus/scheduler':
         specifier: workspace:*
         version: link:../../packages/scheduler
@@ -153,6 +159,9 @@ importers:
       execa:
         specifier: ^10.0.1
         version: 10.0.1
+      yaml:
+        specifier: ^2.8.0
+        version: 2.9.0
       zod:
         specifier: ^4.0.0
         version: 4.4.3

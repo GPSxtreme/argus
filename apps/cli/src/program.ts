@@ -13,15 +13,11 @@ import {
   readFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { openRepository, startRuntime } from "@argus/app";
+import { startRuntime } from "@argus/app";
 import {
-  applyConfigReconciliation,
   loadConfig,
-  planConfigReconciliation,
   resolveConfigPath,
-  verifyConfigReconciliation,
   type ArgusConfig,
-  type ConfigReconciliationPlan,
 } from "@argus/config";
 import {
   createArgusDoctorApi,
@@ -154,6 +150,9 @@ export interface ConfigCliAdapter {
 export interface InstalledConfigPlan {
   contractVersion: 1;
   planId: string;
+  path: string;
+  baseContentHash?: string;
+  desiredContentHash: string;
   operations: Array<{
     resource: string;
     action: "create" | "update" | "delete";
@@ -1379,106 +1378,64 @@ export const createNodeCliDependencies = ({
     },
     async inspectApply(path) {
       const loaded = await loadInstalledConfig(root, path);
-      if (path === undefined) {
-        if (installedConfigIntegration === undefined) {
-          throw new DeploymentError(
-            "INSTALLED_CONFIG_INTEGRATION_REQUIRED",
-            "Installed configuration apply requires the Argus service integration.",
-            {
-              recovery:
-                "Wire InstalledConfigIntegration in the release composition root, then retry.",
-            },
-          );
-        }
-        return installedConfigIntegration.inspect({
-          path: loaded.path,
-          config: loaded.config,
-        });
-      }
-      const handle = await openRepository(loaded.config);
-      try {
-        return await planConfigReconciliation(
-          handle.repository,
-          loaded.config,
+      if (installedConfigIntegration === undefined) {
+        throw new DeploymentError(
+          "INSTALLED_CONFIG_INTEGRATION_REQUIRED",
+          "Installed configuration apply requires the Argus service integration.",
+          {
+            recovery:
+              "Wire InstalledConfigIntegration in the release composition root, then retry.",
+          },
         );
-      } finally {
-        await handle.close();
       }
+      return installedConfigIntegration.inspect({
+        path: loaded.path,
+        config: loaded.config,
+      });
     },
     async apply(path, inspection) {
       const loaded = await loadInstalledConfig(root, path);
-      if (path === undefined) {
-        if (installedConfigIntegration === undefined) {
-          throw new DeploymentError(
-            "INSTALLED_CONFIG_INTEGRATION_REQUIRED",
-            "Installed configuration apply requires the Argus service integration.",
-          );
-        }
-        const plan = inspection as InstalledConfigPlan;
-        const application = await installedConfigIntegration.apply({
-          path: loaded.path,
-          config: loaded.config,
-          inspection: plan,
-        });
-        if (application.planId !== plan.planId) {
-          throw new DeploymentError(
-            "CONFIG_APPLY_PLAN_MISMATCH",
-            "The installed configuration application does not match the inspected plan.",
-          );
-        }
-        return application;
-      }
-      const plan = inspection as ConfigReconciliationPlan;
-      const handle = await openRepository(loaded.config);
-      try {
-        return await applyConfigReconciliation(
-          handle.repository,
-          loaded.config,
-          plan,
+      if (installedConfigIntegration === undefined) {
+        throw new DeploymentError(
+          "INSTALLED_CONFIG_INTEGRATION_REQUIRED",
+          "Installed configuration apply requires the Argus service integration.",
         );
-      } finally {
-        await handle.close();
       }
+      const plan = inspection as InstalledConfigPlan;
+      const application = await installedConfigIntegration.apply({
+        path: loaded.path,
+        config: loaded.config,
+        inspection: plan,
+      });
+      if (application.planId !== plan.planId) {
+        throw new DeploymentError(
+          "CONFIG_APPLY_PLAN_MISMATCH",
+          "The installed configuration application does not match the inspected plan.",
+        );
+      }
+      return application;
     },
     async verifyApply(path, inspection, application) {
       const loaded = await loadInstalledConfig(root, path);
-      if (path === undefined) {
-        if (installedConfigIntegration === undefined) {
-          throw new DeploymentError(
-            "INSTALLED_CONFIG_INTEGRATION_REQUIRED",
-            "Installed configuration apply requires the Argus service integration.",
-          );
-        }
-        const verified = await installedConfigIntegration.verify({
-          path: loaded.path,
-          inspection: inspection as InstalledConfigPlan,
-          application: application as InstalledConfigApplication,
-        });
-        const plan = inspection as InstalledConfigPlan;
-        if (!verified.healthy || verified.planId !== plan.planId) {
-          throw new DeploymentError(
-            "CONFIG_APPLY_VERIFY_FAILED",
-            "The installed configuration apply could not be verified.",
-          );
-        }
-        return verified;
-      }
-      const handle = await openRepository(loaded.config);
-      try {
-        const healthy = await verifyConfigReconciliation(
-          handle.repository,
-          inspection as ConfigReconciliationPlan,
+      if (installedConfigIntegration === undefined) {
+        throw new DeploymentError(
+          "INSTALLED_CONFIG_INTEGRATION_REQUIRED",
+          "Installed configuration apply requires the Argus service integration.",
         );
-        if (!healthy) {
-          throw new DeploymentError(
-            "CONFIG_APPLY_VERIFY_FAILED",
-            "The direct configuration apply could not be verified.",
-          );
-        }
-        return { healthy: true };
-      } finally {
-        await handle.close();
       }
+      const verified = await installedConfigIntegration.verify({
+        path: loaded.path,
+        inspection: inspection as InstalledConfigPlan,
+        application: application as InstalledConfigApplication,
+      });
+      const plan = inspection as InstalledConfigPlan;
+      if (!verified.healthy || verified.planId !== plan.planId) {
+        throw new DeploymentError(
+          "CONFIG_APPLY_VERIFY_FAILED",
+          "The installed configuration apply could not be verified.",
+        );
+      }
+      return verified;
     },
     async show(path) {
       const loaded = await loadInstalledConfig(root, path);

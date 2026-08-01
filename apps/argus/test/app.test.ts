@@ -138,4 +138,89 @@ describe("Argus API", () => {
     });
     expect(response.status).toBe(404);
   });
+
+  it("authenticates and binds in-service config apply to the exact inspected hashes", async () => {
+    const repository = await createSqliteRepository({ filename: ":memory:" });
+    repositories.push(repository);
+    const app = createApp({ config, repository });
+    const desired = {
+      version: 1,
+      storage: { adapter: "sqlite", url: "/app/data/argus.db" },
+      sources: {},
+      watches: [],
+      api: { token: "secret" },
+    };
+
+    expect(
+      (
+        await app.request("/v1/management/config/plan", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ path: "/opt/argus/argus.yaml", config: desired }),
+        })
+      ).status,
+    ).toBe(401);
+
+    const planned = await app.request("/v1/management/config/plan", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ path: "/opt/argus/argus.yaml", config: desired }),
+    });
+    expect(planned.status).toBe(200);
+    const plan = (await planned.json()) as {
+      planId: string;
+      desiredContentHash: string;
+    };
+    expect(plan.planId).toMatch(/^[a-f0-9]{64}$/u);
+    expect(plan.desiredContentHash).toMatch(/^[a-f0-9]{64}$/u);
+
+    const stale = await app.request("/v1/management/config/apply", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        path: "/opt/argus/argus.yaml",
+        config: desired,
+        inspection: { ...plan, desiredContentHash: "f".repeat(64) },
+      }),
+    });
+    expect(stale.status).toBe(409);
+    expect(await repository.getAppliedConfig()).toBeUndefined();
+
+    const applied = await app.request("/v1/management/config/apply", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        path: "/opt/argus/argus.yaml",
+        config: desired,
+        inspection: plan,
+      }),
+    });
+    expect(applied.status).toBe(200);
+    expect(await repository.getAppliedConfig()).toMatchObject({
+      contentHash: plan.desiredContentHash,
+    });
+
+    const verified = await app.request("/v1/management/config/verify", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ inspection: plan }),
+    });
+    expect(verified.status).toBe(200);
+    expect(await verified.json()).toMatchObject({
+      healthy: true,
+      planId: plan.planId,
+    });
+  });
 });

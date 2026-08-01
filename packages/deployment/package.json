@@ -12,6 +12,7 @@
     "@argus/config": "workspace:*",
     "@argus/contracts": "workspace:*",
     "execa": "^10.0.1",
+    "yaml": "^2.8.0",
     "zod": "^4.0.0"
   }
 }

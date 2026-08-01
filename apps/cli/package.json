@@ -13,7 +13,9 @@
   "dependencies": {
     "@argus/app": "workspace:*",
     "@argus/config": "workspace:*",
+    "@argus/contracts": "workspace:*",
     "@argus/deployment": "workspace:*",
+    "@argus/release": "workspace:*",
     "@argus/scheduler": "workspace:*",
     "@argus/storage-postgres": "workspace:*",
     "@argus/storage-sqlite": "workspace:*",

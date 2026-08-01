@@ -207,7 +207,7 @@ api:
     await expect(access(join(installRoot, "argus.db"))).rejects.toThrow();
 
     const explicitPath = join(installRoot, "argus.yaml");
-    const firstPlan = await runProcess(
+    const refusedExplicitApply = await runProcess(
       ["config", "apply", explicitPath, "--dry-run", "--json"],
       {
         installRoot,
@@ -218,42 +218,11 @@ api:
         },
       },
     );
-    expect(JSON.parse(firstPlan.stdout).data.plan.operations).toEqual([
-      expect.objectContaining({ action: "create" }),
-    ]);
-
-    const applied = await runProcess(
-      ["config", "apply", explicitPath, "--yes", "--json"],
-      {
-        installRoot,
-        cwd: freshCwd,
-        environment: {
-          OPENROUTER_API_KEY: "openrouter-process-sentinel",
-          CREDENTIAL_URL: credentialUrl,
-        },
-      },
+    expect(refusedExplicitApply.exitCode).toBe(1);
+    expect(refusedExplicitApply.stderr).toBe("");
+    expect(JSON.parse(refusedExplicitApply.stdout).error.code).toBe(
+      "INSTALLED_CONFIG_INTEGRATION_REQUIRED",
     );
-    expect(applied.exitCode).toBe(0);
-    expect(JSON.parse(applied.stdout)).toMatchObject({
-      ok: true,
-      data: {
-        plan: { operations: [expect.objectContaining({ action: "create" })] },
-        result: { changed: true },
-        verification: { healthy: true },
-      },
-    });
-
-    const secondPlan = await runProcess(
-      ["config", "apply", explicitPath, "--dry-run", "--json"],
-      {
-        installRoot,
-        cwd: freshCwd,
-        environment: {
-          OPENROUTER_API_KEY: "openrouter-process-sentinel",
-          CREDENTIAL_URL: credentialUrl,
-        },
-      },
-    );
-    expect(JSON.parse(secondPlan.stdout).data.plan.operations).toEqual([]);
+    await expect(access(join(installRoot, "argus.db"))).rejects.toThrow();
   });
 });
