@@ -36,6 +36,7 @@ export interface DoctorArgusApi {
   pollRecords(input: {
     id: string;
     targetId: string;
+    source: Source;
     signal: AbortSignal;
   }): Promise<DiagnosticRecord[]>;
   removeSmokeWatch(input: { id: string; signal: AbortSignal }): Promise<void>;
@@ -77,6 +78,38 @@ const timeoutSignal = (
     },
   };
 };
+
+const diagnosticIdPattern =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+const diagnosticTargetId = (id: string): string => `__argus_doctor:${id}`;
+
+const isDiagnosticIdentity = (id: string, targetId: string): boolean =>
+  diagnosticIdPattern.test(id) && targetId === diagnosticTargetId(id);
+
+const raceAbort = <T>(
+  operation: Promise<T>,
+  signal: AbortSignal,
+): Promise<T> =>
+  new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", aborted);
+      callback();
+    };
+    const aborted = () => finish(() => reject(signal.reason));
+    if (signal.aborted) {
+      aborted();
+    } else {
+      signal.addEventListener("abort", aborted, { once: true });
+    }
+    operation.then(
+      (value) => finish(() => resolve(value)),
+      (error: unknown) => finish(() => reject(error)),
+    );
+  });
 
 /** Authenticated and secret-safe client for the server-owned diagnostic-watch API. */
 export const createArgusDoctorApi = ({
@@ -144,7 +177,11 @@ export const createArgusDoctorApi = ({
         throw new Error("Argus diagnostic API request failed.");
       }
       const value = payload as Record<string, unknown>;
-      if (typeof value.id !== "string" || typeof value.targetId !== "string") {
+      if (
+        typeof value.id !== "string" ||
+        typeof value.targetId !== "string" ||
+        !isDiagnosticIdentity(value.id, value.targetId)
+      ) {
         throw new Error("Argus diagnostic API request failed.");
       }
       return {
@@ -154,7 +191,10 @@ export const createArgusDoctorApi = ({
         configuredTargetId: targetId,
       };
     },
-    async pollRecords({ id, signal }) {
+    async pollRecords({ id, targetId, source, signal }) {
+      if (!isDiagnosticIdentity(id, targetId)) {
+        throw new Error("Argus diagnostic API request failed.");
+      }
       const response = await request(
         `/v1/diagnostics/smoke-watches/${encodeURIComponent(id)}/records`,
         signal,
@@ -164,26 +204,22 @@ export const createArgusDoctorApi = ({
         payload && typeof payload === "object"
           ? (payload as { items?: unknown }).items
           : undefined;
-      if (!Array.isArray(records)) return [];
-      return records.flatMap((record) => {
-        if (!record || typeof record !== "object") return [];
+      if (!Array.isArray(records)) {
+        throw new Error("Argus diagnostic API request failed.");
+      }
+      return records.map((record) => {
+        if (!record || typeof record !== "object") {
+          throw new Error("Argus diagnostic API request failed.");
+        }
         const value = record as Record<string, unknown>;
         if (
-          (value.source !== "telegram" &&
-            value.source !== "web" &&
-            value.source !== "x") ||
-          typeof value.targetId !== "string" ||
+          value.source !== source ||
+          value.targetId !== targetId ||
           typeof value.url !== "string"
         ) {
-          return [];
+          throw new Error("Argus diagnostic API request failed.");
         }
-        return [
-          {
-            source: value.source,
-            targetId: value.targetId,
-            url: value.url,
-          },
-        ];
+        return { source, targetId, url: value.url };
       });
     },
     async removeSmokeWatch({ id, signal }) {
@@ -222,9 +258,9 @@ const logs: Record<Component, string> = {
   docker: "docker info",
   argus: "docker compose -p argus logs argus",
   postgres: "docker compose -p argus logs postgres",
-  storage: "docker compose -p argus logs postgres",
+  storage: "docker compose -p argus logs argus",
   searxng: "docker compose -p argus logs searxng",
-  fxembed: "argus status",
+  fxembed: "docker compose -p argus logs argus",
   telegram: "docker compose -p argus logs argus",
   web: "docker compose -p argus logs argus",
   x: "docker compose -p argus logs argus",
@@ -232,10 +268,10 @@ const logs: Record<Component, string> = {
 
 const recovery: Record<Component, string> = {
   docker: "Verify Docker is installed and running, then retry the diagnostic.",
-  argus: "Run argus repair argus.",
-  postgres: "Run argus repair postgres.",
-  storage: "Inspect the configured storage and Argus logs; run argus repair postgres only when PostgreSQL is selected.",
-  searxng: "Run argus repair searxng.",
+  argus: "Inspect the listed Argus service logs, correct the service failure, and retry the diagnostic.",
+  postgres: "Inspect the listed PostgreSQL service logs, correct the service failure, and retry the diagnostic.",
+  storage: "Inspect the listed storage service logs, correct the storage failure, and retry the diagnostic.",
+  searxng: "Inspect the listed SearXNG service logs, correct the service failure, and retry the diagnostic.",
   fxembed: "Inspect the Cloudflare Worker deployment and endpoint, then redeploy FxEmbed manually.",
   telegram: "Inspect the configured Telegram target and Argus source logs, then retry the diagnostic.",
   web: "Inspect the configured Web target and Argus source logs, then retry the diagnostic.",
@@ -257,13 +293,14 @@ const unhealthy = (
   code: string,
   message: string,
   overrideRecovery?: string,
+  overrideLogsCommand?: string,
 ): Check => ({
   component,
   status: "unhealthy",
   code,
   message,
   recovery: overrideRecovery ?? recovery[component],
-  logsCommand: logs[component],
+  logsCommand: overrideLogsCommand ?? logs[component],
 });
 
 const abortableSleep = (
@@ -361,17 +398,31 @@ const smokeCheck = async (
     | undefined;
   let outcome: Check | undefined;
   try {
-    smoke = await context.api.createSmokeWatch({
-      source,
-      targetId: configuredTargetId,
-      signal: deadline.signal,
-    });
-    while (!deadline.signal.aborted) {
-      const records = await context.api.pollRecords({
-        id: smoke.id,
-        targetId: smoke.targetId,
+    smoke = await raceAbort(
+      context.api.createSmokeWatch({
+        source,
+        targetId: configuredTargetId,
         signal: deadline.signal,
-      });
+      }),
+      deadline.signal,
+    );
+    if (
+      !isDiagnosticIdentity(smoke.id, smoke.targetId) ||
+      smoke.source !== source ||
+      smoke.configuredTargetId !== configuredTargetId
+    ) {
+      throw new Error("Invalid diagnostic watch identity.");
+    }
+    while (!deadline.signal.aborted) {
+      const records = await raceAbort(
+        context.api.pollRecords({
+          id: smoke.id,
+          targetId: smoke.targetId,
+          source,
+          signal: deadline.signal,
+        }),
+        deadline.signal,
+      );
       if (
         records.some((record) =>
           canonicalRecordMatches(source, smoke?.targetId ?? "", record),
@@ -412,14 +463,15 @@ const smokeCheck = async (
     );
   }
 
-  const cleanup = timeoutSignal(
-    bounded(context.cleanupGraceMs, 2_000, 10_000),
-  );
+  const cleanup = timeoutSignal(bounded(context.cleanupGraceMs, 1_000, 1_500));
   try {
-    await context.api.removeSmokeWatch({
-      id: smoke.id,
-      signal: cleanup.signal,
-    });
+    await raceAbort(
+      context.api.removeSmokeWatch({
+        id: smoke.id,
+        signal: cleanup.signal,
+      }),
+      cleanup.signal,
+    );
   } catch {
     return unhealthy(
       source,
@@ -509,16 +561,20 @@ export const runDoctor = async (
   context: DoctorContext,
 ): Promise<DiagnosticReport> => {
   const smokeDeadline = bounded(context.smokeDeadlineMs, 10_000, 30_000);
-  const cleanupGrace = bounded(context.cleanupGraceMs, 2_000, 10_000);
+  const cleanupGrace = bounded(context.cleanupGraceMs, 1_000, 1_500);
   const perCheck = Math.max(
     bounded(context.checkTimeoutMs, 5_000, 30_000),
     smokeDeadline + cleanupGrace,
   );
   const aggregate = bounded(context.aggregateTimeoutMs, 15_000, 60_000);
-  const aggregateDeadline = timeoutSignal(aggregate);
+  const aggregateController = new AbortController();
 
   const checks: Array<
-    [Component, (signal: AbortSignal) => Promise<Check>]
+    [
+      Component,
+      (signal: AbortSignal) => Promise<Check>,
+      waitsForCleanup?: boolean,
+    ]
   > = [
     [
       "docker",
@@ -570,6 +626,23 @@ export const runDoctor = async (
     [
       "storage",
       async () => {
+        let environment: Record<string, string>;
+        try {
+          environment = await loadPersistedComposeEnvironment({
+            root: context.root,
+            executor: context.executor,
+          });
+        } catch {
+          return unhealthy(
+            "storage",
+            "STORAGE_COMPOSE_STATE_UNAVAILABLE",
+            "Persisted Compose inputs are unavailable for the storage diagnostic.",
+            undefined,
+            context.storage === "postgres"
+              ? logs.postgres
+              : logs.argus,
+          );
+        }
         try {
           const args =
             context.storage === "postgres"
@@ -602,8 +675,29 @@ export const runDoctor = async (
                   "-e",
                   "import Database from 'better-sqlite3';const db=new Database('/app/data/argus.db');const row=db.pragma('quick_check',{simple:true});db.close();if(row!=='ok')process.exit(1)",
                 ];
+          const configured = await context.executor.run(
+            "docker",
+            ["compose", "-p", "argus", "config"],
+            {
+              cwd: context.root,
+              env: environment,
+              timeoutMs: perCheck,
+            },
+          );
+          if (configured.exitCode !== 0 || configured.timedOut) {
+            return unhealthy(
+              "storage",
+              "STORAGE_HEALTHCHECK_FAILED",
+              "Configured storage did not pass its bounded health check.",
+              undefined,
+              context.storage === "postgres"
+                ? logs.postgres
+                : logs.argus,
+            );
+          }
           const result = await context.executor.run("docker", args, {
             cwd: context.root,
+            env: environment,
             timeoutMs: perCheck,
           });
           return result.exitCode === 0 && !result.timedOut
@@ -615,15 +709,23 @@ export const runDoctor = async (
                 `${context.storage === "postgres" ? "PostgreSQL" : "SQLite"} storage is reachable.`,
               )
             : unhealthy(
-                "storage",
-                "STORAGE_HEALTHCHECK_FAILED",
-                "Configured storage did not pass its bounded health check.",
-              );
+              "storage",
+              "STORAGE_HEALTHCHECK_FAILED",
+              "Configured storage did not pass its bounded health check.",
+              undefined,
+              context.storage === "postgres"
+                ? logs.postgres
+                : logs.argus,
+            );
         } catch {
           return unhealthy(
             "storage",
             "STORAGE_HEALTHCHECK_FAILED",
             "Configured storage did not pass its bounded health check.",
+            undefined,
+            context.storage === "postgres"
+              ? logs.postgres
+              : logs.argus,
           );
         }
       },
@@ -641,45 +743,77 @@ export const runDoctor = async (
     [
       "telegram",
       (signal) => smokeCheck("telegram", context, signal),
+      true,
     ],
-    ["web", (signal) => smokeCheck("web", context, signal)],
-    ["x", (signal) => smokeCheck("x", context, signal)],
+    ["web", (signal) => smokeCheck("web", context, signal), true],
+    ["x", (signal) => smokeCheck("x", context, signal), true],
   ];
 
-  const settled = await Promise.all(
-    checks.map(async ([component, check]) => {
-      const deadline = timeoutSignal(perCheck, aggregateDeadline.signal);
+  const results = new Map<Component, Check>();
+  let acceptResults = true;
+  const tasks = checks.map(
+    async ([component, check, waitsForCleanup]): Promise<void> => {
+      const deadline = timeoutSignal(perCheck, aggregateController.signal);
       try {
-        return { component, result: await check(deadline.signal) };
+        const operation = Promise.resolve().then(() => check(deadline.signal));
+        const result = waitsForCleanup
+          ? await operation
+          : await raceAbort(operation, deadline.signal);
+        if (acceptResults) results.set(component, result);
       } catch {
-        return {
-          component,
-          result: unhealthy(
+        if (acceptResults) {
+          results.set(
             component,
-            deadline.signal.aborted
-              ? "DIAGNOSTIC_TIMEOUT"
-              : "DIAGNOSTIC_FAILED",
-            deadline.signal.aborted
-              ? "Diagnostic check timed out."
-              : "Diagnostic check failed.",
-          ),
-        };
+            unhealthy(
+              component,
+              deadline.signal.aborted
+                ? "DIAGNOSTIC_TIMEOUT"
+                : "DIAGNOSTIC_FAILED",
+              deadline.signal.aborted
+                ? "Diagnostic check timed out."
+                : "Diagnostic check failed.",
+            ),
+          );
+        }
       } finally {
         deadline.cancel();
       }
+    },
+  );
+
+  let aggregateTimer: ReturnType<typeof setTimeout> | undefined;
+  const allSettled = Promise.all(tasks);
+  const completedBeforeDeadline = await Promise.race([
+    allSettled.then(() => true),
+    new Promise<false>((resolve) => {
+      aggregateTimer = setTimeout(() => {
+        aggregateController.abort(new Error("Diagnostic deadline reached."));
+        resolve(false);
+      }, aggregate);
     }),
-  );
-  aggregateDeadline.cancel();
-  const resolved = new Map(
-    settled.map(({ component, result }) => [component, result]),
-  );
+  ]);
+  if (completedBeforeDeadline && aggregateTimer !== undefined) {
+    clearTimeout(aggregateTimer);
+  }
+  if (!completedBeforeDeadline) {
+    let graceTimer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      allSettled,
+      new Promise<void>((resolve) => {
+        graceTimer = setTimeout(resolve, cleanupGrace + 25);
+      }),
+    ]);
+    if (graceTimer !== undefined) clearTimeout(graceTimer);
+  }
+  acceptResults = false;
+
   const reportChecks = checks.map(
     ([component]) =>
-      resolved.get(component) ??
+      results.get(component) ??
       unhealthy(
         component,
-        "DIAGNOSTIC_FAILED",
-        "Diagnostic check failed.",
+        "DIAGNOSTIC_TIMEOUT",
+        "Diagnostic check timed out.",
       ),
   );
   return {
@@ -742,11 +876,9 @@ const serviceRecordHealthy = (
       : typeof record.health === "string"
         ? record.health
         : undefined;
-  return (
-    name === service &&
-    state?.toLowerCase() === "running" &&
-    health?.toLowerCase() === "healthy"
-  );
+  if (name !== service || state?.toLowerCase() !== "running") return false;
+  const declaredHealth = health?.trim().toLowerCase();
+  return !declaredHealth || declaredHealth === "healthy";
 };
 
 /** Performs only verified, targeted managed repairs; it never changes user configuration. */
@@ -760,10 +892,11 @@ export const repairService = async (
         contractVersion: 1,
         healthy: false,
         checks: [
-          skipped(
+          unhealthy(
             "searxng",
             "SEARXNG_NOT_MANAGED",
             "SearXNG is not managed by Argus.",
+            "Configure SearXNG as managed before requesting a managed repair.",
           ),
         ],
       };
@@ -785,10 +918,11 @@ export const repairService = async (
       contractVersion: 1,
       healthy: false,
       checks: [
-        skipped(
+        unhealthy(
           "postgres",
           "POSTGRES_NOT_SELECTED",
           "PostgreSQL is not selected for this deployment.",
+          "Select PostgreSQL storage before requesting a PostgreSQL repair.",
         ),
       ],
     };
@@ -836,7 +970,7 @@ export const repairService = async (
           ? healthy(
               service,
               "REPAIR_HEALTHY",
-              `${service} is running and healthy after targeted repair.`,
+              `${service} is running after targeted repair and any declared health check is healthy.`,
             )
           : unhealthy(
               service,

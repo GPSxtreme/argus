@@ -233,7 +233,8 @@ describe("managed SearXNG", () => {
           status: "unhealthy",
           code: "SEARXNG_RECREATE_FAILED",
           message: "Managed SearXNG could not be recreated.",
-          recovery: "argus repair searxng",
+          recovery:
+            "Inspect the listed SearXNG service logs, correct the service failure, and retry the repair.",
           logsCommand: "docker compose -p argus logs searxng",
         },
       ],

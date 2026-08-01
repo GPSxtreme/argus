@@ -143,7 +143,8 @@ const diagnostic = (
       ...(healthy
         ? {}
         : {
-            recovery: "argus repair searxng",
+            recovery:
+              "Inspect the listed SearXNG service logs, correct the service failure, and retry the repair.",
             logsCommand: "docker compose -p argus logs searxng",
           }),
     },
