@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { Pool, type PoolClient } from "pg";
+import { Pool } from "pg";
 import type {
   AppliedConfig,
   DerivedArtifact,

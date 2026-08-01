@@ -35,11 +35,10 @@ describe("scheduled summary processor", () => {
         processors: [{ id: "daily", kind: "summary", watchIds: ["release"] }],
       },
     });
-    await runSummaryProcessor(
-      config.intelligence.processors[0]!,
-      config,
-      repository,
-      {
+    const processor = config.intelligence.processors[0];
+    expect(processor).toBeDefined();
+    if (!processor) throw new Error("Expected a configured summary processor");
+    await runSummaryProcessor(processor, config, repository, {
         summarize: async () => ({
           content: "Argus shipped. [1]",
           model: "test",
@@ -47,8 +46,7 @@ describe("scheduled summary processor", () => {
             { index: 1, recordId: "web:site:1", url: "https://example.com/1" },
           ],
         }),
-      },
-    );
+      });
     expect((await repository.queryArtifacts({})).items[0]?.content).toBe(
       "Argus shipped. [1]",
     );

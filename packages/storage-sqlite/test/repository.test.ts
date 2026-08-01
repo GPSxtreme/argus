@@ -78,8 +78,10 @@ describe("SQLite repository", () => {
     const page = await repo.queryRecords({ limit: 1 });
     expect(page.items).toHaveLength(1);
     expect(page.nextCursor).toBeTruthy();
+    const nextCursor = page.nextCursor;
+    if (!nextCursor) throw new Error("Expected a cursor for the next page");
     expect(
-      (await repo.queryRecords({ limit: 1, cursor: page.nextCursor! })).items,
+      (await repo.queryRecords({ limit: 1, cursor: nextCursor })).items,
     ).toHaveLength(1);
   });
 

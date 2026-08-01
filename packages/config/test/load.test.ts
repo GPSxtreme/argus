@@ -39,6 +39,7 @@ describe("loadConfig", () => {
 
   it("resolves secrets without preserving them in serialized config", async () => {
     expect(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: Secret references intentionally use literal environment-placeholder syntax.
       resolveSecretReference("${OPENROUTER_API_KEY}", {
         OPENROUTER_API_KEY: "x",
       }),

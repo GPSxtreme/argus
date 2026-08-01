@@ -10,6 +10,7 @@ import { TelegramAdapter } from "@argus/source-telegram";
 import { WebAdapter } from "@argus/source-web";
 import { XAdapter } from "@argus/source-x";
 
+// biome-ignore lint/suspicious/noExplicitAny: Runtime dispatch intentionally erases source-specific adapter types.
 type AnyAdapter = SourceAdapter<any, any>;
 
 const adapterFor = (target: ScheduledTarget): AnyAdapter => {
@@ -69,7 +70,7 @@ export const runTarget = async (
         ? {
             lastId:
               target.source === "telegram"
-                ? items.at(-1)!.externalId
+                ? (items.at(-1) ?? items[0]).externalId
                 : items[0].externalId,
           }
         : checkpoint),
