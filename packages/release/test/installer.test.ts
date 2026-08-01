@@ -392,6 +392,133 @@ describe("renderInstaller", () => {
     }
   });
 
+  it("rejects the same canonical-looking invalid URL and image corpus in Node and shell", async () => {
+    const fixture = await createFixture();
+    const wrapperSha = createHash("sha256")
+      .update(await readFile(fixture.wrapper))
+      .digest("hex");
+    const base = manifest(wrapperSha);
+    const pinned = (name: string) => `${name}@sha256:${digest}`;
+    const longRepository = `ghcr.io/${"a".repeat(120)}/${"b".repeat(120)}`;
+    const variants: unknown[] = [
+      {
+        ...base,
+        assets: {
+          ...base.assets,
+          wrapper: { ...base.assets.wrapper, url: "https://example.com" },
+        },
+      },
+      {
+        ...base,
+        assets: {
+          ...base.assets,
+          wrapper: { ...base.assets.wrapper, url: "https://example.com:0/argus" },
+        },
+      },
+      {
+        ...base,
+        assets: {
+          ...base.assets,
+          wrapper: {
+            ...base.assets.wrapper,
+            url: "https://example.com:65536/argus",
+          },
+        },
+      },
+      {
+        ...base,
+        images: {
+          ...base.images,
+          app: { ...base.images.app, reference: pinned("ghcr.io/team//argus") },
+        },
+      },
+      {
+        ...base,
+        images: {
+          ...base.images,
+          app: {
+            ...base.images.app,
+            reference: pinned("registry.example:0/team/argus"),
+          },
+        },
+      },
+      {
+        ...base,
+        images: {
+          ...base.images,
+          app: {
+            ...base.images.app,
+            reference: pinned("registry.example:65536/team/argus"),
+          },
+        },
+      },
+      {
+        ...base,
+        images: {
+          ...base.images,
+          app: { ...base.images.app, reference: pinned("registry/team/argus") },
+        },
+      },
+      {
+        ...base,
+        images: {
+          ...base.images,
+          app: { ...base.images.app, reference: pinned("ghcr.io/team/bad..repo") },
+        },
+      },
+      {
+        ...base,
+        images: {
+          ...base.images,
+          app: { ...base.images.app, reference: pinned(longRepository) },
+        },
+      },
+      {
+        ...base,
+        images: {
+          ...base.images,
+          app: { ...base.images.app, digest: `sha256:${"1".repeat(64)}` },
+        },
+      },
+    ];
+    for (const value of variants) {
+      const invalidFixture = await createFixture();
+      const bytes = Buffer.from(JSON.stringify(value));
+      const signature = sign(null, bytes, invalidFixture.privateKey);
+      try {
+        verifyReleaseManifest(bytes, signature, invalidFixture.publicKeyPem);
+        throw new Error("Node verifier accepted invalid corpus entry");
+      } catch (error) {
+        expect((error as ReleaseManifestError).code).toBe(
+          "RELEASE_MANIFEST_SCHEMA_INVALID",
+        );
+      }
+      await expect(runInstaller(invalidFixture, bytes)).rejects.toBeDefined();
+    }
+  }, 30_000);
+
+  it.each([
+    "localhost/team/argus",
+    "localhost:5000/team/argus",
+    "registry:5000/team/argus",
+    "registry.example/team_name/argus-v1",
+  ])("accepts shared canonical pinned-image form %s", async (name) => {
+    const fixture = await createFixture();
+    const wrapperSha = createHash("sha256")
+      .update(await readFile(fixture.wrapper))
+      .digest("hex");
+    const value = manifest(wrapperSha);
+    value.images.app.reference = `${name}@${value.images.app.digest}`;
+    const bytes = Buffer.from(serializeReleaseManifestCanonical(value));
+    const signature = sign(null, bytes, fixture.privateKey);
+    expect(
+      verifyReleaseManifest(bytes, signature, fixture.publicKeyPem),
+    ).toEqual(value);
+    await expect(runInstaller(fixture, bytes)).resolves.toMatchObject({
+      stdout: "argus onboard\n",
+    });
+  }, 15_000);
+
   it("rejects a bad signature before trusting manifest fields", async () => {
     const fixture = await createFixture();
     const bytes = Buffer.from(JSON.stringify(manifest(digest)));
@@ -534,6 +661,21 @@ printf '%s' "$argus_count" > "$ARGUS_SYNC_COUNT"
     });
   });
 
+  it("rejects Debian 11 before any network or target mutation", async () => {
+    const fixture = await createFixture();
+    await writeFile(
+      fixture.osRelease,
+      "ID=debian\nVERSION_ID=11\nVERSION_CODENAME=bullseye\n",
+    );
+    const networkRecord = join(fixture.root, "network-called");
+    await command(join(fixture.bin, "curl"), `: > "${networkRecord}"`);
+    await expect(runInstaller(fixture, Buffer.from("{}"))).rejects.toMatchObject({
+      stderr: expect.stringContaining("supported: 12, 13"),
+    });
+    await expect(lstat(networkRecord)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(lstat(fixture.target)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("supports inspect mode without downloads or mutation", async () => {
     const fixture = await createFixture();
     const result = await execute("sh", [fixture.installer], {
@@ -562,7 +704,7 @@ printf '%s' "$argus_count" > "$ARGUS_SYNC_COUNT"
       'printf "%s\\n" "old pkeyutl" >&2; exit 0',
     );
     await expect(runInstaller(second, Buffer.from("{}"))).rejects.toMatchObject({
-      stderr: expect.stringContaining("OpenSSL is too old"),
+      stderr: expect.stringContaining("OpenSSL 3 or newer"),
     });
   });
 

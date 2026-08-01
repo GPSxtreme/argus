@@ -53,26 +53,31 @@ const isCalendarDate = (value: string): boolean => {
   );
 };
 
-const isSafeHttpsAssetUrl = (value: string): boolean => {
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    return false;
-  }
+const releaseAssetUrlPattern =
+  /^https:\/\/([A-Za-z0-9.-]+)(?::([0-9]{1,5}))?\/([A-Za-z0-9._~%+-][A-Za-z0-9._~/%+-]*)$/;
 
+/** Exact ASCII URL grammar shared with the dependency-free V1 installer. */
+export const isSafeReleaseAssetUrl = (value: string): boolean => {
+  if (!/^[\x20-\x7E]+$/.test(value)) return false;
+  const match = releaseAssetUrlPattern.exec(value);
+  if (match === null) return false;
+  const labels = (match[1] ?? "").split(".");
   if (
-    url.protocol !== "https:" ||
-    url.username !== "" ||
-    url.password !== "" ||
-    value.includes("?") ||
-    value.includes("#") ||
-    url.search !== "" ||
-    url.hash !== ""
+    labels.length < 2 ||
+    labels.some(
+      (label) =>
+        label.length === 0 ||
+        label.length > 63 ||
+        !/^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/.test(label),
+    )
   ) {
     return false;
   }
-  return true;
+  const port = match[2];
+  return (
+    port === undefined ||
+    (/^[1-9][0-9]{0,4}$/.test(port) && Number(port) <= 65_535)
+  );
 };
 
 const imageSchema = z
@@ -98,8 +103,10 @@ const imageSchema = z
 
 const assetUrlSchema = z
   .string()
-  .trim()
-  .refine(isSafeHttpsAssetUrl, "Expected an HTTPS URL without credentials");
+  .refine(
+    isSafeReleaseAssetUrl,
+    "Expected a shell-safe HTTPS release asset URL",
+  );
 const sha256Schema = z.string().regex(sha256Pattern);
 
 const releaseManifestV1Schema = z

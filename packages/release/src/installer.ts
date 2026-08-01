@@ -132,11 +132,10 @@ argus_read_os_release() {
     ubuntu:24.04) argus_codename=noble ;;
     ubuntu:25.10) argus_codename=questing ;;
     ubuntu:26.04) argus_codename=resolute ;;
-    debian:11) argus_codename=bullseye ;;
     debian:12) argus_codename=bookworm ;;
     debian:13) argus_codename=trixie ;;
     ubuntu:*) argus_die "unsupported Ubuntu version $argus_os_version (supported: 22.04, 24.04, 25.10, 26.04)" ;;
-    debian:*) argus_die "unsupported Debian version $argus_os_version (supported: 11, 12, 13)" ;;
+    debian:*) argus_die "unsupported Debian version $argus_os_version (supported: 12, 13)" ;;
     *) argus_die "unsupported operating system $argus_os_id (supported: Ubuntu and Debian)" ;;
   esac
   if [ "$argus_os_id" = ubuntu ] && [ -n "$argus_ubuntu_codename" ] && [ "$argus_ubuntu_codename" != "$argus_codename" ]; then
@@ -158,6 +157,31 @@ argus_detect_arch() {
 argus_validate_url() {
   printf '%s\\n' "$1" |
     LC_ALL=C grep -Eq '^https://[A-Za-z0-9.-]+(:[0-9]+)?/[A-Za-z0-9._~/%+-]+$|^http://(127\\.0\\.0\\.1|localhost):[0-9]+/[A-Za-z0-9._~/%+-]+$'
+}
+
+argus_validate_asset_url() {
+  printf '%s\\n' "$1" | LC_ALL=C awk '
+    $0 !~ /^https:\\/\\/[A-Za-z0-9.-]+(:[0-9]+)?\\/[A-Za-z0-9._~%+-][A-Za-z0-9._~\\/%+-]*$/ { exit 1 }
+    {
+      value = substr($0, 9)
+      slash = index(value, "/")
+      authority = substr(value, 1, slash - 1)
+      path = substr(value, slash + 1)
+      if (path == "") exit 1
+      colon = index(authority, ":")
+      host = colon > 0 ? substr(authority, 1, colon - 1) : authority
+      if (colon > 0) {
+        port = substr(authority, colon + 1)
+        if (port !~ /^[1-9][0-9]*$/ || length(port) > 5 || port + 0 > 65535) exit 1
+      }
+      count = split(host, labels, ".")
+      if (count < 2) exit 1
+      for (i = 1; i <= count; i++) {
+        if (length(labels[i]) < 1 || length(labels[i]) > 63) exit 1
+        if (labels[i] !~ /^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$/) exit 1
+      }
+    }
+  '
 }
 
 argus_read_os_release
@@ -192,6 +216,9 @@ esac
 
 command -v curl >/dev/null 2>&1 || argus_die "curl is required"
 command -v openssl >/dev/null 2>&1 || argus_die "OpenSSL with Ed25519 pkeyutl support is required"
+argus_openssl_major=$(openssl version 2>/dev/null | awk '$1 == "OpenSSL" { split($2, parts, "."); print parts[1]; exit }')
+[ -n "$argus_openssl_major" ] && [ "$argus_openssl_major" -ge 3 ] ||
+  argus_die "OpenSSL 3 or newer is required (supported Ubuntu and Debian releases provide it)"
 openssl pkeyutl -help 2>&1 | grep -q -- -rawin || argus_die "OpenSSL is too old; install a version with pkeyutl -rawin support"
 command -v sha256sum >/dev/null 2>&1 || argus_die "sha256sum is required"
 command -v mktemp >/dev/null 2>&1 || argus_die "mktemp is required"
@@ -238,13 +265,14 @@ openssl pkeyutl -verify -pubin -inkey "$argus_tmp/release-public.pem" -rawin -in
 [ "$(tail -c 1 "$argus_tmp/manifest.json" | od -An -tuC | tr -d ' ')" = 125 ] ||
   argus_die "signed release manifest must have canonical bytes without BOM or trailing newline"
 [ "$(awk 'END { print NR }' "$argus_tmp/manifest.json")" -eq 1 ] || argus_die "signed release manifest must be canonical single-line JSON"
-LC_ALL=C grep -Eq '^\\{"schemaVersion":1,"version":"(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?","publishedAt":"[0-9]{4}-(0[1-9]|1[0-2])-([012][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]\\.[0-9]{3}Z","images":\\{"app":\\{"reference":"[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}","digest":"sha256:[a-f0-9]{64}"\\},"cli":\\{"reference":"[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}","digest":"sha256:[a-f0-9]{64}"\\},"searxng":\\{"reference":"[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}","digest":"sha256:[a-f0-9]{64}"\\},"postgres":\\{"reference":"[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}","digest":"sha256:[a-f0-9]{64}"\\}\\},"assets":\\{"fxembed":\\{"url":"https://[A-Za-z0-9.-]+(:[0-9]+)?/[A-Za-z0-9._~/%+-]+","sha256":"[a-f0-9]{64}","compatibilityDate":"[0-9]{4}-(0[1-9]|1[0-2])-([012][0-9]|3[01])"\\},"wrapper":\\{"url":"https://[A-Za-z0-9.-]+(:[0-9]+)?/[A-Za-z0-9._~/%+-]+","sha256":"[a-f0-9]{64}"\\}\\},"minimumStateSchema":1\\}$' "$argus_tmp/manifest.json" ||
+LC_ALL=C grep -Eq '^\\{"schemaVersion":1,"version":"(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?","publishedAt":"[0-9]{4}-(0[1-9]|1[0-2])-([012][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]\\.[0-9]{3}Z","images":\\{"app":\\{"reference":"[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}","digest":"sha256:[a-f0-9]{64}"\\},"cli":\\{"reference":"[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}","digest":"sha256:[a-f0-9]{64}"\\},"searxng":\\{"reference":"[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}","digest":"sha256:[a-f0-9]{64}"\\},"postgres":\\{"reference":"[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}","digest":"sha256:[a-f0-9]{64}"\\}\\},"assets":\\{"fxembed":\\{"url":"https://[A-Za-z0-9.-]+(:[0-9]{1,5})?/[A-Za-z0-9._~%+-][A-Za-z0-9._~/%+-]*","sha256":"[a-f0-9]{64}","compatibilityDate":"[0-9]{4}-(0[1-9]|1[0-2])-([012][0-9]|3[01])"\\},"wrapper":\\{"url":"https://[A-Za-z0-9.-]+(:[0-9]{1,5})?/[A-Za-z0-9._~%+-][A-Za-z0-9._~/%+-]*","sha256":"[a-f0-9]{64}"\\}\\},"minimumStateSchema":1\\}$' "$argus_tmp/manifest.json" ||
   argus_die "signed release manifest does not match the supported canonical schema"
 
 argus_manifest_line=$(cat "$argus_tmp/manifest.json")
 argus_version=$(printf '%s\\n' "$argus_manifest_line" | sed -n 's/^{"schemaVersion":1,"version":"\\([^"]*\\)".*/\\1/p')
 argus_published_at=$(printf '%s\\n' "$argus_manifest_line" | sed -n 's/.*"publishedAt":"\\([0-9TZ:.-]*\\)","images".*/\\1/p')
 argus_compatibility_date=$(printf '%s\\n' "$argus_manifest_line" | sed -n 's/.*"compatibilityDate":"\\([0-9-]*\\)"}.*/\\1/p')
+argus_fxembed_url=$(printf '%s\\n' "$argus_manifest_line" | sed -n 's/.*"fxembed":{"url":"\\([^"]*\\)","sha256".*/\\1/p')
 argus_wrapper_url=$(printf '%s\\n' "$argus_manifest_line" | sed -n 's/.*"wrapper":{"url":"\\([^"]*\\)","sha256":"[a-f0-9]*"}},"minimumStateSchema":1}$/\\1/p')
 argus_wrapper_sha=$(printf '%s\\n' "$argus_manifest_line" | sed -n 's/.*"wrapper":{"url":"[^"]*","sha256":"\\([a-f0-9]*\\)"}},"minimumStateSchema":1}$/\\1/p')
 [ -n "$argus_version" ] && [ -n "$argus_wrapper_url" ] && [ -n "$argus_wrapper_sha" ] ||
@@ -271,9 +299,44 @@ argus_validate_calendar_date "$argus_compatibility_date" ||
 argus_validate_calendar_date "\${argus_published_at%T*}" ||
   argus_die "signed release manifest contains an invalid publication date"
 
+argus_validate_pinned_image() {
+  printf '%s\\n' "$1" | LC_ALL=C awk '
+    length($0) < 1 || length($0) > 255 { exit 1 }
+    {
+      marker = index($0, "@sha256:")
+      if (marker < 1) exit 1
+      name = substr($0, 1, marker - 1)
+      digest = substr($0, marker + 8)
+      if (digest !~ /^[a-f0-9]+$/ || length(digest) != 64) exit 1
+      slash = index(name, "/")
+      if (slash < 2) exit 1
+      registry = substr(name, 1, slash - 1)
+      repository = substr(name, slash + 1)
+      colon = index(registry, ":")
+      host = colon > 0 ? substr(registry, 1, colon - 1) : registry
+      if (colon > 0) {
+        port = substr(registry, colon + 1)
+        if (port !~ /^[1-9][0-9]*$/ || length(port) > 5 || port + 0 > 65535) exit 1
+      } else if (host != "localhost" && index(host, ".") == 0) {
+        exit 1
+      }
+      count = split(host, labels, ".")
+      for (i = 1; i <= count; i++) {
+        if (labels[i] !~ /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/) exit 1
+      }
+      count = split(repository, parts, "/")
+      for (i = 1; i <= count; i++) {
+        if (parts[i] !~ /^[a-z0-9]+([._-][a-z0-9]+)*$/) exit 1
+      }
+    }
+  '
+}
+
 argus_check_image_identity() {
-  [ -n "$1" ] && [ -n "$2" ] && [ "\${1##*@}" = "$2" ] ||
-    argus_die "signed release manifest image reference and digest disagree"
+  argus_validate_pinned_image "$1" &&
+    [ -n "$2" ] &&
+    [ "\${1##*@}" = "$2" ] ||
+    argus_die "signed release manifest contains an invalid or mismatched pinned image"
 }
 argus_app_ref=$(printf '%s\\n' "$argus_manifest_line" | sed -n 's/.*"app":{"reference":"\\([^"]*\\)","digest":"[^"]*"}.*/\\1/p')
 argus_app_digest=$(printf '%s\\n' "$argus_manifest_line" | sed -n 's/.*"app":{"reference":"[^"]*","digest":"\\([^"]*\\)"}.*/\\1/p')
@@ -327,7 +390,8 @@ case "\${ARGUS_VERSION:-}" in
       argus_die "signed manifest version $argus_version does not match requested ARGUS_VERSION $ARGUS_VERSION"
     ;;
 esac
-argus_validate_url "$argus_wrapper_url" || argus_die "verified manifest contains an unsafe wrapper URL"
+argus_validate_asset_url "$argus_fxembed_url" || argus_die "verified manifest contains an unsafe FxEmbed URL"
+argus_validate_asset_url "$argus_wrapper_url" || argus_die "verified manifest contains an unsafe wrapper URL"
 
 argus_curl "$argus_wrapper_url" "$argus_tmp/argus" || argus_die "failed to download Argus wrapper"
 printf '%s  %s\\n' "$argus_wrapper_sha" "$argus_tmp/argus" | sha256sum -c - >/dev/null 2>&1 ||

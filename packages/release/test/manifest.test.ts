@@ -139,18 +139,47 @@ describe("verifyReleaseManifest", () => {
     );
   });
 
-  it("serializes one exact canonical byte contract and trims asset URL input", () => {
-    const bytes = serializeReleaseManifestCanonical({
+  it("serializes one exact canonical byte contract and rejects URL whitespace", () => {
+    expect(Buffer.from(serializeReleaseManifestCanonical(validManifest)).toString("utf8"))
+      .toBe(JSON.stringify(validManifest));
+    expectCode(
+      () =>
+        serializeReleaseManifestCanonical({
+          ...validManifest,
+          assets: {
+            ...validManifest.assets,
+            wrapper: {
+              ...validManifest.assets.wrapper,
+              url: `  ${validManifest.assets.wrapper.url}  `,
+            },
+          },
+        }),
+      "RELEASE_MANIFEST_SCHEMA_INVALID",
+    );
+  });
+
+  it.each([
+    "https://example.com",
+    "https://example.com/",
+    "https://example.com:0/argus",
+    "https://example.com:65536/argus",
+    "https://singlelabel/argus",
+    "https://-bad.example/argus",
+    "https://bad-.example/argus",
+    "https://example.com/argus path",
+  ])("rejects shell-unsafe release asset URL %s", (url) => {
+    const { privateKey, publicKey } = keys();
+    const bytes = bytesOf({
       ...validManifest,
       assets: {
         ...validManifest.assets,
-        wrapper: {
-          ...validManifest.assets.wrapper,
-          url: `  ${validManifest.assets.wrapper.url}  `,
-        },
+        wrapper: { ...validManifest.assets.wrapper, url },
       },
     });
-    expect(Buffer.from(bytes).toString("utf8")).toBe(JSON.stringify(validManifest));
+    expectCode(
+      () => verifyReleaseManifest(bytes, signatureOf(bytes, privateKey), publicPem(publicKey)),
+      "RELEASE_MANIFEST_SCHEMA_INVALID",
+    );
   });
 
   it.each([
