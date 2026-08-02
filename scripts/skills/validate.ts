@@ -48,7 +48,11 @@ const validate = async (input: string): Promise<void> => {
     const resolvedFile = await realpath(file);
     if (!isWithin(root, resolvedFile)) throw new Error(`Out-of-root file: ${file}`);
     const source = await readFile(file, "utf8");
-    if (forbiddenPatterns.some((pattern) => pattern.test(source))) {
+    const relativePath = relative(root, file).split(sep).join("/");
+    const isDistributedInstruction =
+      relativePath === "SKILL.md" ||
+      (relativePath.startsWith("references/") && relativePath.endsWith(".md"));
+    if (isDistributedInstruction && forbiddenPatterns.some((pattern) => pattern.test(source))) {
       throw new Error(`Forbidden safety pattern in: ${file}`);
     }
     for (const link of localLinks(source)) {

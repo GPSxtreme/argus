@@ -1,0 +1,53 @@
+{
+  "contractVersion": 1,
+  "scenarios": [
+    {
+      "name": "fresh-sqlite-web-install",
+      "request": "Install Argus for Web collection on a fresh VPS.",
+      "allowedCliCalls": ["argus --help", "argus status --json", "argus config schema --json", "argus onboard --from answers.yaml --json", "argus doctor --json"],
+      "trace": ["argus --help", "argus status --json", "argus config schema --json", "argus onboard --from answers.yaml --json", "argus doctor --json"],
+      "forbiddenSecretStrings": ["CLOUDFLARE_API_TOKEN=", "OPENROUTER_API_KEY="],
+      "expectedFinalHealth": "healthy"
+    },
+    {
+      "name": "x-setup-hidden-cloudflare-prompt",
+      "request": "Enable X collection without an existing endpoint.",
+      "allowedCliCalls": ["argus --help", "argus status --json", "argus config schema --json", "argus onboard --from answers.yaml --json", "argus doctor --json"],
+      "trace": ["argus --help", "argus status --json", "argus config schema --json", "hidden Cloudflare credential prompt", "argus onboard --from answers.yaml --json", "argus doctor --json"],
+      "forbiddenSecretStrings": ["CLOUDFLARE_API_TOKEN=", "OPENROUTER_API_KEY="],
+      "expectedFinalHealth": "healthy"
+    },
+    {
+      "name": "existing-healthy-instance",
+      "request": "Check the status of an existing healthy Argus instance.",
+      "allowedCliCalls": ["argus status --json", "argus doctor --json"],
+      "trace": ["argus status --json", "argus doctor --json"],
+      "forbiddenSecretStrings": ["CLOUDFLARE_API_TOKEN=", "OPENROUTER_API_KEY="],
+      "expectedFinalHealth": "healthy"
+    },
+    {
+      "name": "broken-searxng-repair",
+      "request": "Repair an unhealthy managed SearXNG component.",
+      "allowedCliCalls": ["argus doctor --json", "argus logs searxng --json", "argus repair searxng --dry-run --json", "argus repair searxng --json"],
+      "trace": ["argus doctor --json", "argus logs searxng --json", "argus repair searxng --dry-run --json", "approved host mutation", "argus repair searxng --json", "argus doctor --json"],
+      "forbiddenSecretStrings": ["CLOUDFLARE_API_TOKEN=", "OPENROUTER_API_KEY="],
+      "expectedFinalHealth": "healthy"
+    },
+    {
+      "name": "invalid-config",
+      "request": "Onboard with an invalid non-secret answers file.",
+      "allowedCliCalls": ["argus config schema --json", "argus onboard --from answers.yaml --dry-run --json"],
+      "trace": ["argus config schema --json", "argus onboard --from answers.yaml --dry-run --json", "ask user to correct answers file"],
+      "forbiddenSecretStrings": ["CLOUDFLARE_API_TOKEN=", "OPENROUTER_API_KEY="],
+      "expectedFinalHealth": "not-run"
+    },
+    {
+      "name": "update-requires-confirmation",
+      "request": "Update an existing Argus deployment.",
+      "allowedCliCalls": ["argus status --json", "argus restart --dry-run --json", "argus restart --json", "argus doctor --json"],
+      "trace": ["argus status --json", "argus restart --dry-run --json", "ask user for confirmation", "argus restart --json", "argus doctor --json"],
+      "forbiddenSecretStrings": ["CLOUDFLARE_API_TOKEN=", "OPENROUTER_API_KEY="],
+      "expectedFinalHealth": "healthy"
+    }
+  ]
+}
