@@ -30,7 +30,10 @@ curl -fsSL https://argus.gpsxtre.me/install.sh |
 argus onboard
 ```
 
-The token is needed only while the release repository is private. Onboarding
+The token is needed only while the release repository is private. The installer
+resolves your GitHub username automatically for a personal access token; set
+`ARGUS_GITHUB_USER` as well for tokens that cannot access GitHub's `/user`
+endpoint. Onboarding
 can manage SearXNG for Web queries, keep FxEmbed external, and store the
 instance under `/opt/argus`. See the
 [VPS operations guide](docs/operations.md#vps-installation-and-onboarding) for

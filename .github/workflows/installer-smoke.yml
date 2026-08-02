@@ -14,6 +14,7 @@ on:
 permissions:
   actions: read
   contents: read
+  packages: read
 
 concurrency:
   group: installer-smoke-${{ github.event.workflow_run.head_branch || inputs.release_tag }}
@@ -290,6 +291,7 @@ jobs:
           EXPECTED_VERSION: ${{ needs.candidate.outputs.version }}
           WRAPPER_SHA256: ${{ needs.candidate.outputs.wrapper_sha256 }}
           ARGUS_GITHUB_TOKEN: ${{ github.token }}
+          ARGUS_GITHUB_USER: ${{ github.actor }}
         shell: bash
         run: |
           set -euo pipefail
@@ -303,6 +305,7 @@ jobs:
           fi
           docker exec \
             --env ARGUS_GITHUB_TOKEN \
+            --env ARGUS_GITHUB_USER \
             --env "ARGUS_INSTALLER_URL=$INSTALLER_URL" \
             --env "ARGUS_MANIFEST_URL=$MANIFEST_URL" \
             --env "ARGUS_EXPECTED_VERSION=$EXPECTED_VERSION" \

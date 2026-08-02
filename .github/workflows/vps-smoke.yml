@@ -15,6 +15,7 @@ on:
 
 permissions:
   contents: read
+  packages: read
 
 concurrency:
   group: vps-smoke-${{ inputs.release_tag }}
@@ -77,4 +78,5 @@ jobs:
           ARGUS_EXPECTED_VERSION: ${{ needs.candidate.outputs.version }}
           ARGUS_CONTROLLED_WEB_URL: ${{ inputs.controlled_web_url }}
           ARGUS_GITHUB_TOKEN: ${{ github.token }}
+          ARGUS_GITHUB_USER: ${{ github.actor }}
         run: scripts/e2e/vps-smoke.sh "${{ matrix.rootfs }}"

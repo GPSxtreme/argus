@@ -5,6 +5,7 @@
  * the same object without creating a package dependency cycle.
  */
 export const MANAGEMENT_WRAPPER_REQUIREMENTS = {
+  dockerConfig: "/opt/argus/.docker",
   mounts: [
     "/etc/os-release:/host/etc/os-release:ro",
     "/proc/meminfo:/host/proc/meminfo:ro",
@@ -15,6 +16,7 @@ export const MANAGEMENT_WRAPPER_REQUIREMENTS = {
     "ARGUS_INSTALL_ROOT=/opt/argus",
     "ARGUS_HOST_ARCH",
     "ARGUS_VERSION",
+    "DOCKER_CONFIG=/opt/argus/.docker",
   ],
   cliImagePackages: ["iproute2"],
   compositionRoot: [

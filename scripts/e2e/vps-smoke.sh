@@ -103,6 +103,7 @@ ARGUS_VPS_DOCKERFILE
     --env ARGUS_EXPECTED_VERSION \
     --env ARGUS_CONTROLLED_WEB_URL \
     --env ARGUS_GITHUB_TOKEN \
+    --env ARGUS_GITHUB_USER \
     "$argus_vps_image" \
     sh /workspace/scripts/e2e/vps-smoke.sh --inner
   exit 0
@@ -178,6 +179,7 @@ chmod 700 "$argus_vps_installer"
 ARGUS_MANIFEST_URL="$ARGUS_MANIFEST_URL" \
 ARGUS_VERSION="$ARGUS_EXPECTED_VERSION" \
 ARGUS_GITHUB_TOKEN="${ARGUS_GITHUB_TOKEN:-}" \
+ARGUS_GITHUB_USER="${ARGUS_GITHUB_USER:-}" \
 ARGUS_INSTALL_DOCKER=0 \
 ARGUS_INSTALL_INSPECT=0 \
 sh "$argus_vps_installer"

@@ -24,6 +24,8 @@ const dockerArguments = (
   image: string,
   includeTty: boolean,
 ): readonly string[] => [
+  "--config",
+  MANAGEMENT_WRAPPER_REQUIREMENTS.dockerConfig,
   "run",
   "--rm",
   "-i",
@@ -47,6 +49,8 @@ const dockerArguments = (
   "ARGUS_HOST_ARCH=$argus_host_arch",
   "--env",
   "ARGUS_VERSION=$argus_version",
+  "--env",
+  `DOCKER_CONFIG=${MANAGEMENT_WRAPPER_REQUIREMENTS.dockerConfig}`,
   image,
 ];
 
@@ -54,8 +58,8 @@ const renderDockerCommand = (image: string, includeTty: boolean): string => {
   const arguments_ = dockerArguments(image, includeTty);
   return [
     "exec docker",
-    ...arguments_.map((argument, index) => {
-      if (index === 0 && argument === "run") return "run";
+    ...arguments_.map((argument) => {
+      if (argument === "run") return "run";
       if (argument.endsWith("=$argus_host_arch")) {
         return `${shellLiteral(argument.slice(0, -"$argus_host_arch".length))}"$argus_host_arch"`;
       }
@@ -119,7 +123,7 @@ argus_quote() {
 
 argus_print_invocation() {
   if [ "$argus_has_tty" -eq 1 ]; then
-    set -- run --rm -i -t --network host --cap-drop ALL --security-opt no-new-privileges --read-only --tmpfs ${shellLiteral("/tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777")} \\
+    set -- --config ${shellLiteral(MANAGEMENT_WRAPPER_REQUIREMENTS.dockerConfig)} run --rm -i -t --network host --cap-drop ALL --security-opt no-new-privileges --read-only --tmpfs ${shellLiteral("/tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777")} \\
       --volume ${shellLiteral(MANAGEMENT_WRAPPER_REQUIREMENTS.mounts[0])} \\
       --volume ${shellLiteral(MANAGEMENT_WRAPPER_REQUIREMENTS.mounts[1])} \\
       --volume ${shellLiteral(MANAGEMENT_WRAPPER_REQUIREMENTS.mounts[2])} \\
@@ -127,9 +131,10 @@ argus_print_invocation() {
       --env ${shellLiteral("ARGUS_INSTALL_ROOT=/opt/argus")} \\
       --env "ARGUS_HOST_ARCH=$argus_host_arch" \\
       --env "ARGUS_VERSION=$argus_version" \\
+      --env ${shellLiteral(`DOCKER_CONFIG=${MANAGEMENT_WRAPPER_REQUIREMENTS.dockerConfig}`)} \\
       "$argus_cli_image" "$@"
   else
-    set -- run --rm -i --network host --cap-drop ALL --security-opt no-new-privileges --read-only --tmpfs ${shellLiteral("/tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777")} \\
+    set -- --config ${shellLiteral(MANAGEMENT_WRAPPER_REQUIREMENTS.dockerConfig)} run --rm -i --network host --cap-drop ALL --security-opt no-new-privileges --read-only --tmpfs ${shellLiteral("/tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777")} \\
       --volume ${shellLiteral(MANAGEMENT_WRAPPER_REQUIREMENTS.mounts[0])} \\
       --volume ${shellLiteral(MANAGEMENT_WRAPPER_REQUIREMENTS.mounts[1])} \\
       --volume ${shellLiteral(MANAGEMENT_WRAPPER_REQUIREMENTS.mounts[2])} \\
@@ -137,6 +142,7 @@ argus_print_invocation() {
       --env ${shellLiteral("ARGUS_INSTALL_ROOT=/opt/argus")} \\
       --env "ARGUS_HOST_ARCH=$argus_host_arch" \\
       --env "ARGUS_VERSION=$argus_version" \\
+      --env ${shellLiteral(`DOCKER_CONFIG=${MANAGEMENT_WRAPPER_REQUIREMENTS.dockerConfig}`)} \\
       "$argus_cli_image" "$@"
   fi
   printf '%s' docker

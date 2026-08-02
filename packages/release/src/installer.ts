@@ -205,6 +205,12 @@ case "$argus_target" in
 esac
 printf '%s\\n' "$argus_target" | LC_ALL=C grep -Eq '^/[A-Za-z0-9._/+:-]+$' ||
   argus_die "unsafe installation target"
+argus_install_root=\${ARGUS_INSTALL_ROOT:-/opt/argus}
+printf '%s\\n' "$argus_install_root" | LC_ALL=C grep -Eq '^/[A-Za-z0-9._/+:-]+$' ||
+  argus_die "unsafe Argus installation root"
+if [ "$argus_install_root" != /opt/argus ] && [ "\${ARGUS_INSTALL_FIXTURE:-0}" != 1 ]; then
+  argus_die "ARGUS_INSTALL_ROOT is restricted to explicit fixtures"
+fi
 
 case "\${ARGUS_INSTALL_INSPECT:-0}" in
   1)
@@ -253,6 +259,21 @@ if [ -n "\${ARGUS_GITHUB_TOKEN:-}" ]; then
     printf '%s\\n' 'X-GitHub-Api-Version: 2022-11-28'
   } > "$argus_github_headers"
   chmod 600 "$argus_github_headers"
+  argus_github_user=\${ARGUS_GITHUB_USER:-}
+  if [ -z "$argus_github_user" ]; then
+    curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+      --connect-timeout 10 --max-time 60 --retry 3 --retry-all-errors \
+      --header @"$argus_github_headers" --header 'Accept: application/vnd.github+json' \
+      --output "$argus_tmp/github-user.json" https://api.github.com/user ||
+      argus_die "could not resolve the GitHub username for GHCR; set ARGUS_GITHUB_USER"
+    argus_github_user=$(jq -er '.login | select(type == "string")' "$argus_tmp/github-user.json") ||
+      argus_die "could not resolve the GitHub username for GHCR; set ARGUS_GITHUB_USER"
+  fi
+  argus_github_user_lines=$(printf '%s\\n' "$argus_github_user" | wc -l | tr -d '[:space:]')
+  [ "$argus_github_user_lines" = 1 ] &&
+    printf '%s\\n' "$argus_github_user" |
+      LC_ALL=C grep -Eq '^[A-Za-z0-9][A-Za-z0-9-]{0,38}$' ||
+    argus_die "ARGUS_GITHUB_USER must be a valid GitHub username"
 fi
 
 cat > "$argus_tmp/release-public.pem" <<'ARGUS_RELEASE_PUBLIC_KEY'
@@ -574,6 +595,59 @@ if ! argus_check_docker; then
     *) argus_die "ARGUS_INSTALL_DOCKER must be 0 or 1" ;;
   esac
   argus_check_docker || argus_die "Docker Engine or the Compose plugin is not usable after installation"
+fi
+
+if [ -n "\${ARGUS_GITHUB_TOKEN:-}" ]; then
+  argus_login_config="$argus_tmp/docker"
+  install -d -m 0700 "$argus_login_config"
+  if [ "$argus_docker_mode" = root ]; then
+    printf '%s\\n' "$ARGUS_GITHUB_TOKEN" |
+      argus_as_root docker --config "$argus_login_config" login ghcr.io \
+        --username "$argus_github_user" --password-stdin >/dev/null ||
+      argus_die "GitHub token could not authenticate private GHCR images"
+  else
+    printf '%s\\n' "$ARGUS_GITHUB_TOKEN" |
+      docker --config "$argus_login_config" login ghcr.io \
+        --username "$argus_github_user" --password-stdin >/dev/null ||
+      argus_die "GitHub token could not authenticate private GHCR images"
+  fi
+  [ -f "$argus_login_config/config.json" ] && [ ! -L "$argus_login_config/config.json" ] ||
+    argus_die "Docker did not create a safe GHCR credential config"
+
+  if [ ! -d "$argus_install_root" ]; then
+    if [ -w "$(dirname "$argus_install_root")" ]; then
+      install -d -m 0755 "$argus_install_root"
+    else
+      argus_as_root install -d -m 0755 "$argus_install_root"
+    fi
+  fi
+  [ ! -L "$argus_install_root" ] ||
+    argus_die "refusing symlinked Argus installation root"
+  argus_registry_config="$argus_install_root/.docker"
+  [ ! -L "$argus_registry_config" ] ||
+    argus_die "refusing symlinked Docker credential directory"
+
+  if [ "$argus_docker_mode" = user ]; then
+    argus_registry_uid=$(id -u)
+    argus_registry_gid=$(id -g)
+    if [ -w "$argus_install_root" ]; then
+      install -d -m 0700 "$argus_registry_config"
+    else
+      argus_as_root install -d -m 0700 -o "$argus_registry_uid" -g "$argus_registry_gid" "$argus_registry_config"
+    fi
+    argus_registry_tmp=$(mktemp "$argus_registry_config/.config.json.XXXXXX")
+    install -m 0600 "$argus_login_config/config.json" "$argus_registry_tmp"
+    mv -f -- "$argus_registry_tmp" "$argus_registry_config/config.json"
+    chmod 0700 "$argus_registry_config"
+    chmod 0600 "$argus_registry_config/config.json"
+  else
+    argus_as_root install -d -m 0700 "$argus_registry_config"
+    argus_registry_tmp=$(argus_as_root mktemp "$argus_registry_config/.config.json.XXXXXX")
+    argus_as_root install -m 0600 "$argus_login_config/config.json" "$argus_registry_tmp"
+    argus_as_root mv -f -- "$argus_registry_tmp" "$argus_registry_config/config.json"
+    argus_as_root chmod 0700 "$argus_registry_config"
+    argus_as_root chmod 0600 "$argus_registry_config/config.json"
+  fi
 fi
 
 argus_target_dir=$(dirname "$argus_target")
