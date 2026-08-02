@@ -139,7 +139,9 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 if [ -n "${ARGUS_GITHUB_TOKEN:-}" ]; then
-  printf '%s\n' "$ARGUS_GITHUB_TOKEN" | LC_ALL=C grep -Eq '^[A-Za-z0-9_.~+/=-]+$' ||
+  argus_github_token_lines=$(printf '%s\n' "$ARGUS_GITHUB_TOKEN" | wc -l | tr -d '[:space:]')
+  [ "$argus_github_token_lines" = 1 ] &&
+    printf '%s\n' "$ARGUS_GITHUB_TOKEN" | LC_ALL=C grep -Eq '^[!-~]+$' ||
     argus_die "ARGUS_GITHUB_TOKEN contains unsafe characters"
   argus_github_headers="$argus_work/github.headers"
   {

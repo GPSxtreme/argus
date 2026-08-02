@@ -881,8 +881,9 @@ exit 42
     );
     expect(smoke).toContain("ARGUS_GITHUB_TOKEN");
     expect(smoke).toContain(
-      "grep -Eq '^[A-Za-z0-9_.~+/=-]+$'",
+      "grep -Eq '^[!-~]+$'",
     );
+    expect(smoke).toContain("wc -l");
     expect(smoke).toContain('--header @"$argus_github_headers"');
     expect(smoke).not.toContain(
       '--header "Authorization: Bearer $ARGUS_GITHUB_TOKEN"',
