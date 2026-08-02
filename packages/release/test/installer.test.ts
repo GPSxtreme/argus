@@ -789,6 +789,34 @@ printf '%s' "$argus_count" > "$ARGUS_SYNC_COUNT"
     await expect(lstat(marker)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("accepts the standard os-release symlink and rejects every other target", async () => {
+    const fixture = await createFixture();
+    const wrapperSha = createHash("sha256")
+      .update(await readFile(fixture.wrapper))
+      .digest("hex");
+    const bytes = Buffer.from(JSON.stringify(manifest(wrapperSha)));
+    const etc = join(fixture.root, "etc");
+    const usrLib = join(fixture.root, "usr", "lib");
+    await mkdir(etc);
+    await mkdir(usrLib, { recursive: true });
+    await writeFile(
+      join(usrLib, "os-release"),
+      "ID=ubuntu\nVERSION_ID=24.04\nVERSION_CODENAME=noble\n",
+    );
+    fixture.osRelease = join(etc, "os-release");
+    await symlink("../usr/lib/os-release", fixture.osRelease);
+
+    await expect(runInstaller(fixture, bytes)).resolves.toBeDefined();
+
+    const unsafe = await createFixture();
+    const unsafeLink = join(unsafe.root, "linked-os-release");
+    await symlink(unsafe.osRelease, unsafeLink);
+    unsafe.osRelease = unsafeLink;
+    await expect(runInstaller(unsafe, bytes)).rejects.toMatchObject({
+      stderr: expect.stringContaining("refusing symlinked os-release"),
+    });
+  });
+
   it("fails closed without a tty when Docker approval is unspecified", async () => {
     const fixture = await createFixture();
     await writeFile(join(fixture.bin, "docker"), "#!/bin/sh\nexit 1\n", {

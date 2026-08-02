@@ -81,7 +81,23 @@ trap 'exit 143' TERM
 argus_read_os_release() {
   argus_os_file=\${ARGUS_INSTALL_OS_RELEASE:-/etc/os-release}
   [ -f "$argus_os_file" ] || argus_die "cannot read $argus_os_file"
-  [ ! -L "$argus_os_file" ] || argus_die "refusing symlinked os-release file"
+  if [ -L "$argus_os_file" ]; then
+    argus_os_link=$(readlink -- "$argus_os_file") ||
+      argus_die "cannot resolve symlinked os-release file"
+    case "$argus_os_link" in
+      ../usr/lib/os-release)
+        argus_os_file="$(dirname -- "$argus_os_file")/../usr/lib/os-release"
+        ;;
+      /usr/lib/os-release)
+        [ "$argus_os_file" = /etc/os-release ] ||
+          argus_die "refusing symlinked os-release file"
+        argus_os_file=/usr/lib/os-release
+        ;;
+      *) argus_die "refusing symlinked os-release file" ;;
+    esac
+    [ -f "$argus_os_file" ] && [ ! -L "$argus_os_file" ] ||
+      argus_die "refusing unsafe os-release target"
+  fi
   argus_os_id=
   argus_os_version=
   argus_os_codename=
