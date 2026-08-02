@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
@@ -59,5 +60,70 @@ describe("GitHub workflow toolchain", () => {
       // biome-ignore lint/suspicious/noTemplateCurlyInString: The workflow must verify the literal shell variable.
       'test "$(pnpm --version)" = "${PNPM_VERSION}"',
     );
+  });
+
+  it("makes the pinned FxEmbed build reproducible before checking its output", () => {
+    const workflow = parse(
+      readFileSync(repositoryFile(".github/workflows/release.yml"), "utf8"),
+    ) as Workflow;
+    const release = workflow.jobs.release;
+    const buildStep = release?.steps?.find(
+      (step) => step.name === "Build pinned FxEmbed worker",
+    );
+    const run = buildStep?.run ?? "";
+    const patch = readFileSync(
+      repositoryFile("scripts/release/fxembed-reproducible.patch"),
+      "utf8",
+    );
+    const provenance = JSON.parse(
+      readFileSync(
+        repositoryFile("scripts/release/fxembed-provenance.json"),
+        "utf8",
+      ),
+    ) as {
+      reproducibilityPatch?: string;
+      reproducibilityPatchSha256?: string;
+      sourceDateEpoch?: number;
+    };
+    const patchSha256 = createHash("sha256").update(patch).digest("hex");
+    const lockCheck = run.indexOf(
+      '"$FXEMBED_LOCK_SHA256" dist/fxembed-source/package-lock.json',
+    );
+    const patchCheck = run.indexOf(
+      'git -C dist/fxembed-source apply --check "$GITHUB_WORKSPACE/$FXEMBED_PATCH"',
+    );
+    const outputCheck = run.indexOf(
+      '"$FXEMBED_OUTPUT_SHA256" dist/release/fxembed.js',
+    );
+
+    expect(release?.env?.FXEMBED_PATCH_SHA256).toMatch(/^[a-f0-9]{64}$/u);
+    expect(release?.env?.FXEMBED_PATCH_SHA256).toBe(patchSha256);
+    expect(run).toContain(
+      'printf \'%s  %s\\n\' "$FXEMBED_PATCH_SHA256" "$FXEMBED_PATCH" | sha256sum --check --strict',
+    );
+    expect(run).toContain(
+      'git -C dist/fxembed-source apply --check "$GITHUB_WORKSPACE/$FXEMBED_PATCH"',
+    );
+    expect(run).toContain(
+      'git -C dist/fxembed-source apply "$GITHUB_WORKSPACE/$FXEMBED_PATCH"',
+    );
+    expect(run).toContain(
+      'SOURCE_DATE_EPOCH="$(git -C dist/fxembed-source show -s --format=%ct "$FXEMBED_REVISION")"',
+    );
+    expect(run).toContain('export SOURCE_DATE_EPOCH');
+    expect(lockCheck).toBeGreaterThan(-1);
+    expect(patchCheck).toBeGreaterThan(lockCheck);
+    expect(outputCheck).toBeGreaterThan(patchCheck);
+    expect(patch).toContain("process.env.SOURCE_DATE_EPOCH");
+    expect(patch).toContain("SOURCE_DATE_EPOCH must be an unsigned integer");
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: This is literal patch content.
+    expect(patch).not.toContain("+const releaseName = `${workerName}-${gitBranch}-${gitCommit}-${new Date()");
+    expect(provenance.reproducibilityPatch).toBe(
+      "scripts/release/fxembed-reproducible.patch",
+    );
+    expect(provenance.reproducibilityPatchSha256).toBe(
+      release?.env?.FXEMBED_PATCH_SHA256,
+    );
+    expect(provenance.sourceDateEpoch).toBe(1_785_545_724);
   });
 });
