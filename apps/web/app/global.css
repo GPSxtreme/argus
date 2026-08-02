@@ -1,0 +1,24 @@
+:root {
+  color-scheme: dark;
+  --ink: #f5f7fa;
+  --muted: #9aa5b1;
+  --canvas: #080b10;
+  --surface: #10161f;
+  --line: #263241;
+  --accent: #93e0c2;
+}
+
+* { box-sizing: border-box; }
+
+html { background: var(--canvas); }
+
+body {
+  min-height: 100vh;
+  margin: 0;
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  line-height: 1.6;
+}
+
+a { color: inherit; }

@@ -12,6 +12,8 @@
       "!**/dist",
       "!**/coverage",
       "!**/.turbo",
+      "!**/.next",
+      "!**/.source",
       "!data"
     ]
   },
