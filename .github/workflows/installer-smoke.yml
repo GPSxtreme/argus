@@ -184,7 +184,9 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ github.workflow_sha }}
-          sparse-checkout: scripts/e2e/installer-smoke.sh
+          sparse-checkout: |
+            scripts/e2e/configure-nested-docker-storage.sh
+            scripts/e2e/installer-smoke.sh
           sparse-checkout-cone-mode: false
           path: trusted-smoke
 
@@ -295,6 +297,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          docker exec \
+            "$CONTAINER" sh /workspace/trusted-smoke/scripts/e2e/configure-nested-docker-storage.sh "$DOCKER_MODE"
           if [ "$DOCKER_MODE" = absent ]; then
             docker exec "$CONTAINER" sh -c '! command -v docker'
             install_docker=1

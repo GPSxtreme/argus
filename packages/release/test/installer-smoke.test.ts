@@ -227,6 +227,59 @@ const resolveWorkflowRun = (conclusion: string) =>
   );
 
 describe("clean-host installer smoke contract", () => {
+  it("pins vfs only for Docker installed inside the nested clean host", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "argus-nested-docker-"));
+    temporaryDirectories.push(directory);
+    const absentRoot = join(directory, "absent");
+    const presentRoot = join(directory, "present");
+    await Promise.all([
+      mkdir(absentRoot, { recursive: true }),
+      mkdir(join(presentRoot, "etc/docker"), { recursive: true }),
+    ]);
+    const presentConfig = join(presentRoot, "etc/docker/daemon.json");
+    await writeFile(presentConfig, '{"storage-driver":"overlay2"}\n');
+    const configure = resolve(
+      root,
+      "scripts/e2e/configure-nested-docker-storage.sh",
+    );
+
+    const absent = spawnSync("/bin/sh", [configure, "absent"], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        ARGUS_INSTALL_FIXTURE: "1",
+        ARGUS_NESTED_DOCKER_ROOT: absentRoot,
+      },
+    });
+    expect(absent).toMatchObject({ status: 0, stdout: "", stderr: "" });
+    expect(
+      await readFile(join(absentRoot, "etc/docker/daemon.json"), "utf8"),
+    ).toBe('{"storage-driver":"vfs"}\n');
+
+    const second = spawnSync("/bin/sh", [configure, "absent"], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        ARGUS_INSTALL_FIXTURE: "1",
+        ARGUS_NESTED_DOCKER_ROOT: absentRoot,
+      },
+    });
+    expect(second).toMatchObject({ status: 0, stdout: "", stderr: "" });
+
+    const present = spawnSync("/bin/sh", [configure, "present"], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        ARGUS_INSTALL_FIXTURE: "1",
+        ARGUS_NESTED_DOCKER_ROOT: presentRoot,
+      },
+    });
+    expect(present).toMatchObject({ status: 0, stdout: "", stderr: "" });
+    expect(await readFile(presentConfig, "utf8")).toBe(
+      '{"storage-driver":"overlay2"}\n',
+    );
+  });
+
   it(
     "waits a real settle interval before accepting the first stable pair",
     async () => {
@@ -835,6 +888,12 @@ exit 42
       /(?:ubuntu|debian)@sha256:[a-f0-9]{64}/u,
     );
     expect(source).toContain("workflow_run:");
+    expect(source).toContain(
+      "scripts/e2e/configure-nested-docker-storage.sh",
+    );
+    expect(source).toContain(
+      '"$CONTAINER" sh /workspace/trusted-smoke/scripts/e2e/configure-nested-docker-storage.sh "$DOCKER_MODE"',
+    );
     expect(source).toContain('workflows: ["Signed release"]');
     expect(source).toContain("resolve-installer-source.mjs");
     expect(source).not.toContain(
