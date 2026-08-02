@@ -15,6 +15,7 @@ interface Workflow {
     string,
     {
       env?: Record<string, string>;
+      "runs-on"?: string;
       steps?: WorkflowStep[];
     }
   >;
@@ -156,5 +157,48 @@ describe("GitHub workflow toolchain", () => {
     );
     expect(reservation?.run).toContain("exit 1");
     expect(publish?.with?.overwrite_files).toBe(false);
+  });
+
+  it("defines a clean-VPS smoke using an immutable signed candidate", () => {
+    const harness = readFileSync(
+      repositoryFile("scripts/e2e/vps-smoke.sh"),
+      "utf8",
+    );
+    const fixture = parse(
+      readFileSync(
+        repositoryFile("scripts/e2e/fixtures/onboard-web.yaml"),
+        "utf8",
+      ),
+    ) as { deployment?: { root?: unknown }; managed?: { searxng?: unknown } };
+    const workflow = parse(
+      readFileSync(repositoryFile(".github/workflows/vps-smoke.yml"), "utf8"),
+    ) as Workflow;
+    const operations = readFileSync(repositoryFile("docs/operations.md"), "utf8");
+    const readme = readFileSync(repositoryFile("README.md"), "utf8");
+
+    expect(harness).toContain('ARGUS_VPS_E2E=1');
+    expect(harness).toContain('ARGUS_INSTALLER_URL');
+    expect(harness).toContain('ARGUS_MANIFEST_URL');
+    expect(harness.match(/argus_vps_onboard "/g)?.length).toBe(2);
+    expect(harness).toContain(
+      'spawn argus onboard --from /opt/argus/.vps-smoke-onboard.yaml --yes --json',
+    );
+    expect(harness).toContain('argus doctor --json');
+    expect(harness).toContain('argus status --json');
+    expect(harness).toContain('changes == []');
+    expect(harness).toContain('format=json');
+    expect(harness).toContain('controlled-web-page');
+    expect(harness).toContain('8788');
+    expect(fixture.deployment?.root).toBe('/opt/argus');
+    expect(fixture.managed?.searxng).toBe('managed');
+    expect(workflow.jobs.vps_smoke?.['runs-on']).toBe('ubuntu-24.04');
+    expect(JSON.stringify(workflow)).toContain('ubuntu:24.04');
+    expect(JSON.stringify(workflow)).toContain('debian:13');
+    expect(JSON.stringify(workflow)).toContain('"ARGUS_VPS_E2E":"1"');
+    expect(operations).toContain('/opt/argus');
+    expect(operations).toContain('secrets.env');
+    expect(operations).toContain('0600');
+    expect(operations).toContain('argus update --json --yes');
+    expect(readme).toContain('vps-smoke.yml');
   });
 });
