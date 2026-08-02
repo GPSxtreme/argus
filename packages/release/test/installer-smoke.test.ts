@@ -870,6 +870,10 @@ exit 42
     );
     expect(workflow).toContain("application/octet-stream");
     expect(workflow).toContain("--env ARGUS_GITHUB_TOKEN");
+    expect(workflow).toContain("--env ARGUS_GITHUB_USER");
+    expect(workflow).toMatch(
+      /permissions:\n {2}actions: read\n {2}contents: read\n {2}packages: read/u,
+    );
     expect(workflow).not.toContain(
       '--env "ARGUS_GITHUB_TOKEN=$ARGUS_GITHUB_TOKEN"',
     );

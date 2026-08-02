@@ -143,11 +143,12 @@ describe("renderArgusWrapper", () => {
     for (const mount of MANAGEMENT_WRAPPER_REQUIREMENTS.mounts) {
       expect(first).toContain(`--volume ${shellQuote(mount)}`);
     }
-    expect(first).toContain(
-      `--env ${shellQuote(MANAGEMENT_WRAPPER_REQUIREMENTS.environment[0])}`,
-    );
-    for (const environment of MANAGEMENT_WRAPPER_REQUIREMENTS.environment.slice(1)) {
-      expect(first).toContain(`--env "${environment}=`);
+    for (const environment of MANAGEMENT_WRAPPER_REQUIREMENTS.environment) {
+      if (environment.includes("=")) {
+        expect(first).toContain(`--env ${shellQuote(environment)}`);
+      } else {
+        expect(first).toContain(`--env "${environment}=`);
+      }
     }
     expect(first).toContain("--cap-drop ALL");
     expect(first).toContain("--security-opt no-new-privileges");
@@ -155,7 +156,9 @@ describe("renderArgusWrapper", () => {
     expect(first).toContain("--tmpfs '/tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777'");
     expect(first).toMatch(/if \[ -t 1 \]; then/u);
     expect(first).not.toMatch(/\[ -t 0 \]/u);
-    expect(first).toMatch(/\bexec docker run\b/u);
+    expect(first).toMatch(
+      /\bexec docker '--config' '\/opt\/argus\/\.docker' run\b/u,
+    );
   });
 
   it("rejects invalid SemVer and every unpinned, tagged, or credentialed image", () => {
@@ -192,7 +195,13 @@ describe("renderArgusWrapper", () => {
     const arguments_ = recordedArguments(harness.record);
     expect(arguments_).toContain(`ARGUS_HOST_ARCH=${normalized}`);
     expect(arguments_).toContain(`ARGUS_VERSION=${fixture.version}`);
+    expect(arguments_).toContain("DOCKER_CONFIG=/opt/argus/.docker");
     expect(arguments_).toContain(fixture.cliImageDigest);
+    expect(arguments_.slice(0, 3)).toEqual([
+      "--config",
+      "/opt/argus/.docker",
+      "run",
+    ]);
     expect(arguments_.slice(-input.length)).toEqual(input);
     expect(arguments_.filter((value) => value === "--volume")).toHaveLength(4);
     expect(
@@ -205,6 +214,7 @@ describe("renderArgusWrapper", () => {
       `ARGUS_HOST_ARCH=${normalized}`,
       "ARGUS_INSTALL_ROOT=/opt/argus",
       `ARGUS_VERSION=${fixture.version}`,
+      "DOCKER_CONFIG=/opt/argus/.docker",
     ]);
     expect(arguments_.join("\n")).not.toMatch(
       /(?:\/Users\/|\/home\/|\.ssh|--env-file)/u,

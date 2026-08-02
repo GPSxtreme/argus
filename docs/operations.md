@@ -21,6 +21,8 @@ The resulting instance lives in `/opt/argus`:
 - `release-context.json` retains the exact signed release used for rollback.
 - `secrets.env` contains runtime credentials and must remain mode `0600`.
 - `backups/` contains update backups. Argus never deletes them automatically.
+- `.docker/config.json` stores the mode `0600` GHCR credential while Argus
+  images are private. Remove it after the images become public.
 
 Do not hand-edit Compose, state, release context, or managed service settings.
 Change the onboarding answers and rerun `argus onboard`, or use the targeted
@@ -272,6 +274,7 @@ ARGUS_MANIFEST_ASSET_URL="<private manifest asset API URL>" \
 ARGUS_EXPECTED_VERSION="0.1.4" \
 ARGUS_CONTROLLED_WEB_URL="https://argus.gpsxtre.me/" \
 ARGUS_GITHUB_TOKEN="<GitHub token with read access>" \
+ARGUS_GITHUB_USER="<GitHub username, if the token cannot access /user>" \
 scripts/e2e/vps-smoke.sh ubuntu:24.04
 ```
 

@@ -99,6 +99,7 @@ interface Fixture {
   root: string;
   installer: string;
   target: string;
+  installRoot: string;
   wrapper: string;
   privateKey: KeyObject;
   publicKeyPem: string;
@@ -114,9 +115,11 @@ const createFixture = async (): Promise<Fixture> => {
   const root = await mkdtemp(join(tmpdir(), "argus-installer-test-"));
   const bin = join(root, "bin");
   const target = join(root, "install", "argus");
+  const installRoot = join(root, "opt", "argus");
   const osRelease = join(root, "os-release");
   await mkdir(bin);
   await mkdir(join(root, "install"));
+  await mkdir(installRoot, { recursive: true });
   await writeFile(
     osRelease,
     "ID=ubuntu\nVERSION_ID=24.04\nVERSION_CODENAME=noble\n",
@@ -144,10 +147,41 @@ exit 64
     `printf "%s\\n" "\${ARGUS_FIXTURE_ARCH:-x86_64}"`,
   );
   await command(join(bin, "sync"), "exit 0");
-  await command(join(bin, "sudo"), "exit 1");
+  await command(
+    join(bin, "sudo"),
+    `[ "\${ARGUS_FIXTURE_DOCKER_ROOT_ONLY:-0}" = 1 ] || exit 1
+if [ "\${1:-}" = -n ]; then shift; fi
+ARGUS_FIXTURE_UNDER_SUDO=1 exec "$@"`,
+  );
   await command(
     join(bin, "docker"),
-    'case "$*" in "info"|"compose version") exit 0 ;; *) exit 64 ;; esac',
+    `printf '%s\\0' "$@" >> "$ARGUS_FIXTURE_DOCKER_ARGV"
+case "$*" in
+  "info"|"compose version")
+    if [ "\${ARGUS_FIXTURE_DOCKER_ROOT_ONLY:-0}" = 1 ] &&
+      [ "\${ARGUS_FIXTURE_UNDER_SUDO:-0}" != 1 ]; then exit 1; fi
+    exit 0
+    ;;
+  *" login ghcr.io "*)
+    IFS= read -r argus_password
+    printf '%s' "$argus_password" > "$ARGUS_FIXTURE_DOCKER_STDIN"
+    argus_config=
+    while [ "$#" -gt 0 ]; do
+      if [ "$1" = --config ]; then argus_config=$2; shift 2; else shift; fi
+    done
+    mkdir -p "$argus_config"
+    printf '%s\\n' '{"auths":{"ghcr.io":{"auth":"fixture"}}}' > "$argus_config/config.json"
+    ;;
+  *" run "*)
+    [ "\${ARGUS_FIXTURE_UNDER_SUDO:-0}" = 1 ] || exit 77
+    argus_config=
+    while [ "$#" -gt 0 ]; do
+      if [ "$1" = --config ]; then argus_config=$2; shift 2; else shift; fi
+    done
+    [ -r "$argus_config/config.json" ]
+    ;;
+  *) exit 64 ;;
+esac`,
   );
   await command(
     join(bin, "curl"),
@@ -162,6 +196,7 @@ while [ "$#" -gt 0 ]; do
 done
 case "$argus_last" in
   https://fixture.invalid/wrapper) cp "$ARGUS_FIXTURE_WRAPPER" "$argus_output" ;;
+  https://api.github.com/user) printf '%s\\n' '{"login":"octocat"}' > "$argus_output" ;;
   https://download.docker.com/linux/*/gpg) printf '%s\\n' fixture-key > "$argus_output" ;;
   *) exit 22 ;;
 esac`,
@@ -192,6 +227,7 @@ argus_actual=$(shasum -a 256 "$argus_file" | awk '{print $1}')
     root,
     installer,
     target,
+    installRoot,
     wrapper,
     privateKey,
     publicKeyPem,
@@ -239,9 +275,12 @@ const runInstaller = async (
       ARGUS_INSTALL_FIXTURE: "1",
       ARGUS_INSTALL_OS_RELEASE: fixture.osRelease,
       ARGUS_INSTALL_TARGET: fixture.target,
+      ARGUS_INSTALL_ROOT: fixture.installRoot,
       ARGUS_INSTALL_LOCK: join(fixture.root, "installer.lock"),
       ARGUS_INSTALL_DOCKER: "0",
       ARGUS_FIXTURE_WRAPPER: fixture.wrapper,
+      ARGUS_FIXTURE_DOCKER_ARGV: join(fixture.root, "docker.argv"),
+      ARGUS_FIXTURE_DOCKER_STDIN: join(fixture.root, "docker.stdin"),
       ...environment,
     },
   });
@@ -612,6 +651,93 @@ describe("renderInstaller", () => {
         "ARGUS_GITHUB_TOKEN contains unsafe characters",
       ),
     });
+
+    const unsafeUser = await createFixture();
+    await expect(
+      runInstaller(unsafeUser, bytes, {
+        ARGUS_GITHUB_TOKEN: "github_pat_safe",
+        ARGUS_GITHUB_USER: "octocat\n--password",
+      }),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining(
+        "ARGUS_GITHUB_USER must be a valid GitHub username",
+      ),
+    });
+  });
+
+  it("authenticates private GHCR pulls through stdin and persists only the Docker config", async () => {
+    const fixture = await createFixture();
+    const wrapperSha = createHash("sha256")
+      .update(await readFile(fixture.wrapper))
+      .digest("hex");
+    const bytes = Buffer.from(JSON.stringify(manifest(wrapperSha)));
+    const token = "github_pat:opaque-token.value~+/=";
+
+    const first = await runInstaller(fixture, bytes, {
+      ARGUS_GITHUB_TOKEN: token,
+      ARGUS_GITHUB_USER: "octocat",
+    });
+    const config = join(fixture.installRoot, ".docker", "config.json");
+    const firstConfig = await readFile(config, "utf8");
+
+    expect(first.stdout).not.toContain(token);
+    expect(first.stderr).not.toContain(token);
+    expect(await readFile(join(fixture.root, "docker.stdin"), "utf8")).toBe(
+      token,
+    );
+    expect(
+      await readFile(join(fixture.root, "docker.argv"), "utf8"),
+    ).not.toContain(token);
+    expect(firstConfig).toContain('"ghcr.io"');
+    expect((await lstat(join(fixture.installRoot, ".docker"))).mode & 0o777).toBe(
+      0o700,
+    );
+    expect((await lstat(config)).mode & 0o777).toBe(0o600);
+
+    await expect(
+      runInstaller(fixture, bytes, {
+        ARGUS_GITHUB_TOKEN: token,
+        ARGUS_GITHUB_USER: "octocat",
+      }),
+    ).resolves.toMatchObject({ stdout: "argus onboard\n" });
+    expect(await readFile(config, "utf8")).toBe(firstConfig);
+  });
+
+  it("keeps root-mode GHCR credentials readable only to the future root wrapper context", async () => {
+    const fixture = await createFixture();
+    const wrapperSha = createHash("sha256")
+      .update(await readFile(fixture.wrapper))
+      .digest("hex");
+    const bytes = Buffer.from(JSON.stringify(manifest(wrapperSha)));
+    const environment = {
+      ARGUS_GITHUB_TOKEN: "github_pat:root-context-token",
+      ARGUS_GITHUB_USER: "octocat",
+      ARGUS_FIXTURE_DOCKER_ROOT_ONLY: "1",
+    };
+
+    await expect(runInstaller(fixture, bytes, environment)).resolves.toMatchObject({
+      stdout: "argus onboard\n",
+    });
+    const configDirectory = join(fixture.installRoot, ".docker");
+    const config = join(configDirectory, "config.json");
+    expect((await lstat(configDirectory)).mode & 0o777).toBe(0o700);
+    expect((await lstat(config)).mode & 0o777).toBe(0o600);
+
+    await expect(
+      execute(
+        join(fixture.bin, "sudo"),
+        ["docker", "--config", configDirectory, "run", "fixture"],
+        {
+          env: {
+            ...process.env,
+            PATH: `${fixture.bin}:/opt/homebrew/bin:/usr/bin:/bin`,
+            ARGUS_FIXTURE_DOCKER_ARGV: join(fixture.root, "docker.argv"),
+            ARGUS_FIXTURE_DOCKER_STDIN: join(fixture.root, "docker.stdin"),
+            ...environment,
+          },
+        },
+      ),
+    ).resolves.toMatchObject({ stdout: "" });
   });
 
   it("rejects signed duplicate-key JSON and unsafe artifact URLs", async () => {
