@@ -1,0 +1,27 @@
+name: Web
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm vitest run apps/web/test/content.test.ts apps/web/test/routes.test.ts apps/web/test/landing.test.tsx
+      - run: pnpm --filter @argus/web build
+      - run: pnpm --filter @argus/web check:links
+      - run: pnpm --filter @argus/web exec lhci autorun --config=lighthouserc.json
+      - run: |
+          ! git ls-files | grep -E '(^|/)(\.env|state\.json|secrets\.env|argus\.yaml)$'

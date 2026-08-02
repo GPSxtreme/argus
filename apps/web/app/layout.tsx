@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
-import { RootProvider } from "fumadocs-ui/provider/next";
 import "./global.css";
 import { site } from "../lib/site";
 
@@ -14,9 +13,7 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: Readonly<{ children: ReactNode }>) {
   return (
     <html lang="en">
-      <body>
-        <RootProvider>{children}</RootProvider>
-      </body>
+      <body>{children}</body>
     </html>
   );
 }

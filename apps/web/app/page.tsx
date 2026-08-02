@@ -1,4 +1,3 @@
-import Link from "next/link";
 import { CopyCommand } from "../components/copy-command";
 import { DataTrinity } from "../components/data-trinity";
 import { Pipeline } from "../components/pipeline";
@@ -9,10 +8,10 @@ export default function Home() {
   return (
     <main className="landing">
       <nav className="site-nav" aria-label="Main navigation">
-        <Link href="/" className="wordmark">ARGUS</Link>
+        <a href="/" className="wordmark">ARGUS</a>
         <div className="nav-links">
-          <Link href="/docs">Docs</Link>
-          <Link href="/skill">Agent Skill</Link>
+          <a href="/docs">Docs</a>
+          <a href="/skill">Agent Skill</a>
         </div>
       </nav>
 
@@ -23,8 +22,8 @@ export default function Home() {
           Argus collects public signals, normalizes them into revisioned records, and gives your agents deterministic answers with source links.
         </p>
         <div className="hero-actions">
-          <Link className="button primary" href="/docs/getting-started">Get Started</Link>
-          <Link className="button" href="/docs">Read the Docs</Link>
+          <a className="button primary" href="/docs/getting-started">Get Started</a>
+          <a className="button" href="/docs">Read the Docs</a>
         </div>
         <section className="install-box" aria-label="Install Argus">
           <code>{installCommand}</code>
@@ -39,13 +38,13 @@ export default function Home() {
       <section className="agent-callout">
         <p className="eyebrow">For coding agents</p>
         <h2>Stable docs, a portable setup skill, no hidden state.</h2>
-        <Link className="button primary" href="/skill">Open Agent Skill</Link>
+        <a className="button primary" href="/skill">Open Agent Skill</a>
       </section>
 
       <footer>
         <span>Argus</span>
         <div className="footer-links">
-          <Link href="/docs">Docs</Link>
+          <a href="/docs">Docs</a>
           <a href="https://github.com/GPSxtreme/argus">Source</a>
           <a href="https://github.com/GPSxtreme/argus/blob/main/LICENSE">License</a>
           <a href="https://github.com/GPSxtreme/argus/releases/tag/v0.1.2">v0.1.2</a>
