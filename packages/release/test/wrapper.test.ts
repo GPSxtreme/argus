@@ -17,6 +17,11 @@ import {
 } from "../src/wrapper.js";
 
 const repositoryRoot = resolve(import.meta.dirname, "../../..");
+const tsxCli = resolve(repositoryRoot, "node_modules/tsx/dist/cli.mjs");
+const wrapperExporter = resolve(
+  repositoryRoot,
+  "scripts/release/export-wrapper.ts",
+);
 const digest = "a".repeat(64);
 const fixture: ArgusWrapperOptions = {
   version: "1.2.3-rc.1+build.7",
@@ -51,6 +56,14 @@ const runInPty = (
     stdio: "ignore",
   });
 };
+
+const runWrapperExporter = (
+  arguments_: string[],
+): ReturnType<typeof spawnSync> =>
+  spawnSync(process.execPath, [tsxCli, wrapperExporter, ...arguments_], {
+    cwd: repositoryRoot,
+    encoding: "utf8",
+  });
 
 interface WrapperFixture {
   directory: string;
@@ -326,18 +339,7 @@ describe("renderArgusWrapper", () => {
   });
 
   it("exports fixture bytes to clean stdout and passes shell syntax", () => {
-    const result = spawnSync(
-      "fnm",
-      [
-        "exec",
-        "--using=24.16.0",
-        "/opt/homebrew/bin/pnpm",
-        "tsx",
-        "scripts/release/export-wrapper.ts",
-        "--fixture",
-      ],
-      { cwd: repositoryRoot, encoding: "utf8" },
-    );
+    const result = runWrapperExporter(["--fixture"]);
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
     expect(result.stdout).toBe(renderArgusWrapper({
@@ -356,18 +358,7 @@ describe("renderArgusWrapper", () => {
       ["--fixture", "--fixture"],
       ["--version", "1.2.3"],
     ]) {
-      const result = spawnSync(
-        "fnm",
-        [
-          "exec",
-          "--using=24.16.0",
-          "/opt/homebrew/bin/pnpm",
-          "tsx",
-          "scripts/release/export-wrapper.ts",
-          ...arguments_,
-        ],
-        { cwd: repositoryRoot, encoding: "utf8" },
-      );
+      const result = runWrapperExporter(arguments_);
       expect(result.status).not.toBe(0);
       expect(result.stdout).toBe("");
       expect(result.stderr).toContain("Usage:");
@@ -377,20 +368,7 @@ describe("renderArgusWrapper", () => {
   it("writes only when an explicit output path is provided", () => {
     const directory = temporaryDirectory();
     const output = join(directory, "bin", "argus");
-    const result = spawnSync(
-      "fnm",
-      [
-        "exec",
-        "--using=24.16.0",
-        "/opt/homebrew/bin/pnpm",
-        "tsx",
-        "scripts/release/export-wrapper.ts",
-        "--fixture",
-        "--output",
-        output,
-      ],
-      { cwd: repositoryRoot, encoding: "utf8" },
-    );
+    const result = runWrapperExporter(["--fixture", "--output", output]);
 
     expect(result.status).toBe(0);
     expect(result.stdout).toBe("");

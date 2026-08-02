@@ -144,6 +144,7 @@ exit 64
     `printf "%s\\n" "\${ARGUS_FIXTURE_ARCH:-x86_64}"`,
   );
   await command(join(bin, "sync"), "exit 0");
+  await command(join(bin, "sudo"), "exit 1");
   await command(
     join(bin, "docker"),
     'case "$*" in "info"|"compose version") exit 0 ;; *) exit 64 ;; esac',
