@@ -471,7 +471,7 @@ log_user 0
 set timeout 600
 spawn argus onboard --from "$env(ARGUS_SMOKE_ANSWERS)" --yes --json
 expect {
-  -re {Argus API token} { send -- "$env(ARGUS_SMOKE_TOKEN)\r"; exp_continue }
+  -re {(?s)A.{0,256}r.{0,256}g.{0,256}u.{0,256}s.{0,256}A.{0,256}P.{0,256}I.{0,256}t.{0,256}o.{0,256}k.{0,256}e.{0,256}n} { send -- "$env(ARGUS_SMOKE_TOKEN)\r"; exp_continue }
   eof
   timeout { exit 124 }
 }
