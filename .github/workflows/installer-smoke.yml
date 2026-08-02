@@ -178,6 +178,15 @@ jobs:
           persist-credentials: false
           ref: ${{ needs.candidate.outputs.source_ref }}
 
+      - name: Check out trusted smoke harness
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          ref: ${{ github.workflow_sha }}
+          sparse-checkout: scripts/e2e/installer-smoke.sh
+          sparse-checkout-cone-mode: false
+          path: trusted-smoke
+
       - name: Build immutable clean-host fixture
         env:
           ROOTFS: ${{ matrix.rootfs }}
@@ -300,7 +309,7 @@ jobs:
             --env "ARGUS_EXPECTED_WRAPPER_SHA256=$WRAPPER_SHA256" \
             --env "ARGUS_INSTALL_DOCKER=$install_docker" \
             --env "ARGUS_SMOKE_ARTIFACT_DIR=/artifacts" \
-            "$CONTAINER" /workspace/scripts/e2e/installer-smoke.sh
+            "$CONTAINER" /workspace/trusted-smoke/scripts/e2e/installer-smoke.sh
 
       - name: Normalize allowlisted failure evidence
         if: failure()

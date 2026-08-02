@@ -873,6 +873,12 @@ exit 42
     expect(workflow).not.toContain(
       '--env "ARGUS_GITHUB_TOKEN=$ARGUS_GITHUB_TOKEN"',
     );
+    expect(workflow).toContain("name: Check out trusted smoke harness");
+    expect(workflow).toContain("ref: $" + "{{ github.workflow_sha }}");
+    expect(workflow).toContain("path: trusted-smoke");
+    expect(workflow).toContain(
+      '"$CONTAINER" /workspace/trusted-smoke/scripts/e2e/installer-smoke.sh',
+    );
     expect(smoke).toContain("ARGUS_GITHUB_TOKEN");
     expect(smoke).toContain(
       "grep -Eq '^[A-Za-z0-9_.~+/=-]+$'",
