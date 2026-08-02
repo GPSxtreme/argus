@@ -219,6 +219,7 @@ const maximumSignatureBytes = 64;
 const maximumFxEmbedBytes = 8 * 1024 * 1024;
 const releaseContextFile = "release-context.json";
 const pendingReleaseContextFile = "release-context.pending.json";
+export const stableUpdateManifestUrl = "https://argus.gpsxtre.me/releases/stable/manifest.json";
 
 interface ReleasePlan {
   contractVersion: 1;
@@ -282,16 +283,31 @@ export const createReleaseComposition = ({
   updateIntegration?: ProductionUpdateIntegration;
 } => {
   const encodedPublicKey = environment.ARGUS_RELEASE_PUBLIC_KEY_B64;
-  const manifestUrl = environment.ARGUS_RELEASE_MANIFEST_URL;
-  if ((encodedPublicKey === undefined) !== (manifestUrl === undefined)) {
+  const onboardingManifestUrl = environment.ARGUS_RELEASE_MANIFEST_URL;
+  const updateManifestUrl = environment.ARGUS_UPDATE_MANIFEST_URL;
+  const releaseInputs = [encodedPublicKey, onboardingManifestUrl, updateManifestUrl];
+  if (
+    releaseInputs.some((value) => value === undefined) &&
+    releaseInputs.some((value) => value !== undefined)
+  ) {
     throw new DeploymentError(
       "RELEASE_COMPOSITION_INVALID",
-      "The release manifest URL and embedded public key must be configured together.",
+      "The onboarding manifest URL, update manifest URL, and embedded public key must be configured together.",
+    );
+  }
+  if (updateManifestUrl !== undefined && updateManifestUrl !== stableUpdateManifestUrl) {
+    throw new DeploymentError(
+      "RELEASE_COMPOSITION_INVALID",
+      "The Argus update manifest URL must use the stable release channel.",
     );
   }
   let onboardingIntegration: ProductionOnboardingIntegration | undefined;
   let updateIntegration: ProductionUpdateIntegration | undefined;
-  if (encodedPublicKey !== undefined && manifestUrl !== undefined) {
+  if (
+    encodedPublicKey !== undefined &&
+    onboardingManifestUrl !== undefined &&
+    updateManifestUrl !== undefined
+  ) {
     const decoded = Buffer.from(encodedPublicKey, "base64");
     if (
       decoded.toString("base64") !== encodedPublicKey ||
@@ -305,13 +321,13 @@ export const createReleaseComposition = ({
     onboardingIntegration = createProductionOnboardingIntegration({
       root,
       executor,
-      manifestUrl,
+      manifestUrl: onboardingManifestUrl,
       publicKeyPem: decoded.toString("utf8"),
       ...(fetcher === undefined ? {} : { fetcher }),
     });
     updateIntegration = createProductionUpdateIntegration({
       root,
-      manifestUrl,
+      manifestUrl: updateManifestUrl,
       publicKeyPem: decoded.toString("utf8"),
       ...(fetcher === undefined ? {} : { fetcher }),
     });

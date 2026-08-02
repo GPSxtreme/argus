@@ -161,6 +161,7 @@ const fixturePrivateKey = `-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEIGJqC73Ezwmnx3FFQ5W1czmiNwXmLFn2Xso+6xXKPXKf
 -----END PRIVATE KEY-----`;
 const digest = (character: string): string => character.repeat(64);
+const stableUpdateManifestUrl = "https://argus.gpsxtre.me/releases/stable/manifest.json";
 const answers: OnboardingAnswersV1 = {
   version: 1,
   deployment: {
@@ -270,6 +271,7 @@ describe("production onboarding integration", () => {
           ).toString("base64"),
           ARGUS_RELEASE_MANIFEST_URL:
             "https://release.example/manifest.json",
+          ARGUS_UPDATE_MANIFEST_URL: stableUpdateManifestUrl,
         },
         apiToken: "secret",
         apiPort: 8788,
@@ -294,17 +296,20 @@ describe("production onboarding integration", () => {
     });
   });
 
-  it("fetches and verifies the exact signed update manifest before exposing it", async () => {
+  it("keeps onboarding pinned while fetching updates from the stable signed channel", async () => {
     const fixture = releaseFixture();
+    const requests: string[] = [];
     const composition = createReleaseComposition({
       root: "/opt/argus",
       executor: new DeploymentExecutor(),
       environment: {
         ARGUS_RELEASE_PUBLIC_KEY_B64: Buffer.from(fixture.publicKeyPem).toString("base64"),
         ARGUS_RELEASE_MANIFEST_URL: "https://release.example/manifest.json",
+        ARGUS_UPDATE_MANIFEST_URL: stableUpdateManifestUrl,
       },
       fetcher: async (input) => {
         const url = String(input);
+        requests.push(url);
         const bytes = url.endsWith(".sig")
           ? fixture.signature
           : url.endsWith("fxembed.js")
@@ -318,6 +323,37 @@ describe("production onboarding integration", () => {
       manifest: { version: "1.2.3" },
       manifestSha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
     });
+    await expect(composition.onboardingIntegration?.inspect({ answers, secrets: {} })).resolves.toMatchObject({
+      release: { version: "1.2.3" },
+    });
+    expect(requests).toEqual(expect.arrayContaining([
+      stableUpdateManifestUrl,
+      "https://argus.gpsxtre.me/releases/stable/manifest.sig",
+      "https://release.example/manifest.json",
+      "https://release.example/manifest.sig",
+    ]));
+  });
+
+  it("fails closed when the update channel boundary is missing or not canonical", () => {
+    const fixture = releaseFixture();
+    const environment = {
+      ARGUS_RELEASE_PUBLIC_KEY_B64: Buffer.from(fixture.publicKeyPem).toString("base64"),
+      ARGUS_RELEASE_MANIFEST_URL: "https://release.example/v1.2.3/manifest.json",
+    };
+
+    expect(() => createReleaseComposition({
+      root: "/opt/argus",
+      executor: new DeploymentExecutor(),
+      environment,
+    })).toThrow(expect.objectContaining({ code: "RELEASE_COMPOSITION_INVALID" }));
+    expect(() => createReleaseComposition({
+      root: "/opt/argus",
+      executor: new DeploymentExecutor(),
+      environment: {
+        ...environment,
+        ARGUS_UPDATE_MANIFEST_URL: "https://release.example/v1.2.3/manifest.json",
+      },
+    })).toThrow(expect.objectContaining({ code: "RELEASE_COMPOSITION_INVALID" }));
   });
 
   it("promotes the verified target context only after success so the next update rolls back to it", async () => {
