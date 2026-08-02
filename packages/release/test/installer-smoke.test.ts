@@ -874,9 +874,16 @@ exit 42
       '--env "ARGUS_GITHUB_TOKEN=$ARGUS_GITHUB_TOKEN"',
     );
     expect(smoke).toContain("ARGUS_GITHUB_TOKEN");
+    expect(smoke).toContain(
+      "grep -Eq '^[A-Za-z0-9_.~+/=-]+$'",
+    );
     expect(smoke).toContain('--header @"$argus_github_headers"');
     expect(smoke).not.toContain(
       '--header "Authorization: Bearer $ARGUS_GITHUB_TOKEN"',
     );
+    expect(workflow).toContain(
+      'case "$(docker exec "$container" systemctl is-system-running 2>/dev/null || true)" in',
+    );
+    expect(workflow).toContain("running|degraded)");
   });
 });

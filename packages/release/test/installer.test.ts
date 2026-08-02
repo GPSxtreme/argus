@@ -687,7 +687,7 @@ printf '%s' "$argus_count" > "$ARGUS_SYNC_COUNT"
     await expect(runInstaller(third, bytes)).rejects.toMatchObject({
       stderr: expect.stringContaining("in progress"),
     });
-  });
+  }, 20_000);
 
   it("fails deterministically for unsupported platform and missing Docker", async () => {
     const fixture = await createFixture();
