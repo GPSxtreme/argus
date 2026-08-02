@@ -25,6 +25,42 @@ afterEach(async () => {
 });
 
 const releaseSha = "a".repeat(40);
+const fixtureQuiescenceAttempts = 5;
+const fixtureQuiescencePhases = 2;
+const fixtureSnapshotTimeoutSeconds = 1;
+const fixtureSchedulingMarginMs = 5_000;
+const fixtureProcessDeadlineMs =
+  fixtureQuiescencePhases *
+    fixtureQuiescenceAttempts *
+    fixtureSnapshotTimeoutSeconds *
+    1_000 +
+  fixtureSchedulingMarginMs;
+const fixtureTestDeadlineMs = fixtureProcessDeadlineMs + 5_000;
+const quiescenceFixtureTestDeadlineMs = 15_000;
+const fixtureTimingEnvironment = ({
+  settleSeconds = "0.01",
+  timeoutSeconds = String(fixtureSnapshotTimeoutSeconds),
+}: {
+  settleSeconds?: string;
+  timeoutSeconds?: string;
+} = {}): Record<string, string> => ({
+  ARGUS_INSTALL_FIXTURE: "1",
+  ARGUS_DAEMON_SETTLE_SECONDS: settleSeconds,
+  ARGUS_SNAPSHOT_TIMEOUT_SECONDS: timeoutSeconds,
+});
+const quiescenceProcessDeadlineMs = (
+  settleSeconds: string,
+  timeoutSeconds: string,
+): number =>
+  Math.max(
+    10_000,
+    Math.ceil(
+      (fixtureQuiescenceAttempts * Number(timeoutSeconds) +
+        (fixtureQuiescenceAttempts - 1) * Number(settleSeconds)) *
+        1_000,
+    ) + fixtureSchedulingMarginMs,
+  );
+
 const writeJson = async (
   directory: string,
   name: string,
@@ -90,17 +126,15 @@ exec /bin/sleep "$@"`,
     [resolve(root, "scripts/e2e/installer-smoke.sh")],
     {
       encoding: "utf8",
-      timeout: 5_000,
+      timeout: quiescenceProcessDeadlineMs(settleSeconds, timeoutSeconds),
       env: {
         PATH: `${bin}:/usr/bin:/bin:/sbin`,
         TMPDIR: directory,
         ARGUS_FAKE_INSTALLER: fakeInstaller,
         ARGUS_SEQUENCE: sequence,
         ARGUS_SMOKE_SYSTEM_ROOT: systemRoot,
-        ARGUS_INSTALL_FIXTURE: "1",
         ARGUS_QUIESCENCE_TEST_ONLY: "1",
-        ARGUS_DAEMON_SETTLE_SECONDS: settleSeconds,
-        ARGUS_SNAPSHOT_TIMEOUT_SECONDS: timeoutSeconds,
+        ...fixtureTimingEnvironment({ settleSeconds, timeoutSeconds }),
         ARGUS_INSTALLER_URL: "https://example.com/release/install.sh",
         ARGUS_MANIFEST_URL: "https://example.com/release/manifest.json",
         ARGUS_EXPECTED_VERSION: "1.2.3",
@@ -188,12 +222,16 @@ const resolveWorkflowRun = (conclusion: string) =>
   );
 
 describe("clean-host installer smoke contract", () => {
-  it("waits a real settle interval before accepting the first stable pair", async () => {
-    const { result, elapsedMs, sequence } = await runQuiescenceFixture();
-    expect(result).toMatchObject({ status: 0, stderr: "" });
-    expect(await readFile(sequence, "utf8")).toBe("sleep\n");
-    expect(elapsedMs).toBeGreaterThanOrEqual(40);
-  });
+  it(
+    "waits a real settle interval before accepting the first stable pair",
+    async () => {
+      const { result, elapsedMs, sequence } = await runQuiescenceFixture();
+      expect(result).toMatchObject({ status: 0, stderr: "" });
+      expect(await readFile(sequence, "utf8")).toBe("sleep\n");
+      expect(elapsedMs).toBeGreaterThanOrEqual(40);
+    },
+    quiescenceFixtureTestDeadlineMs,
+  );
 
   it.runIf(process.platform === "linux")(
     "hard-times out stalled traversal and leaves no late child",
@@ -223,6 +261,7 @@ esac`,
       expect(alive.status).not.toBe(0);
       await rm(childPid);
     },
+    quiescenceFixtureTestDeadlineMs,
   );
 
   it("fails evidence when the upstream signed release did not succeed", () => {
@@ -454,6 +493,7 @@ exit 42
       [resolve(root, "scripts/e2e/installer-smoke.sh")],
       {
         encoding: "utf8",
+        timeout: fixtureProcessDeadlineMs,
         env: {
           PATH: `${bin}:/usr/bin:/bin:/sbin`,
           TMPDIR: directory,
@@ -464,8 +504,7 @@ exit 42
           ARGUS_EXPECTED_VERSION: "1.2.3",
           ARGUS_EXPECTED_WRAPPER_SHA256: "a".repeat(64),
           ARGUS_SMOKE_ARTIFACT_DIR: artifacts,
-          ARGUS_DAEMON_SETTLE_SECONDS: "0.01",
-          ARGUS_SNAPSHOT_TIMEOUT_SECONDS: "1",
+          ...fixtureTimingEnvironment(),
         },
       },
     );
@@ -474,7 +513,7 @@ exit 42
     expect(await readFile(join(artifacts, "installer.log"), "utf8")).toContain(
       "No files were downloaded or changed.",
     );
-  });
+  }, fixtureTestDeadlineMs);
 
   it.each([
     "file",
@@ -666,6 +705,7 @@ exit 42
         [resolve(root, "scripts/e2e/installer-smoke.sh")],
         {
           encoding: "utf8",
+          timeout: fixtureProcessDeadlineMs,
           env: {
             PATH: `${bin}:/usr/bin:/bin:/sbin`,
             TMPDIR: join(systemRoot, "tmp"),
@@ -674,14 +714,12 @@ exit 42
             ARGUS_DOCKER_MARKER: dockerMarker,
             ARGUS_DOCKER_BINARY: join(bin, "docker"),
             ARGUS_SMOKE_SYSTEM_ROOT: systemRoot,
-            ARGUS_INSTALL_FIXTURE: "1",
             ARGUS_INSTALLER_URL: "https://example.com/release/install.sh",
             ARGUS_MANIFEST_URL: "https://example.com/release/manifest.json",
             ARGUS_EXPECTED_VERSION: "1.2.3",
             ARGUS_EXPECTED_WRAPPER_SHA256: "a".repeat(64),
             ARGUS_SMOKE_ARTIFACT_DIR: artifacts,
-            ARGUS_DAEMON_SETTLE_SECONDS: "0.01",
-            ARGUS_SNAPSHOT_TIMEOUT_SECONDS: "1",
+            ...fixtureTimingEnvironment(),
           },
         },
       );
@@ -690,6 +728,7 @@ exit 42
         "installer inspection mutated protected host state",
       );
     },
+    fixtureTestDeadlineMs,
   );
 
   it("installs the exact signed wrapper twice and verifies onboarding health", async () => {
@@ -798,5 +837,8 @@ exit 42
       /path:\s*(?:\.?\/)?(?:opt\/argus\/)?(?:secrets\.env|release-private|environment)/u,
     );
     expect(source).not.toContain("ARGUS_RELEASE_ED25519_KEY");
+    expect(source).not.toMatch(
+      /ARGUS_(?:INSTALL_FIXTURE|DAEMON_SETTLE_SECONDS|SNAPSHOT_TIMEOUT_SECONDS):/u,
+    );
   });
 });

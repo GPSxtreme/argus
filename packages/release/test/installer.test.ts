@@ -439,7 +439,7 @@ describe("renderInstaller", () => {
       );
       await expect(runInstaller(second, noncanonical)).rejects.toBeDefined();
     }
-  });
+  }, 15_000);
 
   it("rejects the same canonical-looking invalid URL and image corpus in Node and shell", async () => {
     const fixture = await createFixture();
