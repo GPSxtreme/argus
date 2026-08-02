@@ -22,6 +22,8 @@ jobs:
       REGISTRY: ghcr.io
       APP_IMAGE: ghcr.io/gpsxtreme/argus
       CLI_IMAGE: ghcr.io/gpsxtreme/argus-cli
+      POSTGRES_IMAGE: docker.io/library/postgres@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
+      SEARXNG_IMAGE: docker.io/searxng/searxng@sha256:ec536bcd1e83577aad4cc07f7ecb9a30858a9a905d2d57c8796abc83f872a036
       FXEMBED_REVISION: f088a632e56e5cb8084f87d55f74a24d1fcda6f6
       FXEMBED_LICENSE_SHA256: 30ee0a78e6df8c8210bbee02a477c57f2cf8c7db13a756ea577678aee7014d37
       FXEMBED_LOCK_SHA256: 88ae1a737ca41e9a7d69593fd9e82ad35dee90d4fabc51ae3c5b33d5868535bc
@@ -71,6 +73,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "::error::Release $GITHUB_REF_NAME already exists; immutable releases cannot be rerun."
+            exit 1
+          fi
           gh release create "$GITHUB_REF_NAME" --draft --title "$GITHUB_REF_NAME" \
             --verify-tag \
             --notes "Signed Argus release $GITHUB_REF_NAME"
@@ -139,17 +145,6 @@ jobs:
             ARGUS_RELEASE_PUBLIC_KEY_B64=${{ steps.public-key.outputs.b64 }}
             ARGUS_RELEASE_MANIFEST_URL=${{ steps.release.outputs.release_base_url }}/manifest.json
 
-      - name: Resolve upstream image indexes
-        id: upstream
-        shell: bash
-        run: |
-          set -euo pipefail
-          postgres_digest="$(docker buildx imagetools inspect postgres:17-alpine --format '{{json .Manifest.Digest}}' | tr -d '"')"
-          searxng_digest="$(docker buildx imagetools inspect searxng/searxng:latest --format '{{json .Manifest.Digest}}' | tr -d '"')"
-          [[ "$postgres_digest" =~ ^sha256:[a-f0-9]{64}$ ]]
-          [[ "$searxng_digest" =~ ^sha256:[a-f0-9]{64}$ ]]
-          printf 'postgres=%s\nsearxng=%s\n' "$postgres_digest" "$searxng_digest" >> "$GITHUB_OUTPUT"
-
       - name: Build pinned FxEmbed worker
         shell: bash
         run: |
@@ -194,8 +189,8 @@ jobs:
             --source-date-epoch "${{ steps.release.outputs.source_date_epoch }}" \
             --image "app=${APP_IMAGE}@${{ steps.app.outputs.digest }}" \
             --image "cli=${CLI_IMAGE}@${{ steps.cli.outputs.digest }}" \
-            --image "postgres=docker.io/library/postgres@${{ steps.upstream.outputs.postgres }}" \
-            --image "searxng=docker.io/searxng/searxng@${{ steps.upstream.outputs.searxng }}" \
+            --image "postgres=${POSTGRES_IMAGE}" \
+            --image "searxng=${SEARXNG_IMAGE}" \
             --fxembed dist/release/fxembed.js \
             --fxembed-license dist/release/FXEMBED-LICENSE.md \
             --fxembed-provenance dist/release/fxembed-provenance.json \
@@ -213,6 +208,7 @@ jobs:
       - name: Publish immutable GitHub Release
         uses: softprops/action-gh-release@62c96d0c4e8a889135c1f3a25910db8dbe0e85f7 # v2.3.4
         with:
+          overwrite_files: false
           draft: false
           fail_on_unmatched_files: true
           files: |

@@ -126,4 +126,35 @@ describe("GitHub workflow toolchain", () => {
     );
     expect(provenance.sourceDateEpoch).toBe(1_785_545_724);
   });
+
+  it("pins upstream images and refuses to overwrite an existing release", () => {
+    const workflow = parse(
+      readFileSync(repositoryFile(".github/workflows/release.yml"), "utf8"),
+    ) as Workflow;
+    const release = workflow.jobs.release;
+    const postgres = release?.env?.POSTGRES_IMAGE;
+    const searxng = release?.env?.SEARXNG_IMAGE;
+    const steps = release?.steps ?? [];
+    const reservation = steps.find(
+      (step) => step.name === "Reserve immutable GitHub Release",
+    );
+    const publish = steps.find(
+      (step) => step.name === "Publish immutable GitHub Release",
+    );
+
+    expect(postgres).toMatch(
+      /^docker\.io\/library\/postgres@sha256:[a-f0-9]{64}$/u,
+    );
+    expect(searxng).toMatch(
+      /^docker\.io\/searxng\/searxng@sha256:[a-f0-9]{64}$/u,
+    );
+    expect(steps.some((step) => step.name === "Resolve upstream image indexes")).toBe(
+      false,
+    );
+    expect(reservation?.run).toContain(
+      'gh release view "$GITHUB_REF_NAME"',
+    );
+    expect(reservation?.run).toContain("exit 1");
+    expect(publish?.with?.overwrite_files).toBe(false);
+  });
 });
