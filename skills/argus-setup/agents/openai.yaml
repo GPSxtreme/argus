@@ -1,0 +1,4 @@
+interface:
+  display_name: "Argus Setup"
+  short_description: "Install, operate, and recover Argus through its CLI."
+  default_prompt: "Use $argus-setup to install and configure Argus safely."

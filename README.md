@@ -110,5 +110,22 @@ Run it from the **Installer smoke** GitHub Actions workflow with an immutable
 release tag. See [docs/operations.md](docs/operations.md#installer-smoke) for
 the local command and limitations.
 
+## Agent Skill
+
+The portable [Argus setup skill](skills/argus-setup/SKILL.md) routes install,
+onboarding, health checks, and recovery exclusively through the Argus CLI. Its
+deterministic release archive contains the skill, license, and references.
+
+Validate the package and deterministic smoke scenarios with:
+
+```bash
+pnpm tsx scripts/skills/validate.ts skills/argus-setup
+pnpm tsx scripts/skills/smoke-scenarios.ts --client=fake
+```
+
+The `--client=codex` and `--client=claude` smoke adapters are opt-in. They run
+only when their CLI and explicit disposable test credentials are available; no
+credential values are recorded in scenario transcripts.
+
 The architecture and decisions are documented in
 `docs/superpowers/specs/2026-07-31-argus-v1-design.md`.
