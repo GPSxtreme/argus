@@ -122,9 +122,22 @@ describe("safe update state machine", () => {
 
   it("reports a no-op for the current release version", async () => {
     const root = await rootWithState();
-    const plan = await planUpdate({ root, release: release("1.0.0"), rollbackRelease: release("1.0.0", 1, "f"), executor: executor() });
+    const plan = await planUpdate({ root, release: release("1.0.0", 1, "f"), rollbackRelease: release("1.0.0", 1, "f"), executor: executor() });
     expect(plan.changes).toEqual([]);
     expect(plan.noop).toBe(true);
+  });
+
+  it("plans an update when the signed current-version images differ from deployment state", async () => {
+    const root = await rootWithState();
+    const plan = await planUpdate({
+      root,
+      release: release("1.0.0", 1, "a"),
+      rollbackRelease: release("1.0.0", 1, "f"),
+      executor: executor(),
+    });
+
+    expect(plan.noop).toBe(false);
+    expect(plan.changes).toHaveLength(1);
   });
 
   it("fails closed for a forged release before invoking Docker", async () => {

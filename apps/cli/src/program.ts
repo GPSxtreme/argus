@@ -1331,13 +1331,21 @@ const createDeploymentAdapter = (
         );
       }
       const plan = inspection as UpdatePlan;
+      await updateIntegration.stageCurrentRelease(plan.release);
       const applied = await applyUpdate({ root, plan, executor });
+      if (!applied.health.healthy) {
+        throw new DeploymentError(
+          "UPDATE_HEALTHCHECK_FAILED",
+          "Argus update health verification failed.",
+          { recovery: "Run 'argus doctor --json' before retrying the update." },
+        );
+      }
       await updateIntegration.promoteCurrentRelease(plan.release);
       return applied;
     },
     async verifyUpdate(applied) {
-      const result = applied as { health?: unknown } | undefined;
-      if (!result?.health) {
+      const result = applied as { health?: { healthy?: unknown } } | undefined;
+      if (result?.health?.healthy !== true) {
         throw new DeploymentError(
           "UPDATE_VERIFY_FAILED",
           "Argus update did not return a final health report.",

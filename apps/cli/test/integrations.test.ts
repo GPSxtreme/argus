@@ -1,6 +1,6 @@
 import { createApp } from "@argus/app";
 import { validateConfig } from "@argus/config";
-import type { CommandExecutor, OnboardingAnswersV1 } from "@argus/deployment";
+import { saveDeploymentState, type CommandExecutor, type OnboardingAnswersV1 } from "@argus/deployment";
 import { buildReleaseArtifacts } from "@argus/release";
 import { createSqliteRepository } from "@argus/storage-sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -10,6 +10,7 @@ import {
   createProductionUpdateIntegration,
   createReleaseComposition,
 } from "../src/integrations.js";
+import { createNodeCliDependencies } from "../src/program.js";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -196,8 +197,12 @@ class DeploymentExecutor implements CommandExecutor {
   }
 }
 
-const releaseFixture = ({ version = "1.2.3", appMarker = "a" }: { version?: string; appMarker?: string } = {}) => {
-  const fxembed = Buffer.from("export default { fetch() {} };\n");
+const releaseFixture = ({
+  version = "1.2.3",
+  appMarker = "a",
+  fxembedMarker = "default",
+}: { version?: string; appMarker?: string; fxembedMarker?: string } = {}) => {
+  const fxembed = Buffer.from(`export default { fetch() {} }; // ${fxembedMarker}\n`);
   const wrapper = Buffer.from("#!/bin/sh\nexec true\n");
   const built = buildReleaseArtifacts({
     version,
@@ -224,6 +229,32 @@ const releaseFixture = ({ version = "1.2.3", appMarker = "a" }: { version?: stri
     privateKeyPem: fixturePrivateKey,
   });
   return { ...built, fxembed, version };
+};
+
+const saveManagedState = async (
+  root: string,
+  fixture: ReturnType<typeof releaseFixture>,
+): Promise<void> => {
+  const images = JSON.parse(Buffer.from(fixture.manifestBytes).toString("utf8")).images;
+  await saveDeploymentState(root, {
+    schemaVersion: 1,
+    argusVersion: fixture.version,
+    composeProject: "argus",
+    configHash: digest("f"),
+    services: { argus: { image: images.app.reference, healthy: true } },
+    compose: {
+      version: fixture.version,
+      apiPort: 8788,
+      storage: "sqlite",
+      searxng: false,
+      images: {
+        argus: images.app.reference,
+        postgres: images.postgres.reference,
+        searxng: images.searxng.reference,
+      },
+    },
+    updatedAt: "2026-08-01T00:00:00.000Z",
+  });
 };
 
 describe("production onboarding integration", () => {
@@ -257,6 +288,7 @@ describe("production onboarding integration", () => {
       updateIntegration: expect.objectContaining({
         fetchUpdateRelease: expect.any(Function),
         fetchRollbackRelease: expect.any(Function),
+        stageCurrentRelease: expect.any(Function),
         promoteCurrentRelease: expect.any(Function),
       }),
     });
@@ -323,10 +355,163 @@ describe("production onboarding integration", () => {
     });
 
     const verifiedB = await integration.fetchUpdateRelease();
+    await integration.stageCurrentRelease(verifiedB);
     await integration.promoteCurrentRelease(verifiedB);
     target = releaseC;
     await expect(integration.fetchUpdateRelease()).resolves.toMatchObject({ manifest: { version: "3.0.0" } });
     await expect(integration.fetchRollbackRelease()).resolves.toMatchObject({ manifest: { version: "2.0.0" } });
+  });
+
+  it("recovers an interrupted context promotion when the staged release matches deployment state", async () => {
+    const root = await mkdtemp(join(tmpdir(), "argus-update-recovery-"));
+    const releaseA = releaseFixture({ version: "1.0.0", appMarker: "a" });
+    const releaseB = releaseFixture({ version: "2.0.0", appMarker: "b" });
+    const contextFor = (fixture: ReturnType<typeof releaseFixture>) => JSON.stringify({
+      schemaVersion: 1,
+      manifest: Buffer.from(fixture.manifestBytes).toString("base64"),
+      signature: Buffer.from(fixture.signature).toString("base64"),
+      fxembed: Buffer.from(fixture.fxembed).toString("base64"),
+    });
+    await writeFile(join(root, "release-context.json"), contextFor(releaseA));
+    await writeFile(join(root, "release-context.pending.json"), contextFor(releaseB));
+    await saveManagedState(root, releaseB);
+    const integration = createProductionUpdateIntegration({
+      root,
+      manifestUrl: "https://release.example/manifest.json",
+      publicKeyPem: releaseA.publicKeyPem,
+      fetcher: async () => new Response(null, { status: 404 }),
+    });
+
+    await expect(integration.fetchRollbackRelease()).resolves.toMatchObject({ manifest: { version: "2.0.0" } });
+    expect(await readFile(join(root, "release-context.json"), "utf8")).toBe(contextFor(releaseB));
+  });
+
+  it("stages the target before apply and promotes it only after healthy update verification", async () => {
+    const root = await mkdtemp(join(tmpdir(), "argus-update-order-"));
+    const current = releaseFixture({ version: "1.0.0", appMarker: "a" });
+    const target = releaseFixture({ version: "2.0.0", appMarker: "b" });
+    const context = JSON.stringify({
+      schemaVersion: 1,
+      manifest: Buffer.from(current.manifestBytes).toString("base64"),
+      signature: Buffer.from(current.signature).toString("base64"),
+      fxembed: Buffer.from(current.fxembed).toString("base64"),
+    });
+    await writeFile(join(root, "release-context.json"), context);
+    await saveManagedState(root, current);
+    const signed = createProductionUpdateIntegration({
+      root,
+      manifestUrl: "https://release.example/manifest.json",
+      publicKeyPem: current.publicKeyPem,
+      fetcher: async (input) => {
+        const url = String(input);
+        const bytes = url.endsWith("manifest.sig")
+          ? target.signature
+          : url.endsWith("manifest.json")
+            ? target.manifestBytes
+            : url === `https://release.example/v${target.version}/fxembed.js`
+              ? target.fxembed
+              : undefined;
+        return bytes === undefined
+          ? new Response(null, { status: 404 })
+          : new Response(Uint8Array.from(bytes).buffer);
+      },
+    });
+    const targetRelease = await signed.fetchUpdateRelease();
+    const currentRelease = await signed.fetchRollbackRelease();
+    const events: string[] = [];
+    const dependencies = createNodeCliDependencies({
+      root,
+      executor: {
+        async run(_command, args) {
+          if (args.includes("pull")) events.push("pull");
+          if (args.includes("migrate")) events.push("migrate");
+          if (args.includes("up")) events.push("up");
+          if (args.includes("ps")) {
+            events.push("healthy");
+            return { exitCode: 0, stdout: '[{"Service":"argus","State":"running","Health":"healthy"}]', stderr: "" };
+          }
+          return { exitCode: 0, stdout: "", stderr: "" };
+        },
+      },
+      prompt: {
+        async confirm() { return true; },
+        async select() { return ""; },
+        async multiselect() { return []; },
+        async text() { return ""; },
+        async secret() { return ""; },
+      },
+      io: { stdout() {}, stderr() {} },
+      updateIntegration: {
+        async fetchUpdateRelease() { return targetRelease; },
+        async fetchRollbackRelease() { return currentRelease; },
+        async stageCurrentRelease() { events.push("stage"); },
+        async promoteCurrentRelease() { events.push("promote"); },
+      },
+      version: "test",
+    });
+
+    const plan = await dependencies.deployment.inspectUpdate?.();
+    await dependencies.deployment.applyUpdate?.(plan);
+    expect(events).toEqual(["stage", "pull", "migrate", "up", "healthy", "promote"]);
+  });
+
+  it("rejects an unhealthy no-op without promoting a different signed target context", async () => {
+    const root = await mkdtemp(join(tmpdir(), "argus-update-noop-"));
+    const current = releaseFixture({ version: "1.0.0", appMarker: "a" });
+    const target = releaseFixture({ version: "1.0.0", appMarker: "a", fxembedMarker: "target" });
+    const context = JSON.stringify({
+      schemaVersion: 1,
+      manifest: Buffer.from(current.manifestBytes).toString("base64"),
+      signature: Buffer.from(current.signature).toString("base64"),
+      fxembed: Buffer.from(current.fxembed).toString("base64"),
+    });
+    await writeFile(join(root, "release-context.json"), context);
+    await saveManagedState(root, current);
+    const updateIntegration = createProductionUpdateIntegration({
+      root,
+      manifestUrl: "https://release.example/manifest.json",
+      publicKeyPem: current.publicKeyPem,
+      fetcher: async (input) => {
+        const url = String(input);
+        const bytes = url.endsWith("manifest.sig")
+          ? target.signature
+          : url.endsWith("manifest.json")
+            ? target.manifestBytes
+            : url === `https://release.example/v${target.version}/fxembed.js`
+              ? target.fxembed
+              : undefined;
+        return bytes === undefined
+          ? new Response(null, { status: 404 })
+          : new Response(Uint8Array.from(bytes).buffer);
+      },
+    });
+    const dependencies = createNodeCliDependencies({
+      root,
+      executor: {
+        async run(_command, args) {
+          return args.includes("ps")
+            ? { exitCode: 0, stdout: "[]", stderr: "" }
+            : { exitCode: 0, stdout: "", stderr: "" };
+        },
+      },
+      prompt: {
+        async confirm() { return true; },
+        async select() { return ""; },
+        async multiselect() { return []; },
+        async text() { return ""; },
+        async secret() { return ""; },
+      },
+      io: { stdout() {}, stderr() {} },
+      updateIntegration,
+      version: "test",
+    });
+
+    const plan = await dependencies.deployment.inspectUpdate?.();
+    expect((plan as { noop: boolean }).noop).toBe(true);
+    await expect(dependencies.deployment.applyUpdate?.(plan)).rejects.toMatchObject({
+      code: "UPDATE_HEALTHCHECK_FAILED",
+    });
+    expect(await readFile(join(root, "release-context.json"), "utf8")).toBe(context);
   });
 
   it("verifies assets, applies one exact plan, and reverifies persisted signed context", async () => {

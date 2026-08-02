@@ -133,18 +133,25 @@ const assertCompatible = (state: DeploymentStateV1, release: VerifiedReleaseMani
   }
 };
 
+const releaseMatchesCurrent = (
+  state: DeploymentStateV1,
+  release: VerifiedReleaseManifest,
+): boolean => {
+  const compose = state.compose;
+  return (
+    compose !== undefined &&
+    release.manifest.version === state.argusVersion &&
+    release.manifest.images.app.reference === compose.images.argus &&
+    release.manifest.images.postgres.reference === compose.images.postgres &&
+    release.manifest.images.searxng.reference === compose.images.searxng
+  );
+};
+
 const assertRollbackMatchesCurrent = (
   state: DeploymentStateV1,
   rollbackRelease: VerifiedReleaseManifest,
 ): void => {
-  const compose = state.compose;
-  if (
-    compose === undefined ||
-    rollbackRelease.manifest.version !== state.argusVersion ||
-    rollbackRelease.manifest.images.app.reference !== compose.images.argus ||
-    rollbackRelease.manifest.images.postgres.reference !== compose.images.postgres ||
-    rollbackRelease.manifest.images.searxng.reference !== compose.images.searxng
-  ) {
+  if (!releaseMatchesCurrent(state, rollbackRelease)) {
     throw new DeploymentError(
       "UPDATE_ROLLBACK_RELEASE_MISMATCH",
       "The verified rollback release does not exactly match the current Argus deployment.",
@@ -240,7 +247,7 @@ export const planUpdate = async ({ root, release, rollbackRelease }: PlanUpdateI
   assertCompatible(state, release);
   assertCompatible(state, rollbackRelease);
   assertRollbackMatchesCurrent(state, rollbackRelease);
-  const noop = state.argusVersion === release.manifest.version;
+  const noop = releaseMatchesCurrent(state, release);
   const services: Array<"argus" | "postgres" | "searxng"> = ["argus"];
   if (state.compose.storage === "postgres") services.push("postgres");
   if (state.compose.searxng) services.push("searxng");
@@ -291,7 +298,15 @@ export const applyUpdate = async ({ root, plan, executor }: ApplyUpdateInput): P
   assertVerifiedRelease(plan.rollbackRelease);
   assertCompatible(plan.previousState, plan.release);
   assertCompatible(plan.previousState, plan.rollbackRelease);
-  if (plan.noop) return { version: plan.currentVersion, phase: "verified", health: await health(root, executor, plan.previousState, plan.release) };
+  if (plan.noop) {
+    const report = await health(root, executor, plan.previousState, plan.release);
+    if (!report.healthy) {
+      throw new DeploymentError("UPDATE_HEALTHCHECK_FAILED", "Argus update health verification failed.", {
+        recovery: "Run 'argus doctor --json' before retrying the update.",
+      });
+    }
+    return { version: plan.currentVersion, phase: "verified", health: report };
+  }
   let persisted: PersistedUpdate = {
     phase: "planned",
     plan: { currentVersion: plan.currentVersion, targetVersion: plan.targetVersion },
