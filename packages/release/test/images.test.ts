@@ -1,5 +1,5 @@
 import { execFile, execFileSync, spawnSync } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import {
   chmodSync,
   cpSync,
@@ -436,6 +436,11 @@ describe("production image definitions", () => {
 
 const liveImages = process.env.ARGUS_IMAGE_TEST === "1";
 const live = liveImages ? describe : describe.skip;
+const liveReleasePublicKeyB64 = Buffer.from(
+  generateKeyPairSync("ed25519").publicKey
+    .export({ type: "spki", format: "pem" })
+    .toString(),
+).toString("base64");
 const resourceSuffix = `${process.pid}-${randomUUID()}`;
 const appImage = `argus-app:image-test-${resourceSuffix}`;
 const cliImage = `argus-cli:image-test-${resourceSuffix}`;
@@ -489,6 +494,10 @@ live("built production images", () => {
         "ARGUS_VERSION=0.1.0-test",
         "--build-arg",
         "ARGUS_REVISION=image-test",
+        "--build-arg",
+        `ARGUS_RELEASE_PUBLIC_KEY_B64=${liveReleasePublicKeyB64}`,
+        "--build-arg",
+        "ARGUS_RELEASE_MANIFEST_URL=https://github.com/GPSxtreme/argus/releases/download/v0.1.0-test/manifest.json",
         "-f",
         "deploy/docker/Dockerfile.cli",
         "-t",
@@ -778,9 +787,10 @@ docker compose --project-name '${wrapperProject}' down --remove-orphans >/dev/nu
       cliImage,
       "/app/THIRD_PARTY_NOTICES.md",
     ]);
-    for (const dependency of ["Docker CLI", "Docker Compose", "better-sqlite3@"]) {
+    for (const dependency of ["Docker CLI", "Docker Compose"]) {
       expect(notices).toContain(dependency);
     }
+    expect(notices).not.toContain("better-sqlite3@");
     expect(
       docker([
         "run",
