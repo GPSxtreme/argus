@@ -1,6 +1,7 @@
 import { Readability } from "@mozilla/readability";
 import type { SourceItem } from "@argus/contracts";
 import { JSDOM } from "jsdom";
+import { safeHttpGet, type SafeHttpOptions } from "./safe-http.js";
 
 export const extractPage = (url: string, html: string): SourceItem => {
   const dom = new JSDOM(html, { url });
@@ -25,10 +26,13 @@ export const extractPage = (url: string, html: string): SourceItem => {
 
 export const fetchPage = async (
   url: string,
-  fetcher: typeof fetch = fetch,
+  options: SafeHttpOptions = {},
   userAgent = "Argus/0.1",
 ): Promise<SourceItem> => {
-  const response = await fetcher(url, { headers: { "user-agent": userAgent } });
+  const response = await safeHttpGet(url, {
+    ...options,
+    headers: { ...options.headers, "user-agent": userAgent },
+  });
   if (!response.ok) throw new Error(`Web request failed (${response.status})`);
-  return extractPage(response.url || url, await response.text());
+  return extractPage(response.finalUrl, response.body);
 };

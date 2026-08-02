@@ -1,5 +1,6 @@
 import type { SourceItem } from "@argus/contracts";
 import { XMLParser } from "fast-xml-parser";
+import { safeHttpGet, type SafeHttpOptions } from "./safe-http.js";
 
 const array = <T>(value: T | T[] | undefined): T[] =>
   value === undefined ? [] : Array.isArray(value) ? value : [value];
@@ -47,9 +48,9 @@ export const parseFeed = (feedUrl: string, xml: string): SourceItem[] => {
 
 export const fetchFeed = async (
   url: string,
-  fetcher: typeof fetch = fetch,
+  options: SafeHttpOptions = {},
 ): Promise<SourceItem[]> => {
-  const response = await fetcher(url);
+  const response = await safeHttpGet(url, options);
   if (!response.ok) throw new Error(`Feed request failed (${response.status})`);
-  return parseFeed(response.url || url, await response.text());
+  return parseFeed(response.finalUrl, response.body);
 };

@@ -1,0 +1,143 @@
+# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+
+ARG DEBIAN_SNAPSHOT=20260731T000000Z
+ARG DOCKER_VERSION=29.7.1
+ARG COMPOSE_VERSION=2.39.1
+
+FROM --platform=$BUILDPLATFORM node:24-bookworm-slim@sha256:235600a8101ab264e117b1768e925532262668dc9b581ef1dd7d96ced463b8e7 AS build
+
+RUN corepack enable
+
+WORKDIR /workspace
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml turbo.json tsconfig.json ./
+COPY apps/cli/package.json apps/cli/package.json
+COPY packages/config/package.json packages/config/package.json
+COPY packages/contracts/package.json packages/contracts/package.json
+COPY packages/deployment/package.json packages/deployment/package.json
+COPY packages/release/package.json packages/release/package.json
+COPY packages/scheduler/package.json packages/scheduler/package.json
+RUN pnpm install --frozen-lockfile --ignore-scripts
+
+COPY deploy/docker/generate-third-party-notices.mjs /workspace/generate-third-party-notices.mjs
+COPY deploy/docker/license-exceptions.json /workspace/license-exceptions.json
+COPY deploy/docker/legal /workspace/legal
+COPY apps/cli apps/cli
+COPY packages/config packages/config
+COPY packages/contracts packages/contracts
+COPY packages/deployment packages/deployment
+COPY packages/release packages/release
+COPY packages/scheduler packages/scheduler
+
+RUN pnpm --filter @argus/cli... build \
+  && pnpm exec esbuild apps/cli/src/main.ts \
+    --bundle \
+    --banner:js='import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' \
+    --format=esm \
+    --outfile=/workspace/cli-main.js \
+    --packages=bundle \
+    --platform=node \
+    --target=node24 \
+  && jsdom_worker="$(find node_modules/.pnpm -path '*/jsdom/lib/jsdom/living/xhr/xhr-sync-worker.js' -type f -print -quit)" \
+  && test -n "$jsdom_worker" \
+  && pnpm exec esbuild "$jsdom_worker" \
+    --bundle \
+    --banner:js='import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' \
+    --format=esm \
+    --outfile=/workspace/xhr-sync-worker.js \
+    --packages=bundle \
+    --platform=node \
+    --target=node24 \
+  && pnpm --config.ignore-scripts=true --filter @argus/cli deploy --legacy --prod /workspace/deployed
+
+ARG DOCKER_VERSION
+ARG COMPOSE_VERSION
+RUN node /workspace/generate-third-party-notices.mjs \
+    /workspace/deployed/node_modules /workspace/notices cli \
+    "{\"docker\":\"${DOCKER_VERSION}\",\"compose\":\"${COMPOSE_VERSION}\"}"
+
+FROM --platform=$BUILDPLATFORM node:24-bookworm-slim@sha256:235600a8101ab264e117b1768e925532262668dc9b581ef1dd7d96ced463b8e7 AS management-tools
+
+ARG TARGETARCH
+ARG DEBIAN_SNAPSHOT
+ARG DOCKER_VERSION
+ARG DOCKER_AMD64_SHA256=0fcea2a8b4d1b54ccc9010e3451b78504a369d414f37eb3bb79300e1b5c22ce6
+ARG DOCKER_ARM64_SHA256=4eb4d1b21131897ed3990aac31039161bf4bdd07fcfb733e996010319ff4e069
+ARG COMPOSE_VERSION
+ARG COMPOSE_AMD64_SHA256=a5ea28722d5da628b59226626f7d6c33c89a7ed19e39f750645925242044c9d2
+ARG COMPOSE_ARM64_SHA256=7b2627ed76f7dcb0d93f649f185af912372229b4c09762a3cd1db5be5255632b
+
+COPY deploy/docker/configure-snapshot.sh /usr/local/bin/configure-snapshot.sh
+RUN DEBIAN_SNAPSHOT="$DEBIAN_SNAPSHOT" sh /usr/local/bin/configure-snapshot.sh \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends \
+    ca-certificates=20230311+deb12u1 \
+    curl=7.88.1-10+deb12u15 \
+  && rm -f /usr/local/bin/configure-snapshot.sh \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN case "$TARGETARCH" in \
+      amd64) asset_arch=x86_64; docker_sha="$DOCKER_AMD64_SHA256"; compose_sha="$COMPOSE_AMD64_SHA256" ;; \
+      arm64) asset_arch=aarch64; docker_sha="$DOCKER_ARM64_SHA256"; compose_sha="$COMPOSE_ARM64_SHA256" ;; \
+      *) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
+    esac \
+  && curl --connect-timeout 15 --fail --location --max-time 180 --retry 3 --show-error \
+    "https://download.docker.com/linux/static/stable/${asset_arch}/docker-${DOCKER_VERSION}.tgz" \
+    --output /tmp/docker.tgz \
+  && echo "${docker_sha}  /tmp/docker.tgz" | sha256sum --check --strict \
+  && tar --extract --gzip --file /tmp/docker.tgz --directory /tmp docker/docker \
+  && install -D -m 0755 /tmp/docker/docker /out/usr/local/bin/docker \
+  && curl --connect-timeout 15 --fail --location --max-time 180 --retry 3 --show-error \
+    "https://github.com/docker/compose/releases/download/v${COMPOSE_VERSION}/docker-compose-linux-${asset_arch}" \
+    --output /tmp/docker-compose \
+  && echo "${compose_sha}  /tmp/docker-compose" | sha256sum --check --strict \
+  && install -D -m 0755 /tmp/docker-compose /out/usr/local/lib/docker/cli-plugins/docker-compose
+
+FROM --platform=$TARGETPLATFORM node:24-bookworm-slim@sha256:235600a8101ab264e117b1768e925532262668dc9b581ef1dd7d96ced463b8e7 AS runtime
+
+ARG DEBIAN_SNAPSHOT
+ARG ARGUS_VERSION=0.0.0-dev
+ARG ARGUS_REVISION=unknown
+ARG ARGUS_SOURCE=https://github.com/gpsxtreme/argus
+ARG ARGUS_RELEASE_PUBLIC_KEY_B64
+ARG ARGUS_RELEASE_MANIFEST_URL
+LABEL org.opencontainers.image.title="Argus CLI" \
+  org.opencontainers.image.description="Root management client for an Argus VPS instance; no Docker daemon is included" \
+  org.opencontainers.image.source="$ARGUS_SOURCE" \
+  org.opencontainers.image.revision="$ARGUS_REVISION" \
+  org.opencontainers.image.version="$ARGUS_VERSION"
+
+# This image intentionally runs as root: the host wrapper grants it only the
+# Docker socket, /opt/argus, and read-only host inspection mounts. It contains
+# the Docker client and Compose v2 plugin, never a Docker daemon.
+COPY deploy/docker/configure-snapshot.sh /usr/local/bin/configure-snapshot.sh
+RUN DEBIAN_SNAPSHOT="$DEBIAN_SNAPSHOT" sh /usr/local/bin/configure-snapshot.sh \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends \
+    bash=5.2.15-2+b13 \
+    ca-certificates=20230311+deb12u1 \
+    coreutils=9.1-1 \
+    curl=7.88.1-10+deb12u15 \
+    findutils=4.9.0-4 \
+    iproute2=6.1.0-3 \
+    openssl=3.0.20-1~deb12u2 \
+    procps=2:4.0.2-3 \
+  && mkdir -p /app/apps/cli/dist /app/node_modules /opt/argus \
+  && rm -f /usr/local/bin/configure-snapshot.sh \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY --from=build /workspace/cli-main.js /app/apps/cli/dist/main.js
+COPY --from=build /workspace/xhr-sync-worker.js /app/apps/cli/dist/xhr-sync-worker.js
+COPY --from=build /workspace/apps/cli/package.json /app/apps/cli/package.json
+COPY --from=build /workspace/notices/THIRD_PARTY_NOTICES.md /app/THIRD_PARTY_NOTICES.md
+COPY --from=build /workspace/notices/licenses/ /app/licenses/
+COPY --from=management-tools /out/ /
+
+ENV NODE_ENV="production" \
+  ARGUS_INSTALL_ROOT="/opt/argus" \
+  ARGUS_VERSION="$ARGUS_VERSION" \
+  ARGUS_RELEASE_PUBLIC_KEY_B64="$ARGUS_RELEASE_PUBLIC_KEY_B64" \
+  ARGUS_RELEASE_MANIFEST_URL="$ARGUS_RELEASE_MANIFEST_URL"
+WORKDIR /opt/argus
+USER 0:0
+
+ENTRYPOINT ["node", "/app/apps/cli/dist/main.js"]

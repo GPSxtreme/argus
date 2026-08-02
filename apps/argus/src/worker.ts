@@ -7,16 +7,32 @@ import type {
 import { ingestItems } from "@argus/engine";
 import { type ScheduledTarget, targetsFromConfig } from "@argus/scheduler";
 import { TelegramAdapter } from "@argus/source-telegram";
-import { WebAdapter } from "@argus/source-web";
+import {
+  createTrustedServiceOrigin,
+  WebAdapter,
+  type WebAdapterOptions,
+} from "@argus/source-web";
 import { XAdapter } from "@argus/source-x";
 
 // biome-ignore lint/suspicious/noExplicitAny: Runtime dispatch intentionally erases source-specific adapter types.
 type AnyAdapter = SourceAdapter<any, any>;
+export type AdapterFactory = (target: ScheduledTarget) => AnyAdapter;
 
-const adapterFor = (target: ScheduledTarget): AnyAdapter => {
-  if (target.source === "x") return new XAdapter();
-  if (target.source === "telegram") return new TelegramAdapter();
-  return new WebAdapter();
+export const createAdapterFactory = (
+  config: ArgusConfig,
+  webOptions: Omit<WebAdapterOptions, "trustedSearchOrigin"> = {},
+): AdapterFactory => {
+  const trustedSearchOrigin = config.sources.web.searchEndpoint
+    ? createTrustedServiceOrigin(config.sources.web.searchEndpoint)
+    : undefined;
+  return (target) => {
+    if (target.source === "x") return new XAdapter();
+    if (target.source === "telegram") return new TelegramAdapter();
+    return new WebAdapter({
+      ...webOptions,
+      ...(trustedSearchOrigin ? { trustedSearchOrigin } : {}),
+    });
+  };
 };
 
 const adapterConfig = (
@@ -34,7 +50,6 @@ const adapterConfig = (
   return {
     kind: target.kind,
     value: target.value,
-    searchEndpoint: config.sources.web.searchEndpoint,
     userAgent: config.sources.web.userAgent,
   };
 };
@@ -43,13 +58,23 @@ export const runTarget = async (
   target: ScheduledTarget,
   config: ArgusConfig,
   repository: StorageRepository,
-  adapter: AnyAdapter = adapterFor(target),
-): Promise<{ inserted: number; revised: number; duplicates: number }> => {
+  adapter?: AnyAdapter,
+  isActive: (() => Promise<boolean>) | undefined = undefined,
+  diagnosticJobId?: string,
+  diagnosticLease?: { owner: string; token: string },
+): Promise<{
+  inserted: number;
+  revised: number;
+  duplicates: number;
+  diagnosticCommitted?: boolean;
+}> => {
+  const sourceAdapter = adapter ?? createAdapterFactory(config)(target);
+  if (isActive && !(await isActive())) return { inserted: 0, revised: 0, duplicates: 0 };
   const checkpoint = await repository.getCheckpoint<{ lastId?: string }>(
     target.id,
   );
   const items: SourceItem[] = [];
-  for await (const item of adapter.pull({
+  for await (const item of sourceAdapter.pull({
     targetId: target.id,
     config: adapterConfig(target, config),
     ...(checkpoint ? { checkpoint } : {}),
@@ -59,7 +84,8 @@ export const runTarget = async (
   async function* sourceItems(): AsyncIterable<SourceItem> {
     yield* items;
   }
-  return ingestItems({
+  if (isActive && !(await isActive())) return { inserted: 0, revised: 0, duplicates: 0 };
+  const result = await ingestItems({
     source: target.source,
     targetId: target.id,
     watchIds: [target.watchId],
@@ -77,7 +103,20 @@ export const runTarget = async (
       observedAt: new Date().toISOString(),
     },
     repository,
+    ...(diagnosticJobId && diagnosticLease
+      ? {
+          diagnosticJobId,
+          diagnosticLeaseOwner: diagnosticLease.owner,
+          diagnosticLeaseToken: diagnosticLease.token,
+        }
+      : {}),
   });
+  if (!diagnosticJobId) return result;
+  return {
+    ...result,
+    diagnosticCommitted:
+      (await repository.getDiagnosticWatch(target.id))?.status === "complete",
+  };
 };
 
 export const findTarget = (
@@ -85,3 +124,18 @@ export const findTarget = (
   targetId: string,
 ): ScheduledTarget | undefined =>
   targetsFromConfig(config).find((target) => target.id === targetId);
+
+/** Resolves a server-owned temporary diagnostic target persisted in shared storage. */
+export const findDiagnosticTarget = async (
+  repository: StorageRepository,
+  targetId: string,
+): Promise<ScheduledTarget | undefined> => {
+  if (!targetId.startsWith("__argus_doctor:")) return undefined;
+  const state = await repository.getDiagnosticWatch(targetId);
+  if (state?.status !== "active") return undefined;
+  const target = state.target;
+  if (typeof target.kind !== "string" || typeof target.value !== "string" || typeof target.watchId !== "string") return undefined;
+  const allowed = state.source === "telegram" ? ["channel"] : state.source === "x" ? ["account", "query"] : ["url", "feed", "query"];
+  if (!allowed.includes(target.kind) || Object.keys(target).some((key) => !["kind", "value", "keywords", "watchId"].includes(key))) return undefined;
+  return { id: targetId, source: state.source, kind: target.kind as ScheduledTarget["kind"], value: target.value, watchId: target.watchId, schedule: "* * * * *", keywords: Array.isArray(target.keywords) ? target.keywords.filter((x): x is string => typeof x === "string") : [] };
+};

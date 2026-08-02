@@ -102,5 +102,13 @@ pnpm typecheck
 pnpm build
 ```
 
+Published releases pass a clean-host installer smoke before they are treated as
+VPS alpha candidates. The matrix installs the same signed wrapper twice on
+native amd64/arm64 Ubuntu and Debian hosts, performs Web-only onboarding with a
+disposable generated token, and requires `argus doctor --json` to be healthy.
+Run it from the **Installer smoke** GitHub Actions workflow with an immutable
+release tag. See [docs/operations.md](docs/operations.md#installer-smoke) for
+the local command and limitations.
+
 The architecture and decisions are documented in
 `docs/superpowers/specs/2026-07-31-argus-v1-design.md`.

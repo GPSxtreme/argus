@@ -3,14 +3,16 @@ import { serve, type ServerType } from "@hono/node-server";
 import { loadConfig, reconcileConfig, type ArgusConfig } from "@argus/config";
 import type { StorageRepository } from "@argus/contracts";
 import { backoffDelay, enqueueDueTargets } from "@argus/scheduler";
+import { SAFE_HTTP_MAX_TIMEOUT_MS } from "@argus/source-web";
 import pino from "pino";
 import { Cron } from "croner";
 import { createApp } from "./app.js";
 import { runSummaryProcessor } from "./processor.js";
 import { openRepository, type RepositoryHandle } from "./repository.js";
-import { findTarget, runTarget } from "./worker.js";
+import { createAdapterFactory, findDiagnosticTarget, findTarget, runTarget, type AdapterFactory } from "./worker.js";
 
 const logger = pino({ name: "argus" });
+export const JOB_LEASE_MS = SAFE_HTTP_MAX_TIMEOUT_MS * 3;
 
 export const resolveRuntimeRole = (
   config: ArgusConfig,
@@ -31,34 +33,102 @@ export const resolveRuntimeRole = (
   };
 };
 
+export interface ProcessNextJobDependencies {
+  runTarget?: typeof runTarget;
+  adapterFactory?: AdapterFactory;
+  workerId?: string;
+}
+
+export const processNextJob = async (
+  config: ArgusConfig,
+  repository: StorageRepository,
+  { runTarget: execute = runTarget, adapterFactory, workerId = `${hostname()}:${process.pid}` }: ProcessNextJobDependencies = {},
+): Promise<{ status: "idle" | "complete" | "failed" | "cancelled" }> => {
+  const adapters = adapterFactory ?? createAdapterFactory(config);
+  const job = (await repository.claimJobs(workerId, 1, JOB_LEASE_MS))[0];
+  if (!job) return { status: "idle" };
+  if (!job.leaseToken) throw new Error("Claimed job is missing its lease token");
+  const isDiagnostic = job.targetId.startsWith("__argus_doctor:");
+  const diagnostic = await repository.getDiagnosticWatch(job.targetId);
+  if (isDiagnostic && diagnostic?.status !== "active") {
+    await repository.completeJob(job.id, workerId, job.leaseToken);
+    return { status: "cancelled" };
+  }
+  try {
+    const target =
+      findTarget(config, job.targetId) ??
+      (await findDiagnosticTarget(repository, job.targetId));
+    if (!target) throw new Error(`Unknown target: ${job.targetId}`);
+    const result = await execute(
+      target,
+      config,
+      repository,
+      adapters(target),
+      diagnostic
+        ? async () =>
+            (await repository.getDiagnosticWatch(job.targetId))?.status ===
+            "active"
+        : undefined,
+      isDiagnostic ? job.id : undefined,
+      isDiagnostic ? { owner: workerId, token: job.leaseToken } : undefined,
+    );
+    if (diagnostic && result.diagnosticCommitted === false) {
+      return { status: "cancelled" };
+    }
+    if (
+      isDiagnostic &&
+      result.diagnosticCommitted === undefined &&
+      (await repository.getDiagnosticWatch(job.targetId))?.status !== "active"
+    ) {
+      await repository.completeJob(job.id, workerId, job.leaseToken);
+      return { status: "cancelled" };
+    }
+    if (!isDiagnostic || result.diagnosticCommitted === undefined) {
+      await repository.completeJob(job.id, workerId, job.leaseToken);
+    }
+    logger.info(
+      { jobId: job.id, targetId: job.targetId, ...result },
+      "job complete",
+    );
+    return { status: "complete" };
+  } catch (error) {
+    if (
+      isDiagnostic &&
+      (await repository.getDiagnosticWatch(job.targetId))?.status !== "active"
+    ) {
+      await repository.completeJob(job.id, workerId, job.leaseToken);
+      return { status: "cancelled" };
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    const retryAt =
+      job.attempt < 5
+        ? new Date(
+            Date.now() +
+              backoffDelay(job.attempt, {
+                baseMs: 5_000,
+                maxMs: 15 * 60_000,
+              }),
+          ).toISOString()
+        : undefined;
+    await repository.failJob(
+      job.id,
+      workerId,
+      job.leaseToken,
+      message,
+      retryAt,
+    );
+    logger.error({ jobId: job.id, error: message }, "job failed");
+    return { status: "failed" };
+  }
+};
+
 const processJobs = async (
   config: ArgusConfig,
   repository: StorageRepository,
+  adapterFactory: AdapterFactory,
 ): Promise<void> => {
-  const owner = `${hostname()}:${process.pid}`;
-  for (const job of await repository.claimJobs(owner, 10, 60_000)) {
-    try {
-      const target = findTarget(config, job.targetId);
-      if (!target) throw new Error(`Unknown target: ${job.targetId}`);
-      const result = await runTarget(target, config, repository);
-      await repository.completeJob(job.id);
-      logger.info({ jobId: job.id, targetId: job.targetId, ...result }, "job complete");
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const retryAt =
-        job.attempt < 5
-          ? new Date(
-              Date.now() +
-                backoffDelay(job.attempt, {
-                  baseMs: 5_000,
-                  maxMs: 15 * 60_000,
-                }),
-            ).toISOString()
-          : undefined;
-      await repository.failJob(job.id, message, retryAt);
-      logger.error({ jobId: job.id, error: message }, "job failed");
-    }
-  }
+  await repository.reapExpiredDiagnosticWatches();
+  for (let index = 0; index < 10; index += 1) if ((await processNextJob(config, repository, { adapterFactory })).status === "idle") return;
 };
 
 export interface RuntimeHandle {
@@ -68,11 +138,19 @@ export interface RuntimeHandle {
   stop(): Promise<void>;
 }
 
-export const startRuntime = async (configPath: string): Promise<RuntimeHandle> => {
-  const loaded = await loadConfig(configPath);
+export const startRuntime = async (
+  configPath: string,
+  environment: Record<string, string | undefined> = process.env,
+): Promise<RuntimeHandle> => {
+  const loaded = await loadConfig(configPath, environment);
   const config = resolveRuntimeRole(loaded, process.env.ARGUS_ROLE);
+  const adapterFactory =
+    config.runtime.role === "all" || config.runtime.role === "worker"
+      ? createAdapterFactory(config)
+      : undefined;
   const repository = await openRepository(config);
   await reconcileConfig(repository.repository, config);
+  await repository.repository.reapExpiredDiagnosticWatches();
   const timers: NodeJS.Timeout[] = [];
   const processorJobs: Cron[] = [];
   let server: ServerType | undefined;
@@ -94,8 +172,9 @@ export const startRuntime = async (configPath: string): Promise<RuntimeHandle> =
     timers.push(setInterval(tick, 30_000));
   }
   if (config.runtime.role === "all" || config.runtime.role === "worker") {
+    if (!adapterFactory) throw new Error("Worker adapter factory is unavailable");
     const tick = () =>
-      void processJobs(config, repository.repository).catch((error) =>
+      void processJobs(config, repository.repository, adapterFactory).catch((error) =>
         logger.error({ error }, "worker tick failed"),
       );
     tick();

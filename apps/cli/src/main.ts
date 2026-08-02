@@ -1,58 +1,62 @@
 #!/usr/bin/env node
-import { openRepository, startRuntime } from "@argus/app";
+import { createExecaExecutor } from "@argus/deployment";
+import { loadConfig } from "@argus/config";
+import { join } from "node:path";
+import { CliExitError, writeFailure } from "./output.js";
+import { createReleaseComposition } from "./integrations.js";
 import {
-  loadConfig,
-  reconcileConfig,
-  resolveConfigPath,
-} from "@argus/config";
-import { Command } from "commander";
+  createNodeCliDependencies,
+  createProgram,
+} from "./program.js";
+import { createClackPromptAdapter } from "./prompts.js";
 
-const program = new Command()
-  .name("argus")
-  .description("Self-hosted data layer for X, Telegram, and the Web")
-  .version("0.1.0");
+const root = process.env.ARGUS_INSTALL_ROOT ?? "/opt/argus";
+const executor = createExecaExecutor();
+const common = {
+  root,
+  executor,
+  prompt: createClackPromptAdapter(),
+  io: {
+    stdout: (value: string) => process.stdout.write(value),
+    stderr: (value: string) => process.stderr.write(value),
+  },
+};
+const bootstrap = createNodeCliDependencies(common);
+const secrets = await bootstrap.secretValues();
+const installedConfig = await loadConfig(join(root, "argus.yaml"), {
+  ...process.env,
+  ...secrets,
+}).catch(() => undefined);
+const composition = createReleaseComposition({
+  root,
+  executor,
+  environment: process.env,
+  ...(secrets.ARGUS_API_TOKEN === undefined
+    ? {}
+    : { apiToken: secrets.ARGUS_API_TOKEN }),
+  ...(installedConfig === undefined ? {} : { apiPort: installedConfig.api.port }),
+});
+const dependencies = createNodeCliDependencies({
+  ...common,
+  ...composition,
+});
+const program = createProgram(dependencies);
 
-const config = program.command("config").description("Manage Argus configuration");
-
-config
-  .command("validate")
-  .argument("[path]", "configuration path")
-  .action(async (path?: string) => {
-    const loaded = await loadConfig(
-      resolveConfigPath(path ? { explicitPath: path } : {}),
-    );
-    process.stdout.write(
-      `${JSON.stringify({
-        valid: true,
-        version: loaded.version,
-        watches: loaded.watches.length,
-        role: loaded.runtime.role,
-      })}\n`,
-    );
-  });
-
-config
-  .command("apply")
-  .argument("[path]", "configuration path")
-  .action(async (path?: string) => {
-    const loaded = await loadConfig(
-      resolveConfigPath(path ? { explicitPath: path } : {}),
-    );
-    const handle = await openRepository(loaded);
-    try {
-      const result = await reconcileConfig(handle.repository, loaded);
-      process.stdout.write(`${JSON.stringify({ applied: true, ...result })}\n`);
-    } finally {
-      await handle.close();
-    }
-  });
-
-program
-  .command("run")
-  .argument("[path]", "configuration path")
-  .description("Start the configured Argus runtime role")
-  .action(async (path?: string) => {
-    await startRuntime(resolveConfigPath(path ? { explicitPath: path } : {}));
-  });
-
-await program.parseAsync(process.argv);
+try {
+  await program.parseAsync(process.argv);
+} catch (error) {
+  if (error instanceof CliExitError) {
+    process.exitCode = error.exitCode;
+  } else {
+    const secrets = await dependencies
+      .secretValues()
+      .then(Object.values)
+      .catch(() => []);
+    process.exitCode = writeFailure(
+      dependencies.io,
+      process.argv.includes("--json"),
+      error,
+      secrets,
+    ).exitCode;
+  }
+}

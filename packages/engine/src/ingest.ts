@@ -15,6 +15,9 @@ export interface IngestItemsInput {
   items: AsyncIterable<SourceItem>;
   checkpoint: unknown;
   repository: StorageRepository;
+  diagnosticJobId?: string;
+  diagnosticLeaseOwner?: string;
+  diagnosticLeaseToken?: string;
   now?: () => string;
 }
 
@@ -40,9 +43,23 @@ export const ingestItems = async (
       }),
     );
   }
-  return input.repository.commitIngestion({
+  const commit = {
     records,
     targetId: input.targetId,
     checkpoint: input.checkpoint,
-  });
+  };
+  if (input.diagnosticJobId) {
+    if (!input.diagnosticLeaseOwner || !input.diagnosticLeaseToken) {
+      throw new Error("Diagnostic ingestion requires a fenced job lease");
+    }
+    return (
+      (await input.repository.commitDiagnosticIngestion({
+        ...commit,
+        jobId: input.diagnosticJobId,
+        leaseOwner: input.diagnosticLeaseOwner,
+        leaseToken: input.diagnosticLeaseToken,
+      })) ?? { inserted: 0, revised: 0, duplicates: 0 }
+    );
+  }
+  return input.repository.commitIngestion(commit);
 };

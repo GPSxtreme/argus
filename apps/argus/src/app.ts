@@ -1,17 +1,28 @@
 import { randomUUID } from "node:crypto";
 import type { ArgusConfig } from "@argus/config";
-import type { StorageRepository } from "@argus/contracts";
+import {
+  InvalidRecordsCursorError,
+  type StorageRepository,
+} from "@argus/contracts";
 import { OpenRouterClient } from "@argus/intelligence";
 import { QueryService } from "@argus/query";
-import { enqueueWatchNow } from "@argus/scheduler";
+import { enqueueWatchNow, targetsFromConfig } from "@argus/scheduler";
 import { Hono } from "hono";
+import { safeDiagnosticWebTarget, type DiagnosticResolver } from "./web-safety.js";
+import {
+  applyManagementConfig,
+  inspectManagementConfig,
+  type ManagementConfigPlan,
+  verifyManagementConfig,
+} from "./management-config.js";
 
 export interface CreateAppInput {
   config: ArgusConfig;
   repository: StorageRepository;
+  diagnosticResolver?: DiagnosticResolver;
 }
 
-export const createApp = ({ config, repository }: CreateAppInput): Hono => {
+export const createApp = ({ config, repository, diagnosticResolver }: CreateAppInput): Hono => {
   const app = new Hono();
   const query = new QueryService(repository);
 
@@ -46,23 +57,30 @@ export const createApp = ({ config, repository }: CreateAppInput): Hono => {
     if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
       return context.json({ error: "limit must be an integer from 1 to 200" }, 400);
     }
-    const result = await query.search({
-      ...(text ? { text } : {}),
-      ...(sources?.length
-        ? {
-            sources: sources.filter(
-              (source): source is "x" | "telegram" | "web" =>
-                source === "x" || source === "telegram" || source === "web",
-            ),
-          }
-        : {}),
-      ...(targets?.length ? { targetIds: targets } : {}),
-      ...(since ? { since } : {}),
-      ...(until ? { until } : {}),
-      ...(cursor ? { cursor } : {}),
-      limit,
-    });
-    return context.json(result);
+    try {
+      const result = await query.search({
+        ...(text ? { text } : {}),
+        ...(sources?.length
+          ? {
+              sources: sources.filter(
+                (source): source is "x" | "telegram" | "web" =>
+                  source === "x" || source === "telegram" || source === "web",
+              ),
+            }
+          : {}),
+        ...(targets?.length ? { targetIds: targets } : {}),
+        ...(since ? { since } : {}),
+        ...(until ? { until } : {}),
+        ...(cursor ? { cursor } : {}),
+        limit,
+      });
+      return context.json(result);
+    } catch (error) {
+      if (error instanceof InvalidRecordsCursorError) {
+        return context.json({ error: "invalid records cursor" }, 400);
+      }
+      throw error;
+    }
   });
 
   app.get("/v1/artifacts", async (context) => {
@@ -88,6 +106,150 @@ export const createApp = ({ config, repository }: CreateAppInput): Hono => {
     if (!watch) return context.json({ error: "watch not found" }, 404);
     const queued = await enqueueWatchNow(watch, repository);
     return context.json({ queued, watchId: watch.id }, 202);
+  });
+
+  app.post("/v1/diagnostics/smoke-watches", async (context) => {
+    const body: unknown = await context.req.json().catch(() => undefined);
+    if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).length !== 2 || !Object.keys(body).every((key) => key === "source" || key === "targetId")) return context.json({ error: "invalid diagnostic watch request" }, 400);
+    const input = body as { source?: unknown; targetId?: unknown };
+    if ((input.source !== "telegram" && input.source !== "web" && input.source !== "x") || typeof input.targetId !== "string" || !input.targetId) return context.json({ error: "invalid diagnostic watch request" }, 400);
+    if (!config.sources[input.source].enabled) {
+      return context.json(
+        { error: "configured enabled diagnostic target was not found" },
+        404,
+      );
+    }
+    const target = targetsFromConfig(config).find((candidate) => candidate.id === input.targetId && candidate.source === input.source);
+    if (!target) return context.json({ error: "configured enabled diagnostic target was not found" }, 404);
+    if (target.source === "web" && target.kind === "url") {
+      if (!(await safeDiagnosticWebTarget(target.value, diagnosticResolver))) return context.json({ error: "configured web diagnostic target is not permitted" }, 400);
+    }
+    const id = randomUUID();
+    const targetId = `__argus_doctor:${id}`;
+    const now = new Date().toISOString();
+    await repository.reapExpiredDiagnosticWatches(now);
+    const snapshot = { kind: target.kind, value: target.value, keywords: target.keywords, watchId: targetId };
+    const created = await repository.createDiagnosticWatch({ id, targetId, source: target.source, target: snapshot, status: "active", createdAt: now, updatedAt: now, expiresAt: new Date(Date.now() + 15 * 60_000).toISOString(), job: { id: randomUUID(), targetId, source: target.source, status: "queued", attempt: 0, runAt: now } });
+    if (!created) return context.json({ error: "diagnostic watch could not be created" }, 409);
+    return context.json({ id, targetId }, 202);
+  });
+
+  app.get("/v1/diagnostics/smoke-watches/:id/records", async (context) => {
+    const targetId = `__argus_doctor:${context.req.param("id")}`;
+    const state = await repository.getDiagnosticWatch(targetId);
+    if (!state) return context.json({ error: "diagnostic watch not found" }, 404);
+    return context.json({
+      items: await repository.queryDiagnosticRecords(targetId),
+    });
+  });
+
+  app.delete("/v1/diagnostics/smoke-watches/:id", async (context) => {
+    const id = context.req.param("id");
+    const targetId = `__argus_doctor:${id}`;
+    const state = await repository.getDiagnosticWatch(targetId);
+    if (!state) return context.json({ error: "diagnostic watch not found" }, 404);
+    await repository.cancelDiagnosticWatch(targetId);
+    await repository.cleanupDiagnosticWatch(targetId);
+    return context.body(null, 204);
+  });
+
+  app.post("/v1/management/config/plan", async (context) => {
+    if (
+      !config.api.token ||
+      context.req.header("authorization") !== `Bearer ${config.api.token}`
+    ) {
+      return context.json({ error: "unauthorized" }, 401);
+    }
+    const body = await context.req.json().catch(() => undefined) as
+      | { path?: unknown; config?: unknown }
+      | undefined;
+    if (
+      !body ||
+      typeof body.path !== "string" ||
+      !body.path.startsWith("/") ||
+      body.config === undefined ||
+      Object.keys(body).some((key) => key !== "path" && key !== "config")
+    ) {
+      return context.json({ error: "invalid configuration plan request" }, 400);
+    }
+    try {
+      const result = await inspectManagementConfig(
+        repository,
+        body.path,
+        body.config,
+      );
+      return context.json(result.plan);
+    } catch {
+      return context.json({ error: "invalid configuration plan request" }, 400);
+    }
+  });
+
+  app.post("/v1/management/config/apply", async (context) => {
+    if (
+      !config.api.token ||
+      context.req.header("authorization") !== `Bearer ${config.api.token}`
+    ) {
+      return context.json({ error: "unauthorized" }, 401);
+    }
+    const body = await context.req.json().catch(() => undefined) as
+      | { path?: unknown; config?: unknown; inspection?: unknown }
+      | undefined;
+    if (
+      !body ||
+      typeof body.path !== "string" ||
+      !body.path.startsWith("/") ||
+      body.config === undefined ||
+      !body.inspection ||
+      typeof body.inspection !== "object" ||
+      Array.isArray(body.inspection) ||
+      Object.keys(body).some(
+        (key) => key !== "path" && key !== "config" && key !== "inspection",
+      )
+    ) {
+      return context.json({ error: "invalid configuration apply request" }, 400);
+    }
+    try {
+      return context.json(
+        await applyManagementConfig(
+          repository,
+          body.path,
+          body.config,
+          body.inspection as ManagementConfigPlan,
+        ),
+      );
+    } catch {
+      return context.json({ error: "configuration plan is stale" }, 409);
+    }
+  });
+
+  app.post("/v1/management/config/verify", async (context) => {
+    if (
+      !config.api.token ||
+      context.req.header("authorization") !== `Bearer ${config.api.token}`
+    ) {
+      return context.json({ error: "unauthorized" }, 401);
+    }
+    const body = await context.req.json().catch(() => undefined) as
+      | { inspection?: unknown }
+      | undefined;
+    if (
+      !body?.inspection ||
+      typeof body.inspection !== "object" ||
+      Array.isArray(body.inspection) ||
+      Object.keys(body).some((key) => key !== "inspection")
+    ) {
+      return context.json({ error: "invalid configuration verify request" }, 400);
+    }
+    try {
+      return context.json(
+        await verifyManagementConfig(
+          repository,
+          body.inspection as ManagementConfigPlan,
+        ),
+      );
+    } catch {
+      return context.json({ error: "configuration plan is stale" }, 409);
+    }
   });
 
   app.post("/v1/summaries", async (context) => {

@@ -7,12 +7,22 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
-  "dependencies": {
+  "devDependencies": {
     "@argus/app": "workspace:*",
-    "@argus/config": "workspace:*",
     "@argus/storage-postgres": "workspace:*",
     "@argus/storage-sqlite": "workspace:*",
+    "ajv": "^8.17.1"
+  },
+  "dependencies": {
+    "@argus/config": "workspace:*",
+    "@argus/contracts": "workspace:*",
+    "@argus/deployment": "workspace:*",
+    "@argus/release": "workspace:*",
+    "@argus/scheduler": "workspace:*",
+    "@clack/prompts": "1.7.0",
     "commander": "^14.0.0",
-    "tsx": "^4.20.0"
+    "tsx": "^4.20.0",
+    "yaml": "^2.8.0",
+    "zod": "^4.0.0"
   }
 }

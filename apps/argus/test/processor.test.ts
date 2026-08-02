@@ -51,4 +51,90 @@ describe("scheduled summary processor", () => {
       "Argus shipped. [1]",
     );
   });
+
+  it("never sends diagnostic-owned records to a summary model", async () => {
+    const repository = await createSqliteRepository({ filename: ":memory:" });
+    repositories.push(repository);
+    const now = new Date().toISOString();
+    const targetId = "__argus_doctor:summary-isolation";
+    await repository.upsertRecord({
+      id: "web:user:1",
+      source: "web",
+      targetId: "user",
+      externalId: "1",
+      url: "https://example.com/user",
+      text: "User data",
+      raw: {},
+      watchIds: ["release"],
+      contentHash: "user",
+      ingestedAt: now,
+    });
+    await repository.createDiagnosticWatch({
+      id: "summary-isolation",
+      targetId,
+      source: "web",
+      target: {
+        kind: "url",
+        value: "https://example.com/diagnostic",
+        watchId: targetId,
+      },
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      job: {
+        id: "summary-isolation-job",
+        targetId,
+        source: "web",
+        status: "queued",
+        attempt: 0,
+        runAt: now,
+      },
+    });
+    const lease = (await repository.claimJobs("worker", 1, 30_000))[0];
+    if (!lease?.leaseToken) throw new Error("Expected diagnostic lease");
+    await repository.commitDiagnosticIngestion({
+      jobId: "summary-isolation-job",
+      leaseOwner: "worker",
+      leaseToken: lease.leaseToken,
+      targetId,
+      records: [
+        {
+          id: "web:diagnostic:1",
+          source: "web",
+          targetId,
+          externalId: "1",
+          url: "https://example.com/diagnostic",
+          text: "Diagnostic data",
+          raw: {},
+          watchIds: [targetId],
+          contentHash: "diagnostic",
+          ingestedAt: now,
+        },
+      ],
+      checkpoint: {},
+    });
+    const config = validateConfig({
+      version: 1,
+      storage: { adapter: "sqlite", url: ":memory:" },
+      sources: {},
+      watches: [],
+      intelligence: {
+        enabled: true,
+        apiKey: "secret",
+        processors: [{ id: "daily", kind: "summary" }],
+      },
+    });
+    const processor = config.intelligence.processors[0];
+    if (!processor) throw new Error("Expected a configured summary processor");
+    let summarizedIds: string[] = [];
+    await runSummaryProcessor(processor, config, repository, {
+      summarize: async (records) => {
+        summarizedIds = records.map(({ id }) => id);
+        return { content: "summary", model: "test", sources: [] };
+      },
+    });
+
+    expect(summarizedIds).toEqual(["web:user:1"]);
+  });
 });

@@ -2,6 +2,10 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { parse, stringify } from "yaml";
 import { type ArgusConfig, validateConfig } from "./schema.js";
+import {
+  projectPostgresUrlCredentials,
+  withoutUrlCredentials,
+} from "./sanitize.js";
 
 const SECRET_REFERENCE = /^\$\{([A-Z][A-Z0-9_]*)\}$/u;
 export const DEFAULT_CONFIG_FILENAME = "argus.yaml";
@@ -70,6 +74,19 @@ export const serializeRedactedConfig = (config: ArgusConfig): string => {
   }
   if (redacted.api.token) {
     redacted.api.token = "[REDACTED]";
+  }
+  if (redacted.storage.adapter === "postgres") {
+    redacted.storage.url = projectPostgresUrlCredentials(
+      redacted.storage.url,
+    ).safeUrl;
+  }
+  redacted.sources.x.endpoint = withoutUrlCredentials(
+    redacted.sources.x.endpoint,
+  );
+  if (redacted.sources.web.searchEndpoint) {
+    redacted.sources.web.searchEndpoint = withoutUrlCredentials(
+      redacted.sources.web.searchEndpoint,
+    );
   }
   return stringify(redacted);
 };

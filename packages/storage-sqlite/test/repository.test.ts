@@ -2,12 +2,14 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import type { RecordEnvelope } from "@argus/contracts";
 import {
   createSqliteRepository,
-  type SqliteRepository,
+  SqliteRepository,
 } from "../src/index.js";
+import { openSqlite } from "../src/db.js";
 
 const repositories: SqliteRepository[] = [];
 const temporaryDirectories: string[] = [];
@@ -24,6 +26,14 @@ const record = (hash: string, text = "Solana release"): RecordEnvelope => ({
   watchIds: ["markets"],
   contentHash: hash,
   ingestedAt: "2026-07-31T00:00:00.000Z",
+});
+
+const recordAt = (id: string, ingestedAt: string): RecordEnvelope => ({
+  ...record(id, id),
+  id,
+  externalId: id,
+  contentHash: id,
+  ingestedAt,
 });
 
 const createRepo = async (): Promise<SqliteRepository> => {
@@ -48,6 +58,74 @@ describe("SQLite repository", () => {
     });
     repositories.push(repo);
     await expect(repo.queryRecords({})).resolves.toMatchObject({ items: [] });
+  });
+
+  it("adds diagnostic expiry to an existing database", () => {
+    const directory = mkdtempSync(join(tmpdir(), "argus-sqlite-migration-"));
+    temporaryDirectories.push(directory);
+    const filename = join(directory, "argus.db");
+    const legacy = new Database(filename);
+    legacy.exec(`
+      CREATE TABLE diagnostic_watches (
+        id TEXT PRIMARY KEY,
+        target_id TEXT NOT NULL UNIQUE,
+        source TEXT NOT NULL,
+        target_json TEXT NOT NULL,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      INSERT INTO diagnostic_watches
+        (id,target_id,source,target_json,status,created_at,updated_at)
+      VALUES
+        ('legacy','__argus_doctor:legacy','web','{}','active',
+         '2026-08-01T00:00:00.000Z','2026-08-01T00:00:00.000Z');
+    `);
+    legacy.close();
+
+    const migrated = openSqlite(filename);
+    const row = migrated
+      .prepare(
+        "SELECT expires_at FROM diagnostic_watches WHERE id='legacy'",
+      )
+      .get() as { expires_at: string };
+    expect(row.expires_at).toBe("2026-08-01T00:15:00.000Z");
+    migrated.close();
+  });
+
+  it("adds lease fencing to an existing jobs table without losing jobs", () => {
+    const directory = mkdtempSync(join(tmpdir(), "argus-jobs-migration-"));
+    temporaryDirectories.push(directory);
+    const filename = join(directory, "argus.db");
+    const legacy = new Database(filename);
+    legacy.exec(`
+      CREATE TABLE jobs (
+        id TEXT PRIMARY KEY,
+        target_id TEXT NOT NULL,
+        source TEXT NOT NULL,
+        status TEXT NOT NULL,
+        attempt INTEGER NOT NULL,
+        run_at TEXT NOT NULL,
+        lease_owner TEXT,
+        lease_expires_at TEXT,
+        error TEXT
+      );
+      INSERT INTO jobs
+        (id,target_id,source,status,attempt,run_at)
+      VALUES
+        ('legacy-job','target','web','queued',0,'2026-08-01T00:00:00.000Z');
+    `);
+    legacy.close();
+
+    const migrated = openSqlite(filename);
+    const columns = migrated.pragma("table_info(jobs)") as Array<{
+      name: string;
+    }>;
+    expect(columns.map(({ name }) => name)).toContain("lease_token");
+    expect(
+      migrated.prepare("SELECT id FROM jobs WHERE id='legacy-job'").get(),
+    ).toEqual({ id: "legacy-job" });
+    migrated.close();
   });
 
   it("deduplicates records and preserves revisions when content changes", async () => {
@@ -85,6 +163,49 @@ describe("SQLite repository", () => {
     ).toHaveLength(1);
   });
 
+  it("uses a strict keyset cursor across inserts and equal timestamps", async () => {
+    const repo = await createRepo();
+    await Promise.all([
+      repo.upsertRecord(recordAt("a", "2026-08-01T03:00:00.000Z")),
+      repo.upsertRecord(recordAt("b", "2026-08-01T02:00:00.000Z")),
+      repo.upsertRecord(recordAt("c", "2026-08-01T02:00:00.000Z")),
+      repo.upsertRecord(recordAt("d", "2026-08-01T01:00:00.000Z")),
+    ]);
+    const first = await repo.queryRecords({ limit: 2 });
+    expect(first.items.map(({ id }) => id)).toEqual(["a", "b"]);
+    expect(first.nextCursor).toBeTruthy();
+    if (!first.nextCursor) throw new Error("Expected a keyset cursor");
+    await repo.upsertRecord(recordAt("newer", "2026-08-01T04:00:00.000Z"));
+
+    const second = await repo.queryRecords({
+      limit: 2,
+      cursor: first.nextCursor,
+    });
+    expect(second.items.map(({ id }) => id)).toEqual(["c", "d"]);
+    expect(
+      [...first.items, ...second.items].map(({ id }) => id),
+    ).toEqual(["a", "b", "c", "d"]);
+  });
+
+  it("fails closed for malformed and version-mismatched record cursors", async () => {
+    const repo = await createRepo();
+    for (const cursor of [
+      Buffer.from("1").toString("base64url"),
+      Buffer.from(
+        JSON.stringify({
+          v: 2,
+          ingestedAt: "2026-08-01T00:00:00.000Z",
+          id: "a",
+        }),
+      ).toString("base64url"),
+      "not+base64url",
+    ]) {
+      await expect(repo.queryRecords({ cursor })).rejects.toMatchObject({
+        code: "RECORDS_CURSOR_INVALID",
+      });
+    }
+  });
+
   it("leases due jobs to only one worker", async () => {
     const repo = await createRepo();
     await repo.enqueueJob({
@@ -96,8 +217,89 @@ describe("SQLite repository", () => {
       runAt: "2026-07-31T00:00:00.000Z",
     });
 
-    expect(await repo.claimJobs("worker-a", 10, 30_000)).toHaveLength(1);
-    expect(await repo.claimJobs("worker-b", 10, 30_000)).toHaveLength(0);
+    const claims = await Promise.all([
+      repo.claimJobs("worker-a", 10, 30_000),
+      repo.claimJobs("worker-b", 10, 30_000),
+    ]);
+    expect(claims.flat()).toHaveLength(1);
+  });
+
+  it("reclaims an expired worker lease and fences stale settlement", async () => {
+    const repo = await createRepo();
+    const id = randomUUID();
+    await repo.enqueueJob({
+      id,
+      targetId: "target-1",
+      source: "x",
+      status: "queued",
+      attempt: 0,
+      runAt: "2026-07-31T00:00:00.000Z",
+    });
+    const original = (await repo.claimJobs("worker-a", 1, 1))[0];
+    if (!original?.leaseToken) throw new Error("Expected a fenced lease");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const reclaimed = (await repo.claimJobs("worker-b", 1, 30_000))[0];
+    if (!reclaimed?.leaseToken) throw new Error("Expected a reclaimed lease");
+
+    expect(reclaimed.id).toBe(id);
+    expect(reclaimed.attempt).toBe(1);
+    expect(reclaimed.leaseToken).not.toBe(original.leaseToken);
+    await expect(
+      repo.completeJob(id, "worker-a", original.leaseToken),
+    ).resolves.toBe(false);
+    await expect(
+      repo.failJob(
+        id,
+        "worker-a",
+        original.leaseToken,
+        "stale failure",
+      ),
+    ).resolves.toBe(false);
+    await expect(
+      repo.completeJob(id, "worker-b", reclaimed.leaseToken),
+    ).resolves.toBe(true);
+  });
+
+  it("allows only the current lease owner to fail and retry a job", async () => {
+    const repo = await createRepo();
+    const id = randomUUID();
+    await repo.enqueueJob({
+      id,
+      targetId: "target-1",
+      source: "x",
+      status: "queued",
+      attempt: 0,
+      runAt: "2026-07-31T00:00:00.000Z",
+    });
+    const claimed = (await repo.claimJobs("worker-a", 1, 30_000))[0];
+    if (!claimed?.leaseToken) throw new Error("Expected a fenced lease");
+    await expect(
+      repo.failJob(
+        id,
+        "worker-a",
+        claimed.leaseToken,
+        "retry",
+        "2026-07-31T00:00:00.000Z",
+      ),
+    ).resolves.toBe(true);
+    const retry = (await repo.claimJobs("worker-b", 1, 30_000))[0];
+    expect(retry?.attempt).toBe(1);
+  });
+
+  it("does not reclaim an expired job after its retry budget is exhausted", async () => {
+    const repo = await createRepo();
+    await repo.enqueueJob({
+      id: randomUUID(),
+      targetId: "target-1",
+      source: "x",
+      status: "running",
+      attempt: 5,
+      runAt: "2026-07-31T00:00:00.000Z",
+      leaseOwner: "crashed-worker",
+      leaseToken: randomUUID(),
+      leaseExpiresAt: "2026-07-31T00:00:00.000Z",
+    });
+    await expect(repo.claimJobs("replacement", 1, 30_000)).resolves.toEqual([]);
   });
 
   it("commits records and checkpoint as one ingestion unit", async () => {
@@ -114,6 +316,7 @@ describe("SQLite repository", () => {
 
   it("stores and lists derived artifacts separately from source records", async () => {
     const repo = await createRepo();
+    await repo.upsertRecord(record("artifact-source"));
     await repo.saveArtifact({
       id: "summary-1",
       recordIds: ["x:target-1:post-9"],
@@ -128,5 +331,240 @@ describe("SQLite repository", () => {
       id: "summary-1",
       content: "A sourced summary",
     });
+  });
+
+  it("owns diagnostic lifecycle rows separately and cleans only its target", async () => {
+    const repo = await createRepo();
+    const now = new Date().toISOString();
+    expect(await repo.createDiagnosticWatch({ id: "diagnostic-1", targetId: "__diagnostic:1", source: "web", target: { kind: "url", value: "https://example.test" }, status: "active", createdAt: now, updatedAt: now, job: { id: "diagnostic-job", targetId: "__diagnostic:1", source: "web", status: "queued", attempt: 0, runAt: now } })).toBe(true);
+    await repo.cancelDiagnosticWatch("__diagnostic:1");
+    expect((await repo.getDiagnosticWatch("__diagnostic:1"))?.status).toBe("cancelled");
+    await repo.cleanupDiagnosticWatch("__diagnostic:1");
+    await repo.cleanupDiagnosticWatch("__diagnostic:1");
+    expect(await repo.getDiagnosticWatch("__diagnostic:1")).toBeUndefined();
+  });
+
+  it("rolls back a diagnostic watch when its job ID conflicts", async () => {
+    const repo = await createRepo();
+    const now = new Date().toISOString();
+    await repo.enqueueJob({
+      id: "conflicting-job",
+      targetId: "user-target",
+      source: "web",
+      status: "queued",
+      attempt: 0,
+      runAt: now,
+    });
+
+    await expect(
+      repo.createDiagnosticWatch({
+        id: "diagnostic-conflict",
+        targetId: "__argus_doctor:conflict",
+        source: "web",
+        target: { kind: "url", value: "https://example.test" },
+        status: "active",
+        createdAt: now,
+        updatedAt: now,
+        job: {
+          id: "conflicting-job",
+          targetId: "__argus_doctor:conflict",
+          source: "web",
+          status: "queued",
+          attempt: 0,
+          runAt: now,
+        },
+      }),
+    ).rejects.toThrow();
+    expect(
+      await repo.getDiagnosticWatch("__argus_doctor:conflict"),
+    ).toBeUndefined();
+  });
+
+  it("terminally cancels a claimed diagnostic job and cleanup is idempotent", async () => {
+    const database = openSqlite(":memory:");
+    const repo = new SqliteRepository(database);
+    repositories.push(repo);
+    const now = new Date().toISOString();
+    await repo.createDiagnosticWatch({
+      id: "claimed",
+      targetId: "__argus_doctor:claimed",
+      source: "web",
+      target: { kind: "url", value: "https://example.test" },
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+      job: {
+        id: "claimed-job",
+        targetId: "__argus_doctor:claimed",
+        source: "web",
+        status: "queued",
+        attempt: 0,
+        runAt: now,
+      },
+    });
+    expect(await repo.claimJobs("worker", 1, 30_000)).toHaveLength(1);
+
+    await repo.cancelDiagnosticWatch("__argus_doctor:claimed");
+    expect(
+      database
+        .prepare(
+          "SELECT status, lease_owner, lease_expires_at FROM jobs WHERE id=?",
+        )
+        .get("claimed-job"),
+    ).toEqual({
+      status: "complete",
+      lease_owner: null,
+      lease_expires_at: null,
+    });
+    await repo.cleanupDiagnosticWatch("__argus_doctor:claimed");
+    await repo.cleanupDiagnosticWatch("__argus_doctor:claimed");
+    expect(
+      database.prepare("SELECT id FROM jobs WHERE id=?").get("claimed-job"),
+    ).toBeUndefined();
+  });
+
+  it("atomically rejects a diagnostic ingestion after cancellation", async () => {
+    const repo = await createRepo();
+    const now = new Date().toISOString();
+    const targetId = "__argus_doctor:atomic";
+    await repo.createDiagnosticWatch({
+      id: "atomic",
+      targetId,
+      source: "web",
+      target: {
+        kind: "url",
+        value: "https://example.test",
+        watchId: targetId,
+      },
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      job: {
+        id: "atomic-job",
+        targetId,
+        source: "web",
+        status: "queued",
+        attempt: 0,
+        runAt: now,
+      },
+    });
+    const lease = (await repo.claimJobs("worker", 1, 30_000))[0];
+    if (!lease?.leaseToken) throw new Error("Expected diagnostic lease");
+    await repo.cancelDiagnosticWatch(targetId);
+
+    expect(
+      await repo.commitDiagnosticIngestion({
+        jobId: "atomic-job",
+        leaseOwner: "worker",
+        leaseToken: lease.leaseToken,
+        targetId,
+        records: [{ ...record("diagnostic"), id: "diagnostic", targetId }],
+        checkpoint: { lastId: "post-9" },
+      }),
+    ).toBeUndefined();
+    expect(await repo.queryDiagnosticRecords(targetId)).toEqual([]);
+    expect(await repo.getCheckpoint(targetId)).toBeUndefined();
+  });
+
+  it("hides diagnostic records and strips their IDs from mixed artifacts", async () => {
+    const repo = await createRepo();
+    const now = new Date().toISOString();
+    const targetId = "__argus_doctor:isolation";
+    await repo.createDiagnosticWatch({
+      id: "isolation",
+      targetId,
+      source: "web",
+      target: {
+        kind: "url",
+        value: "https://example.test",
+        watchId: targetId,
+      },
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      job: {
+        id: "isolation-job",
+        targetId,
+        source: "web",
+        status: "queued",
+        attempt: 0,
+        runAt: now,
+      },
+    });
+    const lease = (await repo.claimJobs("worker", 1, 30_000))[0];
+    if (!lease?.leaseToken) throw new Error("Expected diagnostic lease");
+    await repo.commitDiagnosticIngestion({
+      jobId: "isolation-job",
+      leaseOwner: "worker",
+      leaseToken: lease.leaseToken,
+      targetId,
+      records: [{ ...record("diagnostic"), id: "diagnostic", targetId }],
+      checkpoint: {},
+    });
+    await repo.upsertRecord(record("user"));
+    await repo.saveArtifact({
+      id: "mixed",
+      recordIds: ["x:target-1:post-9", "diagnostic"],
+      kind: "summary",
+      content: "mixed",
+      provenance: {},
+      createdAt: now,
+    });
+
+    expect((await repo.queryRecords({})).items.map(({ id }) => id)).toEqual([
+      "x:target-1:post-9",
+    ]);
+    expect((await repo.queryRecords({ targetIds: [targetId] })).items).toEqual(
+      [],
+    );
+    expect((await repo.queryDiagnosticRecords(targetId)).map(({ id }) => id)).toEqual([
+      "diagnostic",
+    ]);
+
+    await repo.cleanupDiagnosticWatch(targetId);
+    expect((await repo.queryArtifacts({})).items[0]?.recordIds).toEqual([
+      "x:target-1:post-9",
+    ]);
+  });
+
+  it("reaps expired diagnostics idempotently without touching user data", async () => {
+    const repo = await createRepo();
+    const targetId = "__argus_doctor:expired";
+    await repo.upsertRecord(record("user"));
+    await repo.createDiagnosticWatch({
+      id: "expired",
+      targetId,
+      source: "web",
+      target: {
+        kind: "url",
+        value: "https://example.test",
+        watchId: targetId,
+      },
+      status: "active",
+      createdAt: "2026-08-01T00:00:00.000Z",
+      updatedAt: "2026-08-01T00:00:00.000Z",
+      expiresAt: "2026-08-01T00:01:00.000Z",
+      job: {
+        id: "expired-job",
+        targetId,
+        source: "web",
+        status: "queued",
+        attempt: 0,
+        runAt: "2026-08-01T00:00:00.000Z",
+      },
+    });
+
+    expect(
+      await repo.reapExpiredDiagnosticWatches("2026-08-01T00:02:00.000Z"),
+    ).toBe(1);
+    expect(
+      await repo.reapExpiredDiagnosticWatches("2026-08-01T00:02:00.000Z"),
+    ).toBe(0);
+    expect(await repo.getDiagnosticWatch(targetId)).toBeUndefined();
+    expect((await repo.queryRecords({})).items.map(({ id }) => id)).toEqual([
+      "x:target-1:post-9",
+    ]);
   });
 });

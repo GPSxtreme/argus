@@ -1,0 +1,100 @@
+{
+  "packages": {
+    "@esbuild/darwin-arm64@0.28.1": {
+      "spdx": "MIT",
+      "copyright": "Copyright (c) 2020 Evan Wallace",
+      "source": "https://raw.githubusercontent.com/evanw/esbuild/bb9db84c02433fbe37b3509f53f9f3e3cc48725e/LICENSE.md",
+      "sourceSha256": "b40ec5baec7bb34fa5b1c09521fa3cd52d5fad7adafed74932a2010d3612a681",
+      "sha256": "b40ec5baec7bb34fa5b1c09521fa3cd52d5fad7adafed74932a2010d3612a681",
+      "textFile": "./legal/npm/_esbuild__darwin-arm64/0.28.1/LICENSE.md"
+    },
+    "@esbuild/linux-arm64@0.28.1": {
+      "spdx": "MIT",
+      "copyright": "Copyright (c) 2020 Evan Wallace",
+      "source": "https://raw.githubusercontent.com/evanw/esbuild/bb9db84c02433fbe37b3509f53f9f3e3cc48725e/LICENSE.md",
+      "sourceSha256": "b40ec5baec7bb34fa5b1c09521fa3cd52d5fad7adafed74932a2010d3612a681",
+      "sha256": "b40ec5baec7bb34fa5b1c09521fa3cd52d5fad7adafed74932a2010d3612a681",
+      "textFile": "./legal/npm/_esbuild__linux-arm64/0.28.1/LICENSE.md"
+    },
+    "@esbuild/linux-x64@0.28.1": {
+      "spdx": "MIT",
+      "copyright": "Copyright (c) 2020 Evan Wallace",
+      "source": "https://raw.githubusercontent.com/evanw/esbuild/bb9db84c02433fbe37b3509f53f9f3e3cc48725e/LICENSE.md",
+      "sourceSha256": "b40ec5baec7bb34fa5b1c09521fa3cd52d5fad7adafed74932a2010d3612a681",
+      "sha256": "b40ec5baec7bb34fa5b1c09521fa3cd52d5fad7adafed74932a2010d3612a681",
+      "textFile": "./legal/npm/_esbuild__linux-x64/0.28.1/LICENSE.md"
+    },
+    "@nodable/entities@3.0.0": {
+      "spdx": "MIT",
+      "copyright": "Copyright (c) 2026 Nodable",
+      "source": "https://raw.githubusercontent.com/nodable/val-parsers/d2070d76a8ba07e6c7fa142caeb51ffd756e47eb/LICENSE",
+      "sourceSha256": "750cb3fb6362804957ef52caaf9b5c824015be44d494637330d7cd8834d31d40",
+      "sha256": "750cb3fb6362804957ef52caaf9b5c824015be44d494637330d7cd8834d31d40",
+      "textFile": "./legal/npm/_nodable__entities/3.0.0/LICENSE"
+    },
+    "boolbase@1.0.0": {
+      "spdx": "ISC",
+      "copyright": "Copyright (c) 2014-2015, Felix Boehm <me@feedic.com>",
+      "source": "https://raw.githubusercontent.com/fb55/boolbase/be0bcd8a4e917a0a5895e95b523fbbed05a64871/LICENSE",
+      "sourceSha256": "cdf4d87ae0a6c160227263bf4e39a0a10e30e89ae7256e0f7ac7bde0836552c6",
+      "sha256": "cdf4d87ae0a6c160227263bf4e39a0a10e30e89ae7256e0f7ac7bde0836552c6",
+      "textFile": "./legal/npm/boolbase/1.0.0/LICENSE"
+    },
+    "pg-types@2.2.0": {
+      "spdx": "MIT",
+      "copyright": "Copyright (c) 2014 Brian M. Carlson",
+      "source": "https://raw.githubusercontent.com/brianc/node-pg-types/d9d9dfb87eb50914043cbc178c301b7dd3b0c50d/README.md#license",
+      "sourceSha256": "ecda9bca71d3f0cee4e600d1dd2bef336213f39ef2e8fca6a1a1c1c8723f643a",
+      "sha256": "2c8a6e1b7782f0ca241792868af742f1c281c9661f59ec36c9acf40381c86645",
+      "textFile": "./legal/npm/pg-types/2.2.0/LICENSE"
+    },
+    "pgpass@1.0.5": {
+      "spdx": "MIT",
+      "copyright": "Copyright (c) 2013-2016 Hannes Hörl",
+      "source": "https://raw.githubusercontent.com/hoegaarden/pgpass/4230ed5e417ba6044ea7eb80b7c33db9ec301398/README.md#license",
+      "sourceSha256": "62549909404b5a0dcb2b4b74c9a930baf8095dbcfa1543c4ffc79378acd22b57",
+      "sha256": "492e56ee92e47d39ca91d60ef75f55b1104678fab8f09838206b61b43136e211",
+      "textFile": "./legal/npm/pgpass/1.0.5/LICENSE"
+    },
+    "saxes@6.0.0": {
+      "spdx": "ISC",
+      "copyright": "Copyright (c) Contributors",
+      "source": "https://raw.githubusercontent.com/lddubeau/saxes/211fa0ebec9b628affc09219199639887174bfc3/LICENSE",
+      "sourceSha256": "0fac2374380621b22e6b50451057721a9c52935b02d16d106a9f04897f061d0e",
+      "sha256": "0fac2374380621b22e6b50451057721a9c52935b02d16d106a9f04897f061d0e",
+      "textFile": "./legal/npm/saxes/6.0.0/LICENSE"
+    }
+  },
+  "tools": {
+    "docker": {
+      "version": "29.7.1",
+      "license": {
+        "source": "https://raw.githubusercontent.com/docker/cli/e9452d6e785f6e365712b9d71bd7517591773c86/LICENSE",
+        "sourceSha256": "2d81ea060825006fc8f3fe28aa5dc0ffeb80faf325b612c955229157b8c10dc0",
+        "sha256": "2d81ea060825006fc8f3fe28aa5dc0ffeb80faf325b612c955229157b8c10dc0",
+        "textFile": "./legal/tools/docker-cli/29.7.1/LICENSE"
+      },
+      "notice": {
+        "source": "https://raw.githubusercontent.com/docker/cli/e9452d6e785f6e365712b9d71bd7517591773c86/NOTICE",
+        "sourceSha256": "a8c869fbda819afb8d80e0ac19bac52e766bc6c19cb38cf94f52d64c4be2aab6",
+        "sha256": "a8c869fbda819afb8d80e0ac19bac52e766bc6c19cb38cf94f52d64c4be2aab6",
+        "textFile": "./legal/tools/docker-cli/29.7.1/NOTICE"
+      }
+    },
+    "compose": {
+      "version": "2.39.1",
+      "license": {
+        "source": "https://raw.githubusercontent.com/docker/compose/1a4fc55fd715b56638ecdeef9dff254ba2e57fc1/LICENSE",
+        "sourceSha256": "58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd",
+        "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+        "textFile": "./legal/tools/docker-compose/2.39.1/LICENSE"
+      },
+      "notice": {
+        "source": "https://raw.githubusercontent.com/docker/compose/1a4fc55fd715b56638ecdeef9dff254ba2e57fc1/NOTICE",
+        "sourceSha256": "b7dca0a6b01fa7365e4892877a6321179ee343d72ee87a96cfc222141b99a1e6",
+        "sha256": "b7dca0a6b01fa7365e4892877a6321179ee343d72ee87a96cfc222141b99a1e6",
+        "textFile": "./legal/tools/docker-compose/2.39.1/NOTICE"
+      }
+    }
+  }
+}

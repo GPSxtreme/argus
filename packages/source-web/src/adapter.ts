@@ -5,14 +5,23 @@ import type {
   ValidationResult,
 } from "@argus/contracts";
 import { fetchFeed } from "./feed.js";
+import type { SafeHttpOptions } from "./safe-http.js";
 import { searchSearxng } from "./search.js";
+import type {
+  TrustedServiceOrigin,
+  TrustedServiceRequestOptions,
+} from "./trusted-service.js";
 import { fetchPage } from "./url.js";
 
 export interface WebTargetConfig {
   kind: "url" | "feed" | "query";
   value: string;
-  searchEndpoint?: string;
   userAgent?: string;
+}
+
+export interface WebAdapterOptions extends SafeHttpOptions {
+  trustedSearchOrigin?: TrustedServiceOrigin;
+  trustedService?: TrustedServiceRequestOptions;
 }
 
 export class WebAdapter implements SourceAdapter<WebTargetConfig> {
@@ -23,11 +32,13 @@ export class WebAdapter implements SourceAdapter<WebTargetConfig> {
     realtime: false,
   };
 
+  constructor(private readonly options: WebAdapterOptions = {}) {}
+
   async validate(config: WebTargetConfig): Promise<ValidationResult> {
     const valid =
       Boolean(config.value) &&
       (config.kind === "query"
-        ? Boolean(config.searchEndpoint && URL.canParse(config.searchEndpoint))
+        ? Boolean(this.options.trustedSearchOrigin)
         : URL.canParse(config.value));
     return { valid, errors: valid ? [] : ["Invalid web target configuration"] };
   }
@@ -36,17 +47,18 @@ export class WebAdapter implements SourceAdapter<WebTargetConfig> {
     if (input.config.kind === "url") {
       yield await fetchPage(
         input.config.value,
-        fetch,
+        this.options,
         input.config.userAgent ?? "Argus/0.1",
       );
       return;
     }
     const items =
       input.config.kind === "feed"
-        ? await fetchFeed(input.config.value)
+        ? await fetchFeed(input.config.value, this.options)
         : await searchSearxng(
-            input.config.searchEndpoint as string,
+            this.options.trustedSearchOrigin as TrustedServiceOrigin,
             input.config.value,
+            this.options.trustedService,
           );
     for (const item of items) yield item;
   }

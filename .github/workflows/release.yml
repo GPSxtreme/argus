@@ -1,0 +1,218 @@
+name: Signed release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      packages: write
+    env:
+      REGISTRY: ghcr.io
+      APP_IMAGE: ghcr.io/gpsxtreme/argus
+      CLI_IMAGE: ghcr.io/gpsxtreme/argus-cli
+      FXEMBED_REVISION: f088a632e56e5cb8084f87d55f74a24d1fcda6f6
+      FXEMBED_LICENSE_SHA256: 30ee0a78e6df8c8210bbee02a477c57f2cf8c7db13a756ea577678aee7014d37
+      FXEMBED_LOCK_SHA256: 88ae1a737ca41e9a7d69593fd9e82ad35dee90d4fabc51ae3c5b33d5868535bc
+      FXEMBED_COMPATIBILITY_DATE: "2026-04-11"
+      FXEMBED_OUTPUT_SHA256: aee0406fc38830fce35e4d493bc93a44d0a3aa15f7305fe2a36e8185b588c868
+      NODE_VERSION: "24.16.0"
+      NPM_VERSION: "11.13.0"
+      PNPM_VERSION: "10.33.0"
+    steps:
+      - name: Check out exact tag
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: |
+          test "$(node --version)" = "v${NODE_VERSION}"
+          test "$(npm --version)" = "${NPM_VERSION}"
+          test "$(pnpm --version)" = "${PNPM_VERSION}"
+          pnpm install --frozen-lockfile
+
+      - name: Validate immutable release identity
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$ ]]
+          version="${GITHUB_REF_NAME#v}"
+          source_date_epoch="$(git show -s --format=%ct "$GITHUB_SHA")"
+          release_base_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
+          printf 'version=%s\nsource_date_epoch=%s\nrelease_base_url=%s\n' \
+            "$version" "$source_date_epoch" "$release_base_url" >> "$GITHUB_OUTPUT"
+
+      - name: Reserve immutable GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" --draft --title "$GITHUB_REF_NAME" \
+            --verify-tag \
+            --notes "Signed Argus release $GITHUB_REF_NAME"
+
+      - name: Derive the public release key
+        id: public-key
+        env:
+          ARGUS_RELEASE_ED25519_KEY: ${{ secrets.ARGUS_RELEASE_ED25519_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist/release
+          node --input-type=module -e \
+            'import { createPrivateKey, createPublicKey } from "node:crypto";
+             import { writeFileSync } from "node:fs";
+             const key = createPrivateKey(process.env.ARGUS_RELEASE_ED25519_KEY);
+             if (key.asymmetricKeyType !== "ed25519") throw new Error("release key is not Ed25519");
+             const pem = createPublicKey(key).export({ type: "spki", format: "pem" }).toString();
+             writeFileSync("dist/release/release-public.pem", pem, { mode: 0o644 });
+             writeFileSync(process.env.GITHUB_OUTPUT, `b64=${Buffer.from(pem).toString("base64")}\n`, { flag: "a" });'
+
+      - name: Lint
+        run: pnpm lint
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Test
+        run: pnpm test
+      - name: Build
+        run: pnpm build
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+      - name: Log in to GHCR
+        uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push application image
+        id: app
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: .
+          file: deploy/docker/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.APP_IMAGE }}:${{ steps.release.outputs.version }}
+          build-args: |
+            ARGUS_VERSION=${{ steps.release.outputs.version }}
+            ARGUS_REVISION=${{ github.sha }}
+
+      - name: Build and push management image
+        id: cli
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: .
+          file: deploy/docker/Dockerfile.cli
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.CLI_IMAGE }}:${{ steps.release.outputs.version }}
+          build-args: |
+            ARGUS_VERSION=${{ steps.release.outputs.version }}
+            ARGUS_REVISION=${{ github.sha }}
+            ARGUS_RELEASE_PUBLIC_KEY_B64=${{ steps.public-key.outputs.b64 }}
+            ARGUS_RELEASE_MANIFEST_URL=${{ steps.release.outputs.release_base_url }}/manifest.json
+
+      - name: Resolve upstream image indexes
+        id: upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+          postgres_digest="$(docker buildx imagetools inspect postgres:17-alpine --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          searxng_digest="$(docker buildx imagetools inspect searxng/searxng:latest --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          [[ "$postgres_digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          [[ "$searxng_digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          printf 'postgres=%s\nsearxng=%s\n' "$postgres_digest" "$searxng_digest" >> "$GITHUB_OUTPUT"
+
+      - name: Build pinned FxEmbed worker
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none --no-checkout https://github.com/FxEmbed/FxEmbed.git dist/fxembed-source
+          git -C dist/fxembed-source checkout --detach "$FXEMBED_REVISION"
+          test "$(git -C dist/fxembed-source rev-parse HEAD)" = "$FXEMBED_REVISION"
+          printf '%s  %s\n' "$FXEMBED_LICENSE_SHA256" dist/fxembed-source/LICENSE.md | sha256sum --check --strict
+          printf '%s  %s\n' "$FXEMBED_LOCK_SHA256" dist/fxembed-source/package-lock.json | sha256sum --check --strict
+          (
+            cd dist/fxembed-source
+            test "$(node --version)" = "v${NODE_VERSION}"
+            test "$(npm --version)" = "${NPM_VERSION}"
+            npm ci --ignore-scripts
+            npm run build:atmosphere
+            npm run build-local
+          )
+          install -m 0644 dist/fxembed-source/dist/worker.js dist/release/fxembed.js
+          printf '%s  %s\n' "$FXEMBED_OUTPUT_SHA256" dist/release/fxembed.js | sha256sum --check --strict
+          install -m 0644 dist/fxembed-source/LICENSE.md dist/release/FXEMBED-LICENSE.md
+          install -m 0644 scripts/release/fxembed-provenance.json dist/release/fxembed-provenance.json
+
+      - name: Render digest-pinned host wrapper
+        run: |
+          pnpm tsx scripts/release/export-wrapper.ts \
+            --version "${{ steps.release.outputs.version }}" \
+            --cli-image "${CLI_IMAGE}@${{ steps.cli.outputs.digest }}" \
+            --output dist/release/argus
+
+      - name: Build and verify signed assets
+        env:
+          ARGUS_RELEASE_ED25519_KEY: ${{ secrets.ARGUS_RELEASE_ED25519_KEY }}
+        run: |
+          pnpm tsx scripts/release/create-manifest.ts \
+            --version "${{ steps.release.outputs.version }}" \
+            --source-date-epoch "${{ steps.release.outputs.source_date_epoch }}" \
+            --image "app=${APP_IMAGE}@${{ steps.app.outputs.digest }}" \
+            --image "cli=${CLI_IMAGE}@${{ steps.cli.outputs.digest }}" \
+            --image "postgres=docker.io/library/postgres@${{ steps.upstream.outputs.postgres }}" \
+            --image "searxng=docker.io/searxng/searxng@${{ steps.upstream.outputs.searxng }}" \
+            --fxembed dist/release/fxembed.js \
+            --fxembed-license dist/release/FXEMBED-LICENSE.md \
+            --fxembed-provenance dist/release/fxembed-provenance.json \
+            --fxembed-compatibility-date "$FXEMBED_COMPATIBILITY_DATE" \
+            --wrapper dist/release/argus \
+            --release-base-url "${{ steps.release.outputs.release_base_url }}" \
+            --output-dir dist/release
+          pnpm tsx scripts/release/verify-manifest.ts \
+            dist/release/manifest.json \
+            dist/release/manifest.sig \
+            dist/release/release-public.pem
+          sh -n dist/release/argus
+          sh -n dist/release/install.sh
+
+      - name: Publish immutable GitHub Release
+        uses: softprops/action-gh-release@62c96d0c4e8a889135c1f3a25910db8dbe0e85f7 # v2.3.4
+        with:
+          draft: false
+          fail_on_unmatched_files: true
+          files: |
+            dist/release/manifest.json
+            dist/release/manifest.sig
+            dist/release/release-public.pem
+            dist/release/install.sh
+            dist/release/argus
+            dist/release/fxembed.js
+            dist/release/FXEMBED-LICENSE.md
+            dist/release/fxembed-provenance.json

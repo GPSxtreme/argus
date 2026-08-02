@@ -1,4 +1,4 @@
-import type { ArgusConfig } from "@argus/config";
+import { assertCanonicalPostgresUrl, type ArgusConfig } from "@argus/config";
 import type { StorageRepository } from "@argus/contracts";
 import { createPostgresRepository } from "@argus/storage-postgres";
 import { createSqliteRepository } from "@argus/storage-sqlite";
@@ -20,6 +20,7 @@ export const openRepository = async (
       close: async () => repository.close(),
     };
   }
+  assertCanonicalPostgresUrl(config.storage.url);
   const repository = await createPostgresRepository({
     connectionString: config.storage.url,
   });

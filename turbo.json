@@ -1,5 +1,6 @@
 {
   "$schema": "https://turbo.build/schema.json",
+  "globalPassThroughEnv": ["ARGUS_RELEASE_ED25519_KEY"],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
