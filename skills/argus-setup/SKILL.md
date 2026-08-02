@@ -25,8 +25,8 @@ backups directly.
    required installation and ask for authorization before installing it.
 2. Inspect `argus status --json`, even for a fresh host, then read the live
    `argus config schema --json`. Never copy schema fields from this skill.
-3. Gather only non-secret requirements. Use the setup choices reference for
-   defaults.
+3. Gather only non-secret requirements. Use
+   [setup choices](references/setup-choices.md) for defaults.
 4. Create a non-secret answers file that matches the live schema and validate
    it with `argus config validate <file> --json`.
 5. Tell the user which hidden secret prompts the CLI will show. Do not ask for,
@@ -38,8 +38,8 @@ backups directly.
 
 ## Status, diagnosis, and repair
 
-Read the CLI contracts reference before interpreting a JSON result. For
-unhealthy checks, follow the recovery routing reference.
+Read [CLI contracts](references/cli-contracts.md) before interpreting a JSON
+result. For unhealthy checks, follow the recovery routing reference.
 
 Stop and ask the user when the CLI requests new authority, when a plan changes
 host or Cloudflare state, or when a returned recovery command is unclear. Do

@@ -37,4 +37,29 @@ describe("Argus Agent Skill", () => {
 
     expect(result.status, result.stderr).toBe(0);
   });
+
+  it("links the live setup choices and JSON command contracts", async () => {
+    const skill = await loadSkill("skills/argus-setup");
+    const choices = await readFile(
+      join(repositoryRoot, "skills/argus-setup/references/setup-choices.md"),
+      "utf8",
+    );
+    const contracts = await readFile(
+      join(repositoryRoot, "skills/argus-setup/references/cli-contracts.md"),
+      "utf8",
+    );
+    const help = spawnSync("pnpm", ["argus", "--help"], {
+      cwd: repositoryRoot,
+      encoding: "utf8",
+    });
+
+    expect(skill.body).toContain("[setup choices](references/setup-choices.md)");
+    expect(skill.body).toContain("[CLI contracts](references/cli-contracts.md)");
+    expect(choices).toContain("VPS Docker only");
+    expect(contracts).toContain('{"contractVersion":1,"ok":true,"data":{}}');
+    expect(help.status, help.stderr).toBe(0);
+    for (const command of ["onboard", "status", "logs", "doctor", "repair", "config"]) {
+      expect(help.stdout).toContain(command);
+    }
+  });
 });
