@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build --webpack",
-    "check:links": "start-server-and-test start 3000 \"linkinator http://localhost:3000 --recurse --skip '(^https://github.com|https://argus.gpsxtre.me|http://localhost:3000/skill)'\"",
+    "check:links": "start-server-and-test start 3000 \"linkinator http://localhost:3000 --recurse --skip '(^https://github.com|https://argus.gpsxtre.me)'\"",
     "start": "next start",
     "typecheck": "tsc --noEmit"
   },
@@ -22,6 +22,7 @@
     "@lhci/cli": "^0.15.1",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
+    "fflate": "^0.8.3",
     "linkinator": "^8.0.3",
     "postcss": "^8.5.25",
     "start-server-and-test": "^3.0.12",
