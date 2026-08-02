@@ -858,4 +858,25 @@ exit 42
       /ARGUS_(?:INSTALL_FIXTURE|DAEMON_SETTLE_SECONDS|SNAPSHOT_TIMEOUT_SECONDS):/u,
     );
   });
+
+  it("authenticates private release assets without placing the token in curl arguments", async () => {
+    const workflow = await read(".github/workflows/installer-smoke.yml");
+    const smoke = await read("scripts/e2e/installer-smoke.sh");
+
+    expect(workflow).toContain(
+      'gh api "repos/$' +
+        "{REPOSITORY}/releases/tags/$" +
+        '{RELEASE_TAG}"',
+    );
+    expect(workflow).toContain("application/octet-stream");
+    expect(workflow).toContain("--env ARGUS_GITHUB_TOKEN");
+    expect(workflow).not.toContain(
+      '--env "ARGUS_GITHUB_TOKEN=$ARGUS_GITHUB_TOKEN"',
+    );
+    expect(smoke).toContain("ARGUS_GITHUB_TOKEN");
+    expect(smoke).toContain('--header @"$argus_github_headers"');
+    expect(smoke).not.toContain(
+      '--header "Authorization: Bearer $ARGUS_GITHUB_TOKEN"',
+    );
+  });
 });

@@ -335,6 +335,14 @@ describe("renderInstaller", () => {
     expect(installer).toContain("IFS= read -r argus_answer <&3");
     expect(installer).toContain("Docker installation declined");
     expect(installer).toContain("--connect-timeout 10 --max-time 60 --retry 3");
+    expect(installer).toContain("ARGUS_GITHUB_TOKEN");
+    expect(installer).toContain("https://api.github.com/repos/");
+    expect(installer).toContain("application/octet-stream");
+    expect(installer).toContain("GitHub token requires jq");
+    expect(installer).toContain('--header @"$argus_github_headers"');
+    expect(installer).not.toContain(
+      '--header "Authorization: Bearer $ARGUS_GITHUB_TOKEN"',
+    );
     expect(installer).not.toContain("eval ");
     expect(installer).not.toContain(". /etc/os-release");
     expect(installer).toContain("argus onboard");

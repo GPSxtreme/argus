@@ -40,6 +40,7 @@ argus_tmp=
 argus_lock=
 argus_target_tmp=
 argus_backup_tmp=
+argus_github_headers=
 
 argus_die() {
   printf '%s\\n' "argus installer: $*" >&2
@@ -224,6 +225,18 @@ argus_lock=$argus_requested_lock
 argus_tmp=$(mktemp -d "\${TMPDIR:-/tmp}/argus-install.XXXXXX") || argus_die "could not create temporary directory"
 chmod 700 "$argus_tmp"
 
+if [ -n "\${ARGUS_GITHUB_TOKEN:-}" ]; then
+  command -v jq >/dev/null 2>&1 || argus_die "GitHub token requires jq"
+  printf '%s\\n' "$ARGUS_GITHUB_TOKEN" | LC_ALL=C grep -Eq '^[A-Za-z0-9_]+$' ||
+    argus_die "ARGUS_GITHUB_TOKEN contains unsafe characters"
+  argus_github_headers="$argus_tmp/github.headers"
+  {
+    printf 'Authorization: Bearer %s\\n' "$ARGUS_GITHUB_TOKEN"
+    printf '%s\\n' 'X-GitHub-Api-Version: 2022-11-28'
+  } > "$argus_github_headers"
+  chmod 600 "$argus_github_headers"
+fi
+
 cat > "$argus_tmp/release-public.pem" <<'ARGUS_RELEASE_PUBLIC_KEY'
 ${publicKey}
 ARGUS_RELEASE_PUBLIC_KEY
@@ -237,6 +250,39 @@ esac
 argus_curl() {
   argus_fetch_url=$1
   argus_fetch_output=$2
+  if [ -n "$argus_github_headers" ]; then
+    case "$argus_fetch_url" in
+      https://github.com/*/*/releases/download/*/*)
+        argus_github_path=\${argus_fetch_url#https://github.com/}
+        argus_github_owner=\${argus_github_path%%/*}
+        argus_github_path=\${argus_github_path#*/}
+        argus_github_repo=\${argus_github_path%%/*}
+        argus_github_path=\${argus_github_path#*/releases/download/}
+        argus_github_tag=\${argus_github_path%%/*}
+        argus_github_asset=\${argus_github_path#*/}
+        printf '%s\\n' "$argus_github_owner/$argus_github_repo/$argus_github_tag/$argus_github_asset" |
+          LC_ALL=C grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/[A-Za-z0-9_.+-]+/[A-Za-z0-9_.+-]+$' ||
+          return 1
+        argus_release_api="https://api.github.com/repos/$argus_github_owner/$argus_github_repo/releases/tags/$argus_github_tag"
+        argus_release_json="$argus_tmp/github-release.json"
+        curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --connect-timeout 10 --max-time 60 --retry 3 --retry-all-errors \
+          --header @"$argus_github_headers" --header 'Accept: application/vnd.github+json' \
+          --output "$argus_release_json" "$argus_release_api" ||
+          return 1
+        [ "$(jq --arg name "$argus_github_asset" '[.assets[] | select(.name == $name and .state == "uploaded")] | length' "$argus_release_json")" -eq 1 ] ||
+          return 1
+        argus_asset_api=$(jq -er --arg name "$argus_github_asset" '.assets[] | select(.name == $name and .state == "uploaded") | .url' "$argus_release_json") ||
+          return 1
+        printf '%s\\n' "$argus_asset_api" |
+          LC_ALL=C grep -Eq "^https://api\\\\.github\\\\.com/repos/$argus_github_owner/$argus_github_repo/releases/assets/[1-9][0-9]*$" ||
+          return 1
+        curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --connect-timeout 10 --max-time 60 --retry 3 --retry-all-errors \
+          --header @"$argus_github_headers" --header 'Accept: application/octet-stream' \
+          --output "$argus_fetch_output" "$argus_asset_api"
+        return
+        ;;
+    esac
+  fi
   case "$argus_fetch_url" in
     http://127.0.0.1:*|http://localhost:*)
       curl --fail --silent --show-error --location --proto '=http' --connect-timeout 10 --max-time 60 --retry 3 --retry-all-errors --output "$argus_fetch_output" "$argus_fetch_url"
