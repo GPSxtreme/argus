@@ -113,14 +113,22 @@ jobs:
           [[ "$source_ref" =~ ^[a-f0-9]{40}$ ]]
           version="${RELEASE_TAG#v}"
           base="https://github.com/${REPOSITORY}/releases/download/${RELEASE_TAG}"
-          curl --fail --location --proto '=https' --tlsv1.2 \
-            --connect-timeout 10 --max-time 60 --retry 3 --retry-all-errors \
-            --output manifest.json "${base}/manifest.json"
+          gh api "repos/${REPOSITORY}/releases/tags/${RELEASE_TAG}" \
+            > release-metadata.json
+          asset_url() {
+            local name=$1
+            test "$(jq --arg name "$name" '[.assets[] | select(.name == $name and .state == "uploaded")] | length' release-metadata.json)" -eq 1
+            jq -er --arg name "$name" '.assets[] | select(.name == $name and .state == "uploaded") | .url' release-metadata.json
+          }
+          manifest_asset_url="$(asset_url manifest.json)"
+          installer_asset_url="$(asset_url install.sh)"
+          gh api "$manifest_asset_url" \
+            -H "Accept: application/octet-stream" > manifest.json
           test "$(jq -er '.version' manifest.json)" = "$version"
           wrapper_sha256="$(jq -er '.assets.wrapper.sha256' manifest.json)"
           [[ "$wrapper_sha256" =~ ^[a-f0-9]{64}$ ]]
           printf 'installer_url=%s\nmanifest_url=%s\nversion=%s\nwrapper_sha256=%s\nsource_ref=%s\n' \
-            "${base}/install.sh" "${base}/manifest.json" "$version" "$wrapper_sha256" \
+            "$installer_asset_url" "${base}/manifest.json" "$version" "$wrapper_sha256" \
             "$source_ref" \
             >> "$GITHUB_OUTPUT"
 
@@ -270,6 +278,7 @@ jobs:
           MANIFEST_URL: ${{ needs.candidate.outputs.manifest_url }}
           EXPECTED_VERSION: ${{ needs.candidate.outputs.version }}
           WRAPPER_SHA256: ${{ needs.candidate.outputs.wrapper_sha256 }}
+          ARGUS_GITHUB_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
@@ -282,6 +291,7 @@ jobs:
             install_docker=0
           fi
           docker exec \
+            --env ARGUS_GITHUB_TOKEN \
             --env "ARGUS_INSTALLER_URL=$INSTALLER_URL" \
             --env "ARGUS_MANIFEST_URL=$MANIFEST_URL" \
             --env "ARGUS_EXPECTED_VERSION=$EXPECTED_VERSION" \

@@ -76,6 +76,7 @@ argus_daemon_snapshot_before=$argus_work/daemon.before
 argus_daemon_snapshot_after=$argus_work/daemon.after
 argus_daemon_snapshot_probe=$argus_work/daemon.probe
 argus_token=
+argus_github_headers=
 mkdir -p "$argus_artifacts"
 chmod 700 "$argus_artifacts"
 : > "$argus_artifacts/installer.log"
@@ -115,6 +116,19 @@ argus_collect_failure() {
     : > "$argus_artifacts/wrapper.sha256"
     argus_status=1
   fi
+  if [ -n "${ARGUS_GITHUB_TOKEN:-}" ] &&
+    grep -R -F "$ARGUS_GITHUB_TOKEN" \
+      "$argus_artifacts/installer.log" \
+      "$argus_artifacts/compose.log" \
+      "$argus_artifacts/doctor.json" \
+      "$argus_artifacts/wrapper.sha256" >/dev/null 2>&1
+  then
+    : > "$argus_artifacts/installer.log"
+    : > "$argus_artifacts/compose.log"
+    : > "$argus_artifacts/doctor.json"
+    : > "$argus_artifacts/wrapper.sha256"
+    argus_status=1
+  fi
   rm -f "$argus_answers"
   rm -rf "$argus_work"
   exit "$argus_status"
@@ -124,11 +138,29 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+if [ -n "${ARGUS_GITHUB_TOKEN:-}" ]; then
+  printf '%s\n' "$ARGUS_GITHUB_TOKEN" | LC_ALL=C grep -Eq '^[A-Za-z0-9_]+$' ||
+    argus_die "ARGUS_GITHUB_TOKEN contains unsafe characters"
+  argus_github_headers="$argus_work/github.headers"
+  {
+    printf 'Authorization: Bearer %s\n' "$ARGUS_GITHUB_TOKEN"
+    printf '%s\n' 'X-GitHub-Api-Version: 2022-11-28'
+  } > "$argus_github_headers"
+  chmod 600 "$argus_github_headers"
+fi
+
 case "$ARGUS_INSTALLER_URL" in
   https://*)
-    curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
-      --connect-timeout 10 --max-time 60 --retry 3 --retry-all-errors \
-      --output "$argus_installer" "$ARGUS_INSTALLER_URL"
+    if [ -n "$argus_github_headers" ]; then
+      curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+        --connect-timeout 10 --max-time 60 --retry 3 --retry-all-errors \
+        --header @"$argus_github_headers" --header 'Accept: application/octet-stream' \
+        --output "$argus_installer" "$ARGUS_INSTALLER_URL"
+    else
+      curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+        --connect-timeout 10 --max-time 60 --retry 3 --retry-all-errors \
+        --output "$argus_installer" "$ARGUS_INSTALLER_URL"
+    fi
     ;;
   http://127.0.0.1:*|http://localhost:*)
     [ "${ARGUS_INSTALL_FIXTURE:-0}" = 1 ] ||
@@ -142,7 +174,7 @@ esac
 sh -n "$argus_installer"
 chmod 700 "$argus_installer"
 
-export ARGUS_MANIFEST_URL ARGUS_EXPECTED_VERSION
+export ARGUS_MANIFEST_URL ARGUS_EXPECTED_VERSION ARGUS_GITHUB_TOKEN
 export ARGUS_VERSION="$ARGUS_EXPECTED_VERSION"
 export ARGUS_INSTALL_DOCKER="${ARGUS_INSTALL_DOCKER:-0}"
 export ARGUS_INSTALL_TARGET=/usr/local/bin/argus
