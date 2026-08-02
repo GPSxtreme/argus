@@ -48,17 +48,22 @@ const fixtureTimingEnvironment = ({
   ARGUS_DAEMON_SETTLE_SECONDS: settleSeconds,
   ARGUS_SNAPSHOT_TIMEOUT_SECONDS: timeoutSeconds,
 });
+const quiescenceWorkBudgetMs = (
+  settleSeconds: string,
+  timeoutSeconds: string,
+): number =>
+  Math.ceil(
+    (fixtureQuiescenceAttempts * Number(timeoutSeconds) +
+      (fixtureQuiescenceAttempts - 1) * Number(settleSeconds)) *
+      1_000,
+  ) + fixtureSchedulingMarginMs;
 const quiescenceProcessDeadlineMs = (
   settleSeconds: string,
   timeoutSeconds: string,
 ): number =>
   Math.max(
     10_000,
-    Math.ceil(
-      (fixtureQuiescenceAttempts * Number(timeoutSeconds) +
-        (fixtureQuiescenceAttempts - 1) * Number(settleSeconds)) *
-        1_000,
-    ) + fixtureSchedulingMarginMs,
+    quiescenceWorkBudgetMs(settleSeconds, timeoutSeconds),
   );
 
 const writeJson = async (
@@ -255,7 +260,9 @@ esac`,
       expect(result.stderr).toContain(
         "Docker daemon data did not reach a stable clean-host snapshot",
       );
-      expect(elapsedMs).toBeLessThan(2_500);
+      expect(elapsedMs).toBeLessThan(
+        quiescenceWorkBudgetMs("0.01", "0.1"),
+      );
       const pid = Number((await readFile(childPid, "utf8")).trim());
       const alive = spawnSync("/bin/kill", ["-0", String(pid)]);
       expect(alive.status).not.toBe(0);
