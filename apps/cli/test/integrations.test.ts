@@ -253,6 +253,31 @@ describe("production onboarding integration", () => {
         apply: expect.any(Function),
         verify: expect.any(Function),
       }),
+      updateIntegration: expect.objectContaining({
+        fetchUpdateRelease: expect.any(Function),
+        fetchRollbackRelease: expect.any(Function),
+      }),
+    });
+  });
+
+  it("fetches and verifies the exact signed update manifest before exposing it", async () => {
+    const fixture = releaseFixture();
+    const composition = createReleaseComposition({
+      root: "/opt/argus",
+      executor: new DeploymentExecutor(),
+      environment: {
+        ARGUS_RELEASE_PUBLIC_KEY_B64: Buffer.from(fixture.publicKeyPem).toString("base64"),
+        ARGUS_RELEASE_MANIFEST_URL: "https://release.example/manifest.json",
+      },
+      fetcher: async (input) => {
+        const bytes = String(input).endsWith(".sig") ? fixture.signature : fixture.manifestBytes;
+        return new Response(Uint8Array.from(bytes).buffer);
+      },
+    });
+
+    await expect(composition.updateIntegration?.fetchUpdateRelease()).resolves.toMatchObject({
+      manifest: { version: "1.2.3" },
+      manifestSha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
     });
   });
 

@@ -1,5 +1,5 @@
 import { copyFile, mkdir, open, readFile, rename, stat } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import type { VerifiedReleaseManifest } from "@argus/release";
 import { DeploymentError } from "./errors.js";
 import type { DeploymentStateV1 } from "./contracts.js";
@@ -23,6 +23,7 @@ export interface UpdatePlan {
   noop: boolean;
   previousState: DeploymentStateV1;
   release: VerifiedReleaseManifest;
+  rollbackRelease: VerifiedReleaseManifest;
 }
 
 export interface UpdateHealthReport {
@@ -39,7 +40,7 @@ export interface UpdateResult {
 export interface InstanceBackup {
   path: string;
   state: DeploymentStateV1;
-  sqliteFiles: string[];
+  sqliteFiles: Array<{ relativePath: string }>;
 }
 
 interface PersistedUpdate {
@@ -47,12 +48,14 @@ interface PersistedUpdate {
   plan: Pick<UpdatePlan, "currentVersion" | "targetVersion">;
   previousState: DeploymentStateV1;
   release: VerifiedReleaseManifest;
+  rollbackRelease: VerifiedReleaseManifest;
   backup?: InstanceBackup;
 }
 
 export interface PlanUpdateInput {
   root: string;
   release: VerifiedReleaseManifest;
+  rollbackRelease: VerifiedReleaseManifest;
   executor: CommandExecutor;
 }
 
@@ -203,8 +206,9 @@ const sqliteFiles = async (root: string): Promise<string[]> => {
   return files;
 };
 
-export const planUpdate = async ({ root, release }: PlanUpdateInput): Promise<UpdatePlan> => {
+export const planUpdate = async ({ root, release, rollbackRelease }: PlanUpdateInput): Promise<UpdatePlan> => {
   assertVerifiedRelease(release);
+  assertVerifiedRelease(rollbackRelease);
   const state = await loadDeploymentState(root);
   if (!state?.compose) {
     throw new DeploymentError(
@@ -214,6 +218,7 @@ export const planUpdate = async ({ root, release }: PlanUpdateInput): Promise<Up
     );
   }
   assertCompatible(state, release);
+  assertCompatible(state, rollbackRelease);
   const noop = state.argusVersion === release.manifest.version;
   const services: Array<"argus" | "postgres" | "searxng"> = ["argus"];
   if (state.compose.storage === "postgres") services.push("postgres");
@@ -233,6 +238,7 @@ export const planUpdate = async ({ root, release }: PlanUpdateInput): Promise<Up
     noop,
     previousState: state,
     release,
+    rollbackRelease,
   };
 };
 
@@ -241,13 +247,19 @@ export const backupInstance = async ({ root, plan }: BackupInstanceInput): Promi
   await mkdir(path, { recursive: true });
   await atomicWrite(join(path, "state.json"), `${JSON.stringify(plan.previousState, null, 2)}\n`);
   const files = await sqliteFiles(root);
-  for (const source of files) await copyFile(source, join(path, source.slice(source.lastIndexOf("/") + 1)));
-  const backup = { path, state: plan.previousState, sqliteFiles: files.map((file) => file.slice(file.lastIndexOf("/") + 1)) };
+  const sqliteBackupFiles = files.map((source) => ({ relativePath: relative(root, source) }));
+  for (const file of sqliteBackupFiles) {
+    const destination = join(path, file.relativePath);
+    await mkdir(dirname(destination), { recursive: true });
+    await copyFile(join(root, file.relativePath), destination);
+  }
+  const backup = { path, state: plan.previousState, sqliteFiles: sqliteBackupFiles };
   await persist(root, {
     phase: "backed_up",
     plan: { currentVersion: plan.currentVersion, targetVersion: plan.targetVersion },
     previousState: plan.previousState,
     release: plan.release,
+    rollbackRelease: plan.rollbackRelease,
     backup,
   });
   return backup;
@@ -255,13 +267,16 @@ export const backupInstance = async ({ root, plan }: BackupInstanceInput): Promi
 
 export const applyUpdate = async ({ root, plan, executor }: ApplyUpdateInput): Promise<UpdateResult> => {
   assertVerifiedRelease(plan.release);
+  assertVerifiedRelease(plan.rollbackRelease);
   assertCompatible(plan.previousState, plan.release);
+  assertCompatible(plan.previousState, plan.rollbackRelease);
   if (plan.noop) return { version: plan.currentVersion, phase: "verified", health: await health(root, executor, plan.previousState, plan.release) };
   let persisted: PersistedUpdate = {
     phase: "planned",
     plan: { currentVersion: plan.currentVersion, targetVersion: plan.targetVersion },
     previousState: plan.previousState,
     release: plan.release,
+    rollbackRelease: plan.rollbackRelease,
   };
   await persist(root, persisted);
   const backup = await backupInstance({ root, plan });
@@ -308,17 +323,26 @@ export const rollbackUpdate = async ({ root, executor, release }: RollbackUpdate
   assertVerifiedRelease(release);
   const persisted = await loadPersisted(root);
   const backup = persisted.backup;
-  if (!backup || backup.state.schemaVersion < Number(release.manifest.minimumStateSchema)) {
+  if (
+    !backup ||
+    backup.state.schemaVersion < Number(release.manifest.minimumStateSchema) ||
+    release.manifestSha256 !== persisted.rollbackRelease.manifestSha256 ||
+    release.manifest.version !== persisted.rollbackRelease.manifest.version
+  ) {
     throw new DeploymentError(
       "UPDATE_ROLLBACK_INCOMPATIBLE",
       "The available Argus backup is incompatible with the requested rollback.",
       { recovery: "Keep the backup and select a release compatible with its state schema." },
     );
   }
-  for (const name of backup.sqliteFiles) await copyFile(join(backup.path, name), join(root, name));
-  const environment = environmentFor(backup.state, persisted.release);
+  for (const file of backup.sqliteFiles) {
+    const destination = join(root, file.relativePath);
+    await mkdir(dirname(destination), { recursive: true });
+    await copyFile(join(backup.path, file.relativePath), destination);
+  }
+  const environment = environmentFor(backup.state, persisted.rollbackRelease);
   await command(root, executor, ["up", "-d"], environment, "Argus rollback restart failed.");
-  const report = await health(root, executor, backup.state, persisted.release);
+  const report = await health(root, executor, backup.state, persisted.rollbackRelease);
   if (!report.healthy) {
     throw new DeploymentError("UPDATE_ROLLBACK_VERIFY_FAILED", "Argus rollback health verification failed.", {
       recovery: "Run 'argus doctor --json' and preserve the existing backup for recovery.",

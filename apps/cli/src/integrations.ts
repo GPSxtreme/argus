@@ -32,6 +32,7 @@ import {
 import {
   MAX_RELEASE_MANIFEST_BYTES,
   type ReleaseManifestV1,
+  type VerifiedReleaseManifest,
   verifyReleaseManifestWithIdentity,
 } from "@argus/release";
 
@@ -260,6 +261,11 @@ export interface ReleaseCompositionOptions {
   fetcher?: typeof fetch;
 }
 
+export interface ProductionUpdateIntegration {
+  fetchUpdateRelease(): Promise<VerifiedReleaseManifest>;
+  fetchRollbackRelease(): Promise<VerifiedReleaseManifest>;
+}
+
 export const createReleaseComposition = ({
   root,
   executor,
@@ -270,6 +276,7 @@ export const createReleaseComposition = ({
 }: ReleaseCompositionOptions): {
   onboardingIntegration?: ProductionOnboardingIntegration;
   installedConfigIntegration?: InstalledConfigIntegration;
+  updateIntegration?: ProductionUpdateIntegration;
 } => {
   const encodedPublicKey = environment.ARGUS_RELEASE_PUBLIC_KEY_B64;
   const manifestUrl = environment.ARGUS_RELEASE_MANIFEST_URL;
@@ -280,6 +287,7 @@ export const createReleaseComposition = ({
     );
   }
   let onboardingIntegration: ProductionOnboardingIntegration | undefined;
+  let updateIntegration: ProductionUpdateIntegration | undefined;
   if (encodedPublicKey !== undefined && manifestUrl !== undefined) {
     const decoded = Buffer.from(encodedPublicKey, "base64");
     if (
@@ -298,6 +306,12 @@ export const createReleaseComposition = ({
       publicKeyPem: decoded.toString("utf8"),
       ...(fetcher === undefined ? {} : { fetcher }),
     });
+    updateIntegration = createProductionUpdateIntegration({
+      root,
+      manifestUrl,
+      publicKeyPem: decoded.toString("utf8"),
+      ...(fetcher === undefined ? {} : { fetcher }),
+    });
   }
   const installedConfigIntegration =
     onboardingIntegration === undefined ||
@@ -311,6 +325,7 @@ export const createReleaseComposition = ({
         });
   return {
     ...(onboardingIntegration === undefined ? {} : { onboardingIntegration }),
+    ...(updateIntegration === undefined ? {} : { updateIntegration }),
     ...(installedConfigIntegration === undefined
       ? {}
       : { installedConfigIntegration }),
@@ -396,6 +411,64 @@ const signatureUrl = (manifestUrl: string): string =>
   manifestUrl.endsWith("/manifest.json")
     ? `${manifestUrl.slice(0, -"manifest.json".length)}manifest.sig`
     : `${manifestUrl}.sig`;
+
+export interface ProductionUpdateIntegrationOptions {
+  root: string;
+  manifestUrl: string;
+  publicKeyPem: string;
+  fetcher?: typeof fetch;
+  timeoutMs?: number;
+}
+
+export const createProductionUpdateIntegration = ({
+  root,
+  manifestUrl,
+  publicKeyPem,
+  fetcher = fetch,
+  timeoutMs = defaultTimeoutMs,
+}: ProductionUpdateIntegrationOptions): ProductionUpdateIntegration => {
+  const fetchVerified = async (): Promise<VerifiedReleaseManifest> => {
+    const fetchBounded = async (
+      url: string,
+      maximumBytes: number,
+      code: string,
+      message: string,
+    ): Promise<Uint8Array> => {
+      try {
+        return await withHttpDeadline(timeoutMs, async (signal) =>
+          boundedBytes(await fetcher(url, { signal }), maximumBytes, code, message),
+        );
+      } catch (error) {
+        if (error instanceof DeploymentError) throw error;
+        throw new DeploymentError(code, message);
+      }
+    };
+    const [manifestBytes, signature] = await Promise.all([
+      fetchBounded(manifestUrl, MAX_RELEASE_MANIFEST_BYTES, "RELEASE_MANIFEST_DOWNLOAD_FAILED", "The bounded release manifest download failed."),
+      fetchBounded(signatureUrl(manifestUrl), maximumSignatureBytes, "RELEASE_SIGNATURE_DOWNLOAD_FAILED", "The bounded release signature download failed."),
+    ]);
+    return verifyReleaseManifestWithIdentity(manifestBytes, signature, publicKeyPem);
+  };
+
+  const fetchRollback = async (): Promise<VerifiedReleaseManifest> => {
+    let parsed: PersistedReleaseContext;
+    try {
+      parsed = JSON.parse(await readFile(join(root, releaseContextFile), "utf8")) as PersistedReleaseContext;
+    } catch {
+      throw new DeploymentError("UPDATE_ROLLBACK_UNAVAILABLE", "No persisted signed release is available for rollback.");
+    }
+    if (parsed.schemaVersion !== 1) {
+      throw new DeploymentError("UPDATE_ROLLBACK_UNAVAILABLE", "Persisted signed rollback release is invalid.");
+    }
+    return verifyReleaseManifestWithIdentity(
+      exactBase64(parsed.manifest, "UPDATE_ROLLBACK_UNAVAILABLE"),
+      exactBase64(parsed.signature, "UPDATE_ROLLBACK_UNAVAILABLE"),
+      publicKeyPem,
+    );
+  };
+
+  return { fetchUpdateRelease: fetchVerified, fetchRollbackRelease: fetchRollback };
+};
 
 const verifiedRelease = (
   manifest: ReleaseManifestV1,

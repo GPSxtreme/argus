@@ -228,6 +228,31 @@ describe("CLI JSON contract", () => {
     });
   });
 
+  it("requires --yes before exposing a verified rollback through JSON", async () => {
+    let applied = false;
+    const harness = createHarness();
+    Object.assign(harness.dependencies.deployment as object, {
+      async inspectRollbackUpdate() {
+        return { release: { manifestSha256: "a".repeat(64) } };
+      },
+      async applyRollbackUpdate() {
+        applied = true;
+        return { version: "1.0.0", health: { healthy: true } };
+      },
+    });
+
+    await expect(
+      createProgram(harness.dependencies).parseAsync(["node", "argus", "update", "--rollback", "--json"]),
+    ).rejects.toMatchObject({ exitCode: 2 });
+    expect(applied).toBe(false);
+
+    await run(["update", "--rollback", "--json", "--yes"], harness.dependencies);
+    expect(JSON.parse(harness.output().stdout.trim().split("\n").at(-1) ?? "")).toMatchObject({
+      ok: true,
+      data: { version: "1.0.0", health: { healthy: true } },
+    });
+  });
+
   it("bounds logs at the executor boundary and never emits a configured secret", async () => {
     let requestedLimit = 0;
     const harness = createHarness(
