@@ -39,7 +39,7 @@ backups directly.
 ## Status, diagnosis, and repair
 
 Read [CLI contracts](references/cli-contracts.md) before interpreting a JSON
-result. For unhealthy checks, follow the recovery routing reference.
+result. For unhealthy checks, follow [recovery routing](references/recovery.md).
 
 Stop and ask the user when the CLI requests new authority, when a plan changes
 host or Cloudflare state, or when a returned recovery command is unclear. Do

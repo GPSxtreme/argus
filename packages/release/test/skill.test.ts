@@ -62,4 +62,28 @@ describe("Argus Agent Skill", () => {
       expect(help.stdout).toContain(command);
     }
   });
+
+  it("routes recovery through Argus without destructive infrastructure commands", async () => {
+    const recovery = await readFile(
+      join(repositoryRoot, "skills/argus-setup/references/recovery.md"),
+      "utf8",
+    );
+    const packageText = [
+      await readFile(join(repositoryRoot, "skills/argus-setup/SKILL.md"), "utf8"),
+      recovery,
+    ].join("\n");
+
+    for (const forbidden of [
+      /docker compose down -v/u,
+      /docker volume rm/u,
+      /rm -rf \/opt\/argus/u,
+      /wrangler delete/u,
+      /cat \/opt\/argus\/secrets\.env/u,
+    ]) {
+      expect(packageText).not.toMatch(forbidden);
+    }
+    expect(packageText).toContain("argus repair");
+    expect(packageText).toContain("argus logs");
+    expect(packageText).toContain("Stop when the CLI requests new authority");
+  });
 });
