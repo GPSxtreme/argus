@@ -1,5 +1,83 @@
 # Argus operations
 
+## VPS installation and onboarding
+
+Use a fresh Ubuntu 24.04 or Debian 13 host with outbound HTTPS. While the
+repository is private, create a GitHub token with read access to Argus and run:
+
+```bash
+curl -fsSL https://argus.gpsxtre.me/install.sh |
+  ARGUS_GITHUB_TOKEN="<GitHub token with read access>" sh
+argus onboard
+```
+
+`argus onboard` asks which sources and storage to enable, whether SearXNG and
+FxEmbed are managed or external, what to watch, and which schedules to use.
+The resulting instance lives in `/opt/argus`:
+
+- `argus.yaml` is the generated application configuration.
+- `compose.yaml` is owned and reconciled by the Argus CLI.
+- `state.json` records the verified release and deployment state.
+- `release-context.json` retains the exact signed release used for rollback.
+- `secrets.env` contains runtime credentials and must remain mode `0600`.
+- `backups/` contains update backups. Argus never deletes them automatically.
+
+Do not hand-edit Compose, state, release context, or managed service settings.
+Change the onboarding answers and rerun `argus onboard`, or use the targeted
+CLI commands below.
+
+For repeatable automation, store the non-secret answers in a mode `0600` YAML
+file and enter required secrets through a TTY:
+
+```bash
+argus onboard --from setup.yaml --yes --json
+argus status --json
+argus doctor --json
+```
+
+Every JSON response has `contractVersion`, `ok`, and either `data` or `error`.
+Mutation commands in non-interactive JSON automation require `--yes`; a plan
+without it does not authorize a mutation.
+
+## Managed and external services
+
+Managed SearXNG runs only on Argus's private Compose network. It enables Web
+query watches and is checked with a bounded JSON search. It does not publish
+another host port. To use an existing SearXNG, choose `external` and give its
+HTTPS endpoint; Argus will not manage or repair that service.
+
+FxEmbed is a Cloudflare Worker rather than a VPS container. Managed mode
+deploys the pinned worker bundle to the supplied Cloudflare account. External
+mode records an existing endpoint. Disabled mode leaves X ingestion
+unavailable while Telegram and Web continue to run.
+
+SQLite is the low-friction single-VPS default. PostgreSQL is available when
+the instance needs separate runtime roles or external database operations.
+
+## Lifecycle commands
+
+Human mode shows a plan and asks before changes. Automation can use:
+
+```bash
+argus start --json --yes
+argus stop --json --yes
+argus restart --json --yes
+argus status --json
+argus logs --tail 200 --json
+argus doctor --json
+argus repair argus --json --yes
+argus repair postgres --json --yes
+argus repair searxng --json --yes
+argus update --json --yes
+argus update --rollback --json --yes
+```
+
+`argus update` downloads and verifies the stable signed manifest before it
+stops services. It backs up the current instance, runs storage migrations,
+starts the candidate, and verifies health. A failed update restores the
+previous verified release; keep `/opt/argus/backups` until you have separately
+validated the new version.
+
 ## Choosing a topology
 
 Use SQLite with `runtime.role: all` for one VPS. It has the fewest moving
@@ -48,13 +126,32 @@ print configuration objects or authorization headers.
 
 ## Backup and recovery
 
-For SQLite, stop Argus and copy the database plus any `-wal` and `-shm` files,
-or use SQLite's online backup tooling. Restore all files together.
+For SQLite, stop Argus and copy the database plus any `-wal` and `-shm` files
+from its `argus-data` Docker volume, or use SQLite's online backup tooling.
+Restore all files together. Signed updates also copy these files into a
+timestamped `/opt/argus/backups/<version>-<timestamp>/` directory before
+migration.
 
 For PostgreSQL, use regular `pg_dump`/`pg_restore` or provider snapshots.
+Store dumps outside `/opt/argus`; Argus update backups preserve deployment
+state but do not replace database-native PostgreSQL backups.
 Records and revisions are immutable history; current records can be rebuilt
 from revisions if necessary. After restore, restart the scheduler and workers.
 Idempotent identities prevent unchanged source items from duplicating.
+
+Start recovery with bounded, redacted diagnostics:
+
+```bash
+argus doctor --json
+argus status --json
+argus logs --tail 200 --json
+```
+
+Run only the exact targeted `argus repair <service> --json --yes` recovery
+returned by the doctor. If an update is unhealthy, preserve its backup and run
+`argus update --rollback --json --yes`. If rollback verification also fails,
+stop mutating the host, keep `/opt/argus`, its backups, and database volumes,
+and inspect the reported service logs.
 
 ## Health and querying
 
@@ -151,3 +248,31 @@ On failure CI uploads only `installer.log`, `wrapper.sha256`, `compose.log`,
 and `doctor.json`, each from the dedicated smoke artifact directory. It never
 uploads `secrets.env`, signing keys, tokens, private keys, or an environment
 dump.
+
+## VPS operation smoke
+
+`.github/workflows/vps-smoke.yml` accepts an immutable signed release tag and
+runs `scripts/e2e/vps-smoke.sh` against `ubuntu:24.04` and `debian:13`.
+Each disposable clean userland installs the signed wrapper, applies the same
+Web-only onboarding file twice, and requires the second deployment plan to
+contain `changes: []`. It then checks `argus doctor --json` and
+`argus status --json`, triggers a public HTTPS page controlled by the Argus
+project, queries the stored Web record, calls managed SearXNG with
+`format=json` on the private network, and rejects any published port other
+than `8788`.
+
+The harness is intentionally opt-in because it creates and removes
+`/opt/argus` on the disposable runner:
+
+```bash
+ARGUS_VPS_E2E=1 \
+ARGUS_INSTALLER_URL="<private GitHub release asset API URL>" \
+ARGUS_MANIFEST_URL="https://github.com/GPSxtreme/argus/releases/download/v0.1.4/manifest.json" \
+ARGUS_MANIFEST_ASSET_URL="<private manifest asset API URL>" \
+ARGUS_EXPECTED_VERSION="0.1.4" \
+ARGUS_CONTROLLED_WEB_URL="https://argus.gpsxtre.me/" \
+ARGUS_GITHUB_TOKEN="<GitHub token with read access>" \
+scripts/e2e/vps-smoke.sh ubuntu:24.04
+```
+
+Never run this smoke on a workstation or an existing Argus VPS.

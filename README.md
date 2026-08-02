@@ -19,7 +19,24 @@ OpenRouter summaries are optional and remain separate from the ingestion path.
 Argus does not access private Telegram chats, bypass site access controls, or
 make an LLM part of the core data path.
 
-## Quick start
+## One-command VPS install
+
+On a fresh Ubuntu 24.04 or Debian 13 VPS, install the signed host wrapper and
+start the guided setup:
+
+```bash
+curl -fsSL https://argus.gpsxtre.me/install.sh |
+  ARGUS_GITHUB_TOKEN="<GitHub token with read access>" sh
+argus onboard
+```
+
+The token is needed only while the release repository is private. Onboarding
+can manage SearXNG for Web queries, keep FxEmbed external, and store the
+instance under `/opt/argus`. See the
+[VPS operations guide](docs/operations.md#vps-installation-and-onboarding) for
+non-interactive JSON automation, backups, updates, and recovery.
+
+## Local development quick start
 
 Requirements: Node.js 24 and pnpm 10.
 
@@ -109,6 +126,12 @@ disposable generated token, and requires `argus doctor --json` to be healthy.
 Run it from the **Installer smoke** GitHub Actions workflow with an immutable
 release tag. See [docs/operations.md](docs/operations.md#installer-smoke) for
 the local command and limitations.
+
+The separate
+[VPS smoke workflow](.github/workflows/vps-smoke.yml) repeats onboarding on
+Ubuntu 24.04 and Debian 13, requires an empty second plan, ingests a controlled
+Web record, checks managed SearXNG JSON, and proves that only API port `8788`
+is published.
 
 ## Agent Skill
 
