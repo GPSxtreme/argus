@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import {
   chmod,
   mkdir,
@@ -8,7 +9,6 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { spawnSync } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
@@ -955,5 +955,44 @@ exit 42
       'case "$(docker exec "$container" systemctl is-system-running 2>/dev/null || true)" in',
     );
     expect(workflow).toContain("running|degraded)");
+  });
+
+  it("matches the Clack API-token prompt across ANSI-rendered segments", async () => {
+    const smoke = await read("scripts/e2e/installer-smoke.sh");
+    const promptPattern =
+      "(?s)A.{0,256}r.{0,256}g.{0,256}u.{0,256}s.{0,256}A.{0,256}P.{0,256}I.{0,256}t.{0,256}o.{0,256}k.{0,256}e.{0,256}n";
+    const fragmentedPrompt = [
+      "\u001b[?25lA",
+      "\u001b[2K\r\u001b[1Gr",
+      "\u001b[36mg\u001b[0m",
+      "\b\u001b[1Cu",
+      "\u001b[?25hs",
+      "\u001b[2K\r\u001b[1GA",
+      "\u001b[36mP\u001b[0m",
+      "\u001b[1CI",
+      "\u001b[?25lt",
+      "\u001b[2Ko",
+      "\r\u001b[1Gk",
+      "\u001b[36me\u001b[0m",
+      "\u001b[?25hn",
+    ].join("");
+
+    expect(smoke).toContain(`-re {${promptPattern}}`);
+    expect(smoke).not.toContain("-re {Argus API token}");
+    expect(
+      spawnSync(
+        "expect",
+        [
+          "-c",
+          `if {![regexp -- {${promptPattern}} $env(ARGUS_PROMPT_FIXTURE)]} { exit 1 }`,
+        ],
+        {
+          env: {
+            ...process.env,
+            ARGUS_PROMPT_FIXTURE: fragmentedPrompt,
+          },
+        },
+      ).status,
+    ).toBe(0);
   });
 });

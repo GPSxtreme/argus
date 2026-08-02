@@ -1,6 +1,9 @@
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createApp } from "@argus/app";
 import { validateConfig } from "@argus/config";
-import { saveDeploymentState, type CommandExecutor, type OnboardingAnswersV1 } from "@argus/deployment";
+import { type CommandExecutor, type OnboardingAnswersV1, saveDeploymentState } from "@argus/deployment";
 import { buildReleaseArtifacts } from "@argus/release";
 import { createSqliteRepository } from "@argus/storage-sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -11,9 +14,6 @@ import {
   createReleaseComposition,
 } from "../src/integrations.js";
 import { createNodeCliDependencies } from "../src/program.js";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 
 const repositories: Awaited<ReturnType<typeof createSqliteRepository>>[] = [];
 afterEach(() => {
@@ -202,7 +202,13 @@ const releaseFixture = ({
   version = "1.2.3",
   appMarker = "a",
   fxembedMarker = "default",
-}: { version?: string; appMarker?: string; fxembedMarker?: string } = {}) => {
+  releaseBaseUrl = `https://release.example/v${version}`,
+}: {
+  version?: string;
+  appMarker?: string;
+  fxembedMarker?: string;
+  releaseBaseUrl?: string;
+} = {}) => {
   const fxembed = Buffer.from(`export default { fetch() {} }; // ${fxembedMarker}\n`);
   const wrapper = Buffer.from("#!/bin/sh\nexec true\n");
   const built = buildReleaseArtifacts({
@@ -216,16 +222,16 @@ const releaseFixture = ({
     ],
     fxembed: {
       bytes: fxembed,
-      url: `https://release.example/v${version}/fxembed.js`,
+      url: `${releaseBaseUrl}/fxembed.js`,
       compatibilityDate: "2026-04-11",
     },
-    wrapper: { bytes: wrapper, url: `https://release.example/v${version}/argus` },
-    installer: { bytes: Buffer.from("installer"), url: `https://release.example/v${version}/install.sh` },
-    publicKeyUrl: `https://release.example/v${version}/release-public.pem`,
-    fxembedLicense: { bytes: Buffer.from("MIT"), url: `https://release.example/v${version}/FXEMBED-LICENSE.md` },
+    wrapper: { bytes: wrapper, url: `${releaseBaseUrl}/argus` },
+    installer: { bytes: Buffer.from("installer"), url: `${releaseBaseUrl}/install.sh` },
+    publicKeyUrl: `${releaseBaseUrl}/release-public.pem`,
+    fxembedLicense: { bytes: Buffer.from("MIT"), url: `${releaseBaseUrl}/FXEMBED-LICENSE.md` },
     fxembedProvenance: {
       bytes: Buffer.from("{}"),
-      url: `https://release.example/v${version}/fxembed-provenance.json`,
+      url: `${releaseBaseUrl}/fxembed-provenance.json`,
     },
     privateKeyPem: fixturePrivateKey,
   });
@@ -259,6 +265,265 @@ const saveManagedState = async (
 };
 
 describe("production onboarding integration", () => {
+  it("uses the protected GHCR token only for exact Argus GitHub release URLs and strips it on redirects", async () => {
+    const root = await mkdtemp(join(tmpdir(), "argus-release-auth-"));
+    const releaseBaseUrl =
+      "https://github.com/GPSxtreme/argus/releases/download/v1.2.3";
+    const fixture = releaseFixture({ releaseBaseUrl });
+    const token = "github_pat_private_release_fixture";
+    await mkdir(join(root, ".docker"), { recursive: true });
+    await writeFile(
+      join(root, ".docker", "config.json"),
+      JSON.stringify({
+        auths: {
+          "ghcr.io": {
+            auth: Buffer.from(`GPSxtreme:${token}`).toString("base64"),
+          },
+        },
+      }),
+      { mode: 0o600 },
+    );
+    const requests: Array<{ url: string; authorization: string | null }> = [];
+    const integration = createProductionOnboardingIntegration({
+      root,
+      executor: new DeploymentExecutor(),
+      manifestUrl: `${releaseBaseUrl}/manifest.json`,
+      publicKeyPem: fixture.publicKeyPem,
+      fetcher: async (input, init) => {
+        const url = String(input);
+        requests.push({
+          url,
+          authorization: new Headers(init?.headers).get("authorization"),
+        });
+        if (url.endsWith("/fxembed.js")) {
+          return new Response(null, {
+            status: 302,
+            headers: {
+              location:
+                "https://api.github.com/repos/GPSxtreme/argus/releases/assets/123",
+            },
+          });
+        }
+        if (
+          url ===
+          "https://api.github.com/repos/GPSxtreme/argus/releases/assets/123"
+        ) {
+          return new Response(null, {
+            status: 302,
+            headers: {
+              location:
+                "https://release-assets.githubusercontent.com/github-production-release-asset/fixture",
+            },
+          });
+        }
+        if (url.includes("release-assets.githubusercontent.com")) {
+          return new Response(Uint8Array.from(fixture.fxembed).buffer);
+        }
+        const bytes = url.endsWith("manifest.sig")
+          ? fixture.signature
+          : fixture.manifestBytes;
+        return new Response(Uint8Array.from(bytes).buffer);
+      },
+    });
+
+    await expect(
+      integration.inspect({ answers, secrets: {} }),
+    ).resolves.toMatchObject({ release: { version: "1.2.3" } });
+    expect(
+      requests
+        .filter(({ url }) => url.startsWith(releaseBaseUrl))
+        .map(({ authorization }) => authorization),
+    ).toEqual([`Bearer ${token}`, `Bearer ${token}`, `Bearer ${token}`]);
+    expect(
+      requests.find(({ url }) =>
+        url.includes("release-assets.githubusercontent.com"),
+      )?.authorization,
+    ).toBeNull();
+    expect(
+      requests.find(({ url }) => url.startsWith("https://api.github.com"))
+        ?.authorization,
+    ).toBe(`Bearer ${token}`);
+  });
+
+  it("keeps public release requests unauthenticated when no GHCR credential exists", async () => {
+    const root = await mkdtemp(join(tmpdir(), "argus-release-public-"));
+    const fixture = releaseFixture();
+    const authorizations: Array<string | null> = [];
+    const integration = createProductionOnboardingIntegration({
+      root,
+      executor: new DeploymentExecutor(),
+      manifestUrl: "https://release.example/manifest.json",
+      publicKeyPem: fixture.publicKeyPem,
+      fetcher: async (input, init) => {
+        authorizations.push(
+          new Headers(init?.headers).get("authorization"),
+        );
+        const url = String(input);
+        const bytes = url.endsWith("manifest.sig")
+          ? fixture.signature
+          : url.endsWith("fxembed.js")
+            ? fixture.fxembed
+            : fixture.manifestBytes;
+        return new Response(Uint8Array.from(bytes).buffer);
+      },
+    });
+
+    await integration.inspect({ answers, secrets: {} });
+    expect(authorizations).toEqual([null, null, null]);
+  });
+
+  it("authenticates a trusted private release asset discovered by the public update channel", async () => {
+    const root = await mkdtemp(join(tmpdir(), "argus-update-auth-"));
+    const releaseBaseUrl =
+      "https://github.com/GPSxtreme/argus/releases/download/v1.2.3";
+    const fixture = releaseFixture({ releaseBaseUrl });
+    const token = "github_pat_update_fixture";
+    await mkdir(join(root, ".docker"), { recursive: true });
+    await writeFile(
+      join(root, ".docker", "config.json"),
+      JSON.stringify({
+        auths: {
+          "ghcr.io": {
+            auth: Buffer.from(`GPSxtreme:${token}`).toString("base64"),
+          },
+        },
+      }),
+      { mode: 0o600 },
+    );
+    const requests: Array<{ url: string; authorization: string | null }> = [];
+    const integration = createProductionUpdateIntegration({
+      root,
+      manifestUrl: stableUpdateManifestUrl,
+      publicKeyPem: fixture.publicKeyPem,
+      fetcher: async (input, init) => {
+        const url = String(input);
+        requests.push({
+          url,
+          authorization: new Headers(init?.headers).get("authorization"),
+        });
+        const bytes = url.endsWith("manifest.sig")
+          ? fixture.signature
+          : url.endsWith("fxembed.js")
+            ? fixture.fxembed
+            : fixture.manifestBytes;
+        return new Response(Uint8Array.from(bytes).buffer);
+      },
+    });
+
+    await integration.fetchUpdateRelease();
+    expect(requests).toEqual([
+      { url: stableUpdateManifestUrl, authorization: null },
+      {
+        url: "https://argus.gpsxtre.me/releases/stable/manifest.sig",
+        authorization: null,
+      },
+      {
+        url: `${releaseBaseUrl}/fxembed.js`,
+        authorization: `Bearer ${token}`,
+      },
+    ]);
+  });
+
+  it.each([
+    ["invalid JSON", "{", "not-a-secret"],
+    [
+      "non-canonical base64",
+      JSON.stringify({ auths: { "ghcr.io": { auth: "!!!!" } } }),
+      "not-a-secret",
+    ],
+    [
+      "credential without a password",
+      JSON.stringify({
+        auths: {
+          "ghcr.io": {
+            auth: Buffer.from("GPSxtreme").toString("base64"),
+          },
+        },
+      }),
+      "not-a-secret",
+    ],
+    [
+      "credential containing a newline",
+      JSON.stringify({
+        auths: {
+          "ghcr.io": {
+            auth: Buffer.from("GPSxtreme:must-not-leak\n").toString("base64"),
+          },
+        },
+      }),
+      "must-not-leak",
+    ],
+  ])("rejects %s in the Docker credential without leaking it", async (
+    _case,
+    configContents,
+    secret,
+  ) => {
+    const root = await mkdtemp(join(tmpdir(), "argus-release-bad-auth-"));
+    const releaseBaseUrl =
+      "https://github.com/GPSxtreme/argus/releases/download/v1.2.3";
+    const fixture = releaseFixture({ releaseBaseUrl });
+    await mkdir(join(root, ".docker"), { recursive: true });
+    await writeFile(join(root, ".docker", "config.json"), configContents, {
+      mode: 0o600,
+    });
+    const fetcher = vi.fn<typeof fetch>();
+    const integration = createProductionOnboardingIntegration({
+      root,
+      executor: new DeploymentExecutor(),
+      manifestUrl: `${releaseBaseUrl}/manifest.json`,
+      publicKeyPem: fixture.publicKeyPem,
+      fetcher,
+    });
+
+    const failure = await integration
+      .inspect({ answers, secrets: {} })
+      .catch((error: unknown) => error);
+    expect(failure).toMatchObject({ code: "RELEASE_CREDENTIAL_INVALID" });
+    expect(JSON.stringify(failure)).not.toContain(secret);
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("does not send the GHCR token to lookalike GitHub repositories or hosts", async () => {
+    const root = await mkdtemp(join(tmpdir(), "argus-release-scope-"));
+    const token = "must-not-leak";
+    await mkdir(join(root, ".docker"), { recursive: true });
+    await writeFile(
+      join(root, ".docker", "config.json"),
+      JSON.stringify({
+        auths: {
+          "ghcr.io": {
+            auth: Buffer.from(`GPSxtreme:${token}`).toString("base64"),
+          },
+        },
+      }),
+      { mode: 0o600 },
+    );
+    const fixture = releaseFixture();
+    const authorizations: Array<string | null> = [];
+    const integration = createProductionOnboardingIntegration({
+      root,
+      executor: new DeploymentExecutor(),
+      manifestUrl:
+        "https://github.com/attacker/argus/releases/download/v1.2.3/manifest.json",
+      publicKeyPem: fixture.publicKeyPem,
+      fetcher: async (input, init) => {
+        authorizations.push(
+          new Headers(init?.headers).get("authorization"),
+        );
+        const url = String(input);
+        const bytes = url.endsWith("manifest.sig")
+          ? fixture.signature
+          : url.endsWith("fxembed.js")
+            ? fixture.fxembed
+            : fixture.manifestBytes;
+        return new Response(Uint8Array.from(bytes).buffer);
+      },
+    });
+
+    await integration.inspect({ answers, secrets: {} });
+    expect(authorizations).toEqual([null, null, null]);
+  });
+
   it("composes both concrete integrations from embedded release and installed API inputs", () => {
     const fixture = releaseFixture();
     expect(

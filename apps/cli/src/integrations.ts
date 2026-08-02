@@ -10,16 +10,17 @@ import { dirname, join } from "node:path";
 import type { ArgusConfig } from "@argus/config";
 import { contentHash } from "@argus/contracts";
 import {
-  applyDeployment,
   ARGUS_FXEMBED_WORKER_NAME,
+  applyDeployment,
   CloudflareWorkersApiClient,
   type CloudflareWorkersClient,
   type CommandExecutor,
-  type DesiredDeployment,
   DeploymentError,
+  type DesiredDeployment,
   getDeploymentStatus,
   inspectDeployment,
   loadDeploymentState,
+  type OnboardingAnswersV1,
   planDeployment,
   reconcileFxEmbed,
   renderCompose,
@@ -27,7 +28,6 @@ import {
   renderSearxngSettings,
   saveDeploymentState,
   writeInstanceFiles,
-  type OnboardingAnswersV1,
 } from "@argus/deployment";
 import {
   MAX_RELEASE_MANIFEST_BYTES,
@@ -56,6 +56,7 @@ const withHttpDeadline = async <T>(
     if (timer !== undefined) clearTimeout(timer);
   });
 };
+
 import type {
   InstalledConfigApplication,
   InstalledConfigIntegration,
@@ -431,6 +432,153 @@ const signatureUrl = (manifestUrl: string): string =>
     ? `${manifestUrl.slice(0, -"manifest.json".length)}manifest.sig`
     : `${manifestUrl}.sig`;
 
+const releaseCredentialError = (): DeploymentError =>
+  new DeploymentError(
+    "RELEASE_CREDENTIAL_INVALID",
+    "The protected Argus release credential is invalid.",
+  );
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const readReleaseCredential = async (
+  root: string,
+): Promise<string | undefined> => {
+  let document: unknown;
+  try {
+    document = JSON.parse(
+      await readFile(join(root, ".docker", "config.json"), "utf8"),
+    );
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw releaseCredentialError();
+  }
+  if (!isRecord(document)) throw releaseCredentialError();
+  if (document.auths === undefined) return undefined;
+  if (!isRecord(document.auths)) throw releaseCredentialError();
+  const registry = document.auths["ghcr.io"];
+  if (registry === undefined) return undefined;
+  if (!isRecord(registry) || typeof registry.auth !== "string") {
+    throw releaseCredentialError();
+  }
+  const encoded = registry.auth;
+  if (
+    encoded.length === 0 ||
+    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(
+      encoded,
+    )
+  ) {
+    throw releaseCredentialError();
+  }
+  const bytes = Buffer.from(encoded, "base64");
+  if (bytes.toString("base64") !== encoded) throw releaseCredentialError();
+  let credential: string;
+  try {
+    credential = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw releaseCredentialError();
+  }
+  const separator = credential.indexOf(":");
+  const username = credential.slice(0, separator);
+  const token = credential.slice(separator + 1);
+  if (
+    separator <= 0 ||
+    token.length === 0 ||
+    !/^[!-~]+$/u.test(username) ||
+    !/^[!-~]+$/u.test(token)
+  ) {
+    throw releaseCredentialError();
+  }
+  return token;
+};
+
+const isTrustedArgusGitHubReleaseUrl = (value: URL): boolean => {
+  if (
+    value.protocol !== "https:" ||
+    value.port !== "" ||
+    value.username !== "" ||
+    value.password !== ""
+  ) {
+    return false;
+  }
+  if (/%(?:2f|5c)/iu.test(value.pathname)) return false;
+  if (value.hostname === "github.com") {
+    return /^\/GPSxtreme\/argus\/releases\/download\/[^/]+\/[^/]+$/u.test(
+      value.pathname,
+    );
+  }
+  if (value.hostname === "api.github.com") {
+    return /^\/repos\/GPSxtreme\/argus\/releases\/assets\/[1-9][0-9]*$/u.test(
+      value.pathname,
+    );
+  }
+  return false;
+};
+
+const redirectStatuses = new Set([301, 302, 303, 307, 308]);
+const maximumReleaseRedirects = 5;
+
+const createReleaseFetcher = (
+  root: string,
+  fetcher: typeof fetch,
+): typeof fetch => {
+  let credential: Promise<string | undefined> | undefined;
+  const releaseCredential = (): Promise<string | undefined> => {
+    credential ??= readReleaseCredential(root);
+    return credential;
+  };
+  return async (input, init) => {
+    let current = new URL(
+      input instanceof Request ? input.url : String(input),
+    );
+    for (
+      let redirects = 0;
+      redirects <= maximumReleaseRedirects;
+      redirects += 1
+    ) {
+      const token = isTrustedArgusGitHubReleaseUrl(current)
+        ? await releaseCredential()
+        : undefined;
+      const headers = new Headers(init?.headers);
+      if (token === undefined) headers.delete("authorization");
+      else headers.set("authorization", `Bearer ${token}`);
+      const response = await fetcher(current, {
+        ...init,
+        headers,
+        redirect: "manual",
+      });
+      if (!redirectStatuses.has(response.status)) return response;
+      if (redirects === maximumReleaseRedirects) {
+        void response.body?.cancel().catch(() => undefined);
+        throw new Error("Release download exceeded its redirect limit.");
+      }
+      const location = response.headers.get("location");
+      if (location === null) {
+        void response.body?.cancel().catch(() => undefined);
+        throw new Error("Release download returned an invalid redirect.");
+      }
+      let redirected: URL;
+      try {
+        redirected = new URL(location, current);
+      } catch {
+        void response.body?.cancel().catch(() => undefined);
+        throw new Error("Release download returned an invalid redirect.");
+      }
+      if (
+        redirected.protocol !== "https:" ||
+        redirected.username !== "" ||
+        redirected.password !== ""
+      ) {
+        void response.body?.cancel().catch(() => undefined);
+        throw new Error("Release download returned an unsafe redirect.");
+      }
+      void response.body?.cancel().catch(() => undefined);
+      current = redirected;
+    }
+    throw new Error("Release download exceeded its redirect limit.");
+  };
+};
+
 export interface ProductionUpdateIntegrationOptions {
   root: string;
   manifestUrl: string;
@@ -453,6 +601,7 @@ export const createProductionUpdateIntegration = ({
   fetcher = fetch,
   timeoutMs = defaultTimeoutMs,
 }: ProductionUpdateIntegrationOptions): ProductionUpdateIntegration => {
+  const releaseFetcher = createReleaseFetcher(root, fetcher);
   const fetchedReleases = new Map<string, FetchedUpdateRelease>();
   const sameRelease = (
     left: VerifiedReleaseManifest,
@@ -487,7 +636,12 @@ export const createProductionUpdateIntegration = ({
   ): Promise<Uint8Array> => {
     try {
       return await withHttpDeadline(timeoutMs, async (signal) =>
-        boundedBytes(await fetcher(url, { signal }), maximumBytes, code, message),
+        boundedBytes(
+          await releaseFetcher(url, { signal }),
+          maximumBytes,
+          code,
+          message,
+        ),
       );
     } catch (error) {
       if (error instanceof DeploymentError) throw error;
@@ -667,6 +821,7 @@ export const createProductionOnboardingIntegration = ({
   cloudflareClientFactory = (token) =>
     new CloudflareWorkersApiClient({ token }),
 }: ProductionOnboardingIntegrationOptions): ProductionOnboardingIntegration => {
+  const releaseFetcher = createReleaseFetcher(root, fetcher);
   const fetchBounded = async (
     url: string,
     maximumBytes: number,
@@ -676,7 +831,7 @@ export const createProductionOnboardingIntegration = ({
     try {
       return await withHttpDeadline(timeoutMs, async (signal) =>
         boundedBytes(
-          await fetcher(url, { signal }),
+          await releaseFetcher(url, { signal }),
           maximumBytes,
           code,
           message,
