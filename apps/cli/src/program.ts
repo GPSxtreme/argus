@@ -26,6 +26,8 @@ import {
   loadDeploymentState,
   onboardingAnswersSchema,
   repairService,
+  applyUpdate,
+  planUpdate,
   restartDeployment,
   runDoctor,
   MANAGEMENT_WRAPPER_REQUIREMENTS as SHARED_MANAGEMENT_WRAPPER_REQUIREMENTS,
@@ -34,7 +36,9 @@ import {
   type DiagnosticReport,
   type OnboardingAnswersV1,
   type CommandExecutor,
+  type UpdatePlan,
 } from "@argus/deployment";
+import type { VerifiedReleaseManifest } from "@argus/release";
 import { targetsFromConfig } from "@argus/scheduler";
 import { Command, CommanderError } from "commander";
 import { parse } from "yaml";
@@ -66,6 +70,9 @@ export interface DeploymentCliAdapter {
   inspectRepair(service: string): Promise<unknown>;
   applyRepair(service: string): Promise<unknown>;
   verifyRepair(service: string, applied?: unknown): Promise<unknown>;
+  inspectUpdate?(): Promise<unknown>;
+  applyUpdate?(inspection: unknown): Promise<unknown>;
+  verifyUpdate?(applied?: unknown): Promise<unknown>;
   inspectOnboarding(
     answers: OnboardingAnswersV1,
     secrets: Readonly<Record<string, string>>,
@@ -802,6 +809,42 @@ export const createProgram = (dependencies: CliDependencies): Command => {
     });
   });
 
+  mutationOptions(
+    program.command("update").description("Update Argus to a verified signed release"),
+  ).action(async (options: MutationOptions) => {
+    await execute(dependencies, options, async () => {
+      if (
+        dependencies.deployment.inspectUpdate === undefined ||
+        dependencies.deployment.applyUpdate === undefined ||
+        dependencies.deployment.verifyUpdate === undefined
+      ) {
+        throw new DeploymentError(
+          "UPDATE_UNAVAILABLE",
+          "Argus update support is unavailable in this CLI environment.",
+          { recovery: "Use an Argus CLI installed from a signed release, then retry." },
+        );
+      }
+      const plan = await dependencies.deployment.inspectUpdate();
+      if (options.dryRun) {
+        return { data: { plan }, human: renderHumanPlan(plan) };
+      }
+      await confirmMutation(
+        dependencies,
+        dependencies.prompt,
+        options,
+        "Update Argus using the inspected signed release plan?",
+        plan,
+      );
+      const applied = await dependencies.deployment.applyUpdate(plan);
+      const health = await dependencies.deployment.verifyUpdate(applied);
+      const result = applied as { version?: unknown };
+      return {
+        data: { version: result.version, health },
+        human: `Argus ${String(result.version ?? "update")} completed and was verified.`,
+      };
+    });
+  });
+
   registerConfig(program, dependencies);
   registerSecrets(program, dependencies);
 
@@ -1028,6 +1071,7 @@ export interface NodeCliDependenciesOptions {
   io: CliIO;
   onboardingIntegration?: ProductionOnboardingIntegration;
   installedConfigIntegration?: InstalledConfigIntegration;
+  updateRelease?: VerifiedReleaseManifest;
   version?: string;
 }
 
@@ -1070,6 +1114,7 @@ const createDeploymentAdapter = (
   root: string,
   executor: CommandExecutor,
   onboardingIntegration?: ProductionOnboardingIntegration,
+  updateRelease?: VerifiedReleaseManifest,
 ): DeploymentCliAdapter => {
   const context = { root, executor };
   const doctorContext = async () => {
@@ -1237,6 +1282,36 @@ const createDeploymentAdapter = (
       }
       return report;
     },
+    async inspectUpdate() {
+      if (updateRelease === undefined) {
+        throw new DeploymentError(
+          "RELEASE_MANIFEST_REQUIRED",
+          "A verified release manifest is required before Argus can plan an update.",
+          { recovery: "Install Argus through the signed release channel, then retry the update." },
+        );
+      }
+      return planUpdate({ root, release: updateRelease, executor });
+    },
+    async applyUpdate(inspection) {
+      if (updateRelease === undefined) {
+        throw new DeploymentError(
+          "RELEASE_MANIFEST_REQUIRED",
+          "A verified release manifest is required before Argus can apply an update.",
+        );
+      }
+      return applyUpdate({ root, plan: inspection as UpdatePlan, executor });
+    },
+    async verifyUpdate(applied) {
+      const result = applied as { health?: unknown } | undefined;
+      if (!result?.health) {
+        throw new DeploymentError(
+          "UPDATE_VERIFY_FAILED",
+          "Argus update did not return a final health report.",
+          { recovery: "Run 'argus doctor --json' before retrying the update." },
+        );
+      }
+      return result.health;
+    },
     async inspectOnboarding(answers, secrets) {
       const preflight = await inspectHost(executor, {
         apiPort: answers.deployment.apiPort,
@@ -1325,13 +1400,14 @@ export const createNodeCliDependencies = ({
   io,
   onboardingIntegration,
   installedConfigIntegration,
+  updateRelease,
   version,
 }: NodeCliDependenciesOptions): CliDependencies => ({
   root,
   version: version ?? resolveCliBuildVersion(),
   prompt,
   io,
-  deployment: createDeploymentAdapter(root, executor, onboardingIntegration),
+  deployment: createDeploymentAdapter(root, executor, onboardingIntegration, updateRelease),
   files: {
     readText: (path) => readFile(path, "utf8"),
     stat: async (path) => ({ mode: (await stat(path)).mode }),
