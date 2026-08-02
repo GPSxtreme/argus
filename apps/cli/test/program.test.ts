@@ -128,6 +128,7 @@ describe("CLI JSON contract", () => {
       "logs",
       "doctor",
       "repair",
+      "update",
       "config",
       "secrets",
     ]);
@@ -148,7 +149,7 @@ describe("CLI JSON contract", () => {
   it("honors JSON mode before the selected command", async () => {
     const harness = createHarness();
     await run(["--json", "status"], harness.dependencies);
-    expect(JSON.parse(harness.output().stdout)).toMatchObject({
+    expect(JSON.parse(harness.output().stdout.trim().split("\n").at(-1) ?? "")).toMatchObject({
       contractVersion: 1,
       ok: true,
     });
@@ -193,6 +194,62 @@ describe("CLI JSON contract", () => {
       contractVersion: 1,
       ok: false,
       error: { code: "CONFIRMATION_REQUIRED" },
+    });
+  });
+
+  it("returns the applied release version and final health only after JSON --yes", async () => {
+    let applied = false;
+    const harness = createHarness();
+    Object.assign(harness.dependencies.deployment as object, {
+      async inspectUpdate() {
+        return { targetVersion: "2.0.0", changes: [{ component: "argus", action: "update" }] };
+      },
+      async applyUpdate() {
+        applied = true;
+        return { version: "2.0.0", health: { healthy: true, checks: [] } };
+      },
+      async verifyUpdate() {
+        return { healthy: true, checks: [] };
+      },
+    });
+
+    await expect(
+      createProgram(harness.dependencies).parseAsync(["node", "argus", "update", "--json"]),
+    ).rejects.toMatchObject({ exitCode: 2 });
+    expect(applied).toBe(false);
+
+    await run(["update", "--json", "--yes"], harness.dependencies);
+    expect(
+      JSON.parse(harness.output().stdout.trim().split("\n").at(-1) ?? ""),
+    ).toMatchObject({
+      contractVersion: 1,
+      ok: true,
+      data: { version: "2.0.0", health: { healthy: true } },
+    });
+  });
+
+  it("requires --yes before exposing a verified rollback through JSON", async () => {
+    let applied = false;
+    const harness = createHarness();
+    Object.assign(harness.dependencies.deployment as object, {
+      async inspectRollbackUpdate() {
+        return { release: { manifestSha256: "a".repeat(64) } };
+      },
+      async applyRollbackUpdate() {
+        applied = true;
+        return { version: "1.0.0", health: { healthy: true } };
+      },
+    });
+
+    await expect(
+      createProgram(harness.dependencies).parseAsync(["node", "argus", "update", "--rollback", "--json"]),
+    ).rejects.toMatchObject({ exitCode: 2 });
+    expect(applied).toBe(false);
+
+    await run(["update", "--rollback", "--json", "--yes"], harness.dependencies);
+    expect(JSON.parse(harness.output().stdout.trim().split("\n").at(-1) ?? "")).toMatchObject({
+      ok: true,
+      data: { version: "1.0.0", health: { healthy: true } },
     });
   });
 

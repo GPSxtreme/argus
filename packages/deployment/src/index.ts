@@ -10,3 +10,4 @@ export * from "./reconciler.js";
 export * from "./searxng.js";
 export * from "./fxembed.js";
 export * from "./doctor.js";
+export * from "./update.js";

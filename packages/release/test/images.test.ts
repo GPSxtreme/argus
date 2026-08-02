@@ -162,6 +162,18 @@ describe("production image definitions", () => {
     expect(cliDockerfile).not.toContain("deploy --legacy");
   });
 
+  it("embeds the stable update manifest separately from the immutable onboarding manifest", () => {
+    const releaseWorkflow = readFileSync(
+      join(repositoryRoot, ".github/workflows/release.yml"),
+      "utf8",
+    );
+    expect(cliDockerfile).toContain("ARG ARGUS_UPDATE_MANIFEST_URL");
+    expect(cliDockerfile).toContain("ARGUS_UPDATE_MANIFEST_URL=\"$ARGUS_UPDATE_MANIFEST_URL\"");
+    expect(releaseWorkflow).toContain(
+      "ARGUS_UPDATE_MANIFEST_URL=https://argus.gpsxtre.me/releases/stable/manifest.json",
+    );
+  });
+
   it("locks builder tooling with registry integrity", () => {
     expect(rootManifest.packageManager).toMatch(
       /^pnpm@10\.33\.0\+sha512\.[a-f0-9]{128}$/u,
@@ -498,6 +510,8 @@ live("built production images", () => {
         `ARGUS_RELEASE_PUBLIC_KEY_B64=${liveReleasePublicKeyB64}`,
         "--build-arg",
         "ARGUS_RELEASE_MANIFEST_URL=https://github.com/GPSxtreme/argus/releases/download/v0.1.0-test/manifest.json",
+        "--build-arg",
+        "ARGUS_UPDATE_MANIFEST_URL=https://argus.gpsxtre.me/releases/stable/manifest.json",
         "-f",
         "deploy/docker/Dockerfile.cli",
         "-t",

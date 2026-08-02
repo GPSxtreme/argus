@@ -100,6 +100,7 @@ ARG ARGUS_REVISION=unknown
 ARG ARGUS_SOURCE=https://github.com/gpsxtreme/argus
 ARG ARGUS_RELEASE_PUBLIC_KEY_B64
 ARG ARGUS_RELEASE_MANIFEST_URL
+ARG ARGUS_UPDATE_MANIFEST_URL
 LABEL org.opencontainers.image.title="Argus CLI" \
   org.opencontainers.image.description="Root management client for an Argus VPS instance; no Docker daemon is included" \
   org.opencontainers.image.source="$ARGUS_SOURCE" \
@@ -136,7 +137,8 @@ ENV NODE_ENV="production" \
   ARGUS_INSTALL_ROOT="/opt/argus" \
   ARGUS_VERSION="$ARGUS_VERSION" \
   ARGUS_RELEASE_PUBLIC_KEY_B64="$ARGUS_RELEASE_PUBLIC_KEY_B64" \
-  ARGUS_RELEASE_MANIFEST_URL="$ARGUS_RELEASE_MANIFEST_URL"
+  ARGUS_RELEASE_MANIFEST_URL="$ARGUS_RELEASE_MANIFEST_URL" \
+  ARGUS_UPDATE_MANIFEST_URL="$ARGUS_UPDATE_MANIFEST_URL"
 WORKDIR /opt/argus
 USER 0:0
 

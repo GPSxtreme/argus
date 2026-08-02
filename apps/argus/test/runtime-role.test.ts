@@ -1,6 +1,6 @@
 import { validateConfig } from "@argus/config";
 import { describe, expect, it } from "vitest";
-import { resolveRuntimeRole } from "../src/runtime.js";
+import { migrateRuntime, resolveRuntimeRole } from "../src/runtime.js";
 
 describe("runtime role override", () => {
   it("rejects split roles when the configured storage is SQLite", () => {
@@ -23,5 +23,27 @@ describe("runtime role override", () => {
       watches: [],
     });
     expect(resolveRuntimeRole(config, "worker").runtime.role).toBe("worker");
+  });
+
+  it("runs schema migration as a one-shot runtime and closes the repository", async () => {
+    const config = validateConfig({
+      version: 1,
+      storage: { adapter: "sqlite", url: ":memory:" },
+      sources: {},
+      watches: [],
+    });
+    let closed = false;
+
+    await migrateRuntime("/app/argus.yaml", {}, {
+      loadConfig: async () => config,
+      openRepository: async () => ({
+        repository: {} as never,
+        close: async () => {
+          closed = true;
+        },
+      }),
+    });
+
+    expect(closed).toBe(true);
   });
 });

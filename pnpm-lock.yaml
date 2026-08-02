@@ -156,6 +156,9 @@ importers:
       '@argus/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@argus/release':
+        specifier: workspace:*
+        version: link:../release
       execa:
         specifier: ^10.0.1
         version: 10.0.1

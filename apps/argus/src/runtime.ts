@@ -14,6 +14,22 @@ import { createAdapterFactory, findDiagnosticTarget, findTarget, runTarget, type
 const logger = pino({ name: "argus" });
 export const JOB_LEASE_MS = SAFE_HTTP_MAX_TIMEOUT_MS * 3;
 
+export interface MigrationRuntimeDependencies {
+  loadConfig?: typeof loadConfig;
+  openRepository?: typeof openRepository;
+}
+
+/** Opens and closes the configured repository so its storage implementation applies migrations. */
+export const migrateRuntime = async (
+  configPath: string,
+  environment: Record<string, string | undefined> = process.env,
+  { loadConfig: load = loadConfig, openRepository: open = openRepository }: MigrationRuntimeDependencies = {},
+): Promise<void> => {
+  const config = await load(configPath, environment);
+  const repository = await open(config);
+  await repository.close();
+};
+
 export const resolveRuntimeRole = (
   config: ArgusConfig,
   requestedRole?: string,

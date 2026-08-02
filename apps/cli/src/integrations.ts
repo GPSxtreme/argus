@@ -32,6 +32,7 @@ import {
 import {
   MAX_RELEASE_MANIFEST_BYTES,
   type ReleaseManifestV1,
+  type VerifiedReleaseManifest,
   verifyReleaseManifestWithIdentity,
 } from "@argus/release";
 
@@ -217,6 +218,8 @@ export const createInstalledConfigIntegration = ({
 const maximumSignatureBytes = 64;
 const maximumFxEmbedBytes = 8 * 1024 * 1024;
 const releaseContextFile = "release-context.json";
+const pendingReleaseContextFile = "release-context.pending.json";
+export const stableUpdateManifestUrl = "https://argus.gpsxtre.me/releases/stable/manifest.json";
 
 interface ReleasePlan {
   contractVersion: 1;
@@ -260,6 +263,13 @@ export interface ReleaseCompositionOptions {
   fetcher?: typeof fetch;
 }
 
+export interface ProductionUpdateIntegration {
+  fetchUpdateRelease(): Promise<VerifiedReleaseManifest>;
+  fetchRollbackRelease(): Promise<VerifiedReleaseManifest>;
+  stageCurrentRelease(release: VerifiedReleaseManifest): Promise<void>;
+  promoteCurrentRelease(release: VerifiedReleaseManifest): Promise<void>;
+}
+
 export const createReleaseComposition = ({
   root,
   executor,
@@ -270,17 +280,34 @@ export const createReleaseComposition = ({
 }: ReleaseCompositionOptions): {
   onboardingIntegration?: ProductionOnboardingIntegration;
   installedConfigIntegration?: InstalledConfigIntegration;
+  updateIntegration?: ProductionUpdateIntegration;
 } => {
   const encodedPublicKey = environment.ARGUS_RELEASE_PUBLIC_KEY_B64;
-  const manifestUrl = environment.ARGUS_RELEASE_MANIFEST_URL;
-  if ((encodedPublicKey === undefined) !== (manifestUrl === undefined)) {
+  const onboardingManifestUrl = environment.ARGUS_RELEASE_MANIFEST_URL;
+  const updateManifestUrl = environment.ARGUS_UPDATE_MANIFEST_URL;
+  const releaseInputs = [encodedPublicKey, onboardingManifestUrl, updateManifestUrl];
+  if (
+    releaseInputs.some((value) => value === undefined) &&
+    releaseInputs.some((value) => value !== undefined)
+  ) {
     throw new DeploymentError(
       "RELEASE_COMPOSITION_INVALID",
-      "The release manifest URL and embedded public key must be configured together.",
+      "The onboarding manifest URL, update manifest URL, and embedded public key must be configured together.",
+    );
+  }
+  if (updateManifestUrl !== undefined && updateManifestUrl !== stableUpdateManifestUrl) {
+    throw new DeploymentError(
+      "RELEASE_COMPOSITION_INVALID",
+      "The Argus update manifest URL must use the stable release channel.",
     );
   }
   let onboardingIntegration: ProductionOnboardingIntegration | undefined;
-  if (encodedPublicKey !== undefined && manifestUrl !== undefined) {
+  let updateIntegration: ProductionUpdateIntegration | undefined;
+  if (
+    encodedPublicKey !== undefined &&
+    onboardingManifestUrl !== undefined &&
+    updateManifestUrl !== undefined
+  ) {
     const decoded = Buffer.from(encodedPublicKey, "base64");
     if (
       decoded.toString("base64") !== encodedPublicKey ||
@@ -294,7 +321,13 @@ export const createReleaseComposition = ({
     onboardingIntegration = createProductionOnboardingIntegration({
       root,
       executor,
-      manifestUrl,
+      manifestUrl: onboardingManifestUrl,
+      publicKeyPem: decoded.toString("utf8"),
+      ...(fetcher === undefined ? {} : { fetcher }),
+    });
+    updateIntegration = createProductionUpdateIntegration({
+      root,
+      manifestUrl: updateManifestUrl,
       publicKeyPem: decoded.toString("utf8"),
       ...(fetcher === undefined ? {} : { fetcher }),
     });
@@ -311,6 +344,7 @@ export const createReleaseComposition = ({
         });
   return {
     ...(onboardingIntegration === undefined ? {} : { onboardingIntegration }),
+    ...(updateIntegration === undefined ? {} : { updateIntegration }),
     ...(installedConfigIntegration === undefined
       ? {}
       : { installedConfigIntegration }),
@@ -396,6 +430,204 @@ const signatureUrl = (manifestUrl: string): string =>
   manifestUrl.endsWith("/manifest.json")
     ? `${manifestUrl.slice(0, -"manifest.json".length)}manifest.sig`
     : `${manifestUrl}.sig`;
+
+export interface ProductionUpdateIntegrationOptions {
+  root: string;
+  manifestUrl: string;
+  publicKeyPem: string;
+  fetcher?: typeof fetch;
+  timeoutMs?: number;
+}
+
+interface FetchedUpdateRelease {
+  release: VerifiedReleaseManifest;
+  manifestBytes: Uint8Array;
+  signature: Uint8Array;
+  fxembedBytes: Uint8Array;
+}
+
+export const createProductionUpdateIntegration = ({
+  root,
+  manifestUrl,
+  publicKeyPem,
+  fetcher = fetch,
+  timeoutMs = defaultTimeoutMs,
+}: ProductionUpdateIntegrationOptions): ProductionUpdateIntegration => {
+  const fetchedReleases = new Map<string, FetchedUpdateRelease>();
+  const sameRelease = (
+    left: VerifiedReleaseManifest,
+    right: VerifiedReleaseManifest,
+  ): boolean =>
+    left.manifestSha256 === right.manifestSha256 &&
+    left.manifest.version === right.manifest.version &&
+    left.manifest.images.app.reference === right.manifest.images.app.reference &&
+    left.manifest.images.postgres.reference === right.manifest.images.postgres.reference &&
+    left.manifest.images.searxng.reference === right.manifest.images.searxng.reference;
+  const contextFor = (fetched: FetchedUpdateRelease): PersistedReleaseContext => ({
+    schemaVersion: 1,
+    manifest: Buffer.from(fetched.manifestBytes).toString("base64"),
+    signature: Buffer.from(fetched.signature).toString("base64"),
+    fxembed: Buffer.from(fetched.fxembedBytes).toString("base64"),
+  });
+  const fetchedFor = (release: VerifiedReleaseManifest): FetchedUpdateRelease => {
+    const fetched = fetchedReleases.get(release.manifestSha256);
+    if (fetched === undefined || !sameRelease(fetched.release, release)) {
+      throw new DeploymentError(
+        "UPDATE_RELEASE_UNVERIFIED",
+        "Argus can only use the exact verified release that was downloaded for this update.",
+      );
+    }
+    return fetched;
+  };
+  const fetchBounded = async (
+    url: string,
+    maximumBytes: number,
+    code: string,
+    message: string,
+  ): Promise<Uint8Array> => {
+    try {
+      return await withHttpDeadline(timeoutMs, async (signal) =>
+        boundedBytes(await fetcher(url, { signal }), maximumBytes, code, message),
+      );
+    } catch (error) {
+      if (error instanceof DeploymentError) throw error;
+      throw new DeploymentError(code, message);
+    }
+  };
+
+  const fetchVerified = async (): Promise<VerifiedReleaseManifest> => {
+    const [manifestBytes, signature] = await Promise.all([
+      fetchBounded(manifestUrl, MAX_RELEASE_MANIFEST_BYTES, "RELEASE_MANIFEST_DOWNLOAD_FAILED", "The bounded release manifest download failed."),
+      fetchBounded(signatureUrl(manifestUrl), maximumSignatureBytes, "RELEASE_SIGNATURE_DOWNLOAD_FAILED", "The bounded release signature download failed."),
+    ]);
+    const release = verifyReleaseManifestWithIdentity(manifestBytes, signature, publicKeyPem);
+    const fxembedBytes = await fetchBounded(
+      release.manifest.assets.fxembed.url,
+      maximumFxEmbedBytes,
+      "RELEASE_ASSET_DOWNLOAD_FAILED",
+      "The bounded FxEmbed download failed.",
+    );
+    if (sha256(fxembedBytes) !== release.manifest.assets.fxembed.sha256) {
+      throw new DeploymentError(
+        "RELEASE_ASSET_HASH_MISMATCH",
+        "Downloaded FxEmbed bytes do not match the signed SHA-256.",
+      );
+    }
+    fetchedReleases.set(release.manifestSha256, {
+      release,
+      manifestBytes,
+      signature,
+      fxembedBytes,
+    });
+    return release;
+  };
+
+  const loadSignedContext = async (
+    path: string,
+  ): Promise<VerifiedReleaseManifest> => {
+    let parsed: PersistedReleaseContext;
+    try {
+      parsed = JSON.parse(await readFile(path, "utf8")) as PersistedReleaseContext;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") throw error;
+      throw new DeploymentError("UPDATE_ROLLBACK_UNAVAILABLE", "Persisted signed rollback release is invalid.");
+    }
+    if (
+      parsed.schemaVersion !== 1 ||
+      Object.keys(parsed).some(
+        (key) => !["schemaVersion", "manifest", "signature", "fxembed"].includes(key),
+      )
+    ) {
+      throw new DeploymentError("UPDATE_ROLLBACK_UNAVAILABLE", "Persisted signed rollback release is invalid.");
+    }
+    const release = verifyReleaseManifestWithIdentity(
+      exactBase64(parsed.manifest, "UPDATE_ROLLBACK_UNAVAILABLE"),
+      exactBase64(parsed.signature, "UPDATE_ROLLBACK_UNAVAILABLE"),
+      publicKeyPem,
+    );
+    const fxembedBytes = exactBase64(parsed.fxembed, "UPDATE_ROLLBACK_UNAVAILABLE");
+    if (sha256(fxembedBytes) !== release.manifest.assets.fxembed.sha256) {
+      throw new DeploymentError(
+        "UPDATE_ROLLBACK_UNAVAILABLE",
+        "Persisted FxEmbed bytes do not match the signed rollback release.",
+      );
+    }
+    return release;
+  };
+
+  const stageCurrentRelease = async (release: VerifiedReleaseManifest): Promise<void> => {
+    await atomicBytes(
+      join(root, pendingReleaseContextFile),
+      Buffer.from(JSON.stringify(contextFor(fetchedFor(release)))),
+      0o644,
+    );
+  };
+
+  const promoteCurrentRelease = async (release: VerifiedReleaseManifest): Promise<void> => {
+    fetchedFor(release);
+    const stagedPath = join(root, pendingReleaseContextFile);
+    let staged: VerifiedReleaseManifest;
+    try {
+      staged = await loadSignedContext(stagedPath);
+    } catch {
+      throw new DeploymentError(
+        "UPDATE_RELEASE_UNVERIFIED",
+        "Argus requires a staged exact verified release before it can promote update context.",
+      );
+    }
+    if (!sameRelease(staged, release)) {
+      throw new DeploymentError(
+        "UPDATE_RELEASE_UNVERIFIED",
+        "The staged Argus release does not match the verified update release.",
+      );
+    }
+    await rename(stagedPath, join(root, releaseContextFile));
+    const directory = await open(root, "r");
+    try {
+      await directory.sync();
+    } finally {
+      await directory.close();
+    }
+  };
+
+  const fetchRollback = async (): Promise<VerifiedReleaseManifest> => {
+    const stagedPath = join(root, pendingReleaseContextFile);
+    try {
+      const staged = await loadSignedContext(stagedPath);
+      const state = await loadDeploymentState(root);
+      if (
+        state?.compose !== undefined &&
+        staged.manifest.version === state.argusVersion &&
+        staged.manifest.images.app.reference === state.compose.images.argus &&
+        staged.manifest.images.postgres.reference === state.compose.images.postgres &&
+        staged.manifest.images.searxng.reference === state.compose.images.searxng
+      ) {
+        await rename(stagedPath, join(root, releaseContextFile));
+        const directory = await open(root, "r");
+        try {
+          await directory.sync();
+        } finally {
+          await directory.close();
+        }
+        return staged;
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    try {
+      return await loadSignedContext(join(root, releaseContextFile));
+    } catch {
+      throw new DeploymentError("UPDATE_ROLLBACK_UNAVAILABLE", "No persisted signed release is available for rollback.");
+    }
+  };
+
+  return {
+    fetchUpdateRelease: fetchVerified,
+    fetchRollbackRelease: fetchRollback,
+    stageCurrentRelease,
+    promoteCurrentRelease,
+  };
+};
 
 const verifiedRelease = (
   manifest: ReleaseManifestV1,

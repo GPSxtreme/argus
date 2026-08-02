@@ -26,6 +26,9 @@ import {
   loadDeploymentState,
   onboardingAnswersSchema,
   repairService,
+  applyUpdate,
+  planUpdate,
+  rollbackUpdate,
   restartDeployment,
   runDoctor,
   MANAGEMENT_WRAPPER_REQUIREMENTS as SHARED_MANAGEMENT_WRAPPER_REQUIREMENTS,
@@ -34,7 +37,10 @@ import {
   type DiagnosticReport,
   type OnboardingAnswersV1,
   type CommandExecutor,
+  type UpdatePlan,
 } from "@argus/deployment";
+import type { ProductionUpdateIntegration } from "./integrations.js";
+import type { VerifiedReleaseManifest } from "@argus/release";
 import { targetsFromConfig } from "@argus/scheduler";
 import { Command, CommanderError } from "commander";
 import { parse } from "yaml";
@@ -66,6 +72,11 @@ export interface DeploymentCliAdapter {
   inspectRepair(service: string): Promise<unknown>;
   applyRepair(service: string): Promise<unknown>;
   verifyRepair(service: string, applied?: unknown): Promise<unknown>;
+  inspectUpdate?(): Promise<unknown>;
+  applyUpdate?(inspection: unknown): Promise<unknown>;
+  verifyUpdate?(applied?: unknown): Promise<unknown>;
+  inspectRollbackUpdate?(): Promise<unknown>;
+  applyRollbackUpdate?(inspection: unknown): Promise<unknown>;
   inspectOnboarding(
     answers: OnboardingAnswersV1,
     secrets: Readonly<Record<string, string>>,
@@ -802,6 +813,65 @@ export const createProgram = (dependencies: CliDependencies): Command => {
     });
   });
 
+  mutationOptions(
+    program.command("update").description("Update Argus to a verified signed release"),
+  ).option("--rollback", "roll back to the persisted verified release backup").action(async (options: MutationOptions & { rollback?: boolean }) => {
+    await execute(dependencies, options, async () => {
+      if (options.rollback) {
+        if (
+          dependencies.deployment.inspectRollbackUpdate === undefined ||
+          dependencies.deployment.applyRollbackUpdate === undefined
+        ) {
+          throw new DeploymentError("UPDATE_ROLLBACK_UNAVAILABLE", "Argus rollback support is unavailable in this CLI environment.");
+        }
+        const plan = await dependencies.deployment.inspectRollbackUpdate();
+        if (options.dryRun) return { data: { plan }, human: renderHumanPlan(plan) };
+        await confirmMutation(
+          dependencies,
+          dependencies.prompt,
+          options,
+          "Roll back Argus using the persisted verified release backup?",
+          plan,
+        );
+        const applied = await dependencies.deployment.applyRollbackUpdate(plan);
+        const result = applied as { version?: unknown; health?: unknown };
+        return {
+          data: { version: result.version, health: result.health },
+          human: `Argus rollback to ${String(result.version ?? "the verified backup")} completed.`,
+        };
+      }
+      if (
+        dependencies.deployment.inspectUpdate === undefined ||
+        dependencies.deployment.applyUpdate === undefined ||
+        dependencies.deployment.verifyUpdate === undefined
+      ) {
+        throw new DeploymentError(
+          "UPDATE_UNAVAILABLE",
+          "Argus update support is unavailable in this CLI environment.",
+          { recovery: "Use an Argus CLI installed from a signed release, then retry." },
+        );
+      }
+      const plan = await dependencies.deployment.inspectUpdate();
+      if (options.dryRun) {
+        return { data: { plan }, human: renderHumanPlan(plan) };
+      }
+      await confirmMutation(
+        dependencies,
+        dependencies.prompt,
+        options,
+        "Update Argus using the inspected signed release plan?",
+        plan,
+      );
+      const applied = await dependencies.deployment.applyUpdate(plan);
+      const health = await dependencies.deployment.verifyUpdate(applied);
+      const result = applied as { version?: unknown };
+      return {
+        data: { version: result.version, health },
+        human: `Argus ${String(result.version ?? "update")} completed and was verified.`,
+      };
+    });
+  });
+
   registerConfig(program, dependencies);
   registerSecrets(program, dependencies);
 
@@ -1028,6 +1098,7 @@ export interface NodeCliDependenciesOptions {
   io: CliIO;
   onboardingIntegration?: ProductionOnboardingIntegration;
   installedConfigIntegration?: InstalledConfigIntegration;
+  updateIntegration?: ProductionUpdateIntegration;
   version?: string;
 }
 
@@ -1070,6 +1141,7 @@ const createDeploymentAdapter = (
   root: string,
   executor: CommandExecutor,
   onboardingIntegration?: ProductionOnboardingIntegration,
+  updateIntegration?: ProductionUpdateIntegration,
 ): DeploymentCliAdapter => {
   const context = { root, executor };
   const doctorContext = async () => {
@@ -1237,6 +1309,64 @@ const createDeploymentAdapter = (
       }
       return report;
     },
+    async inspectUpdate() {
+      if (updateIntegration === undefined) {
+        throw new DeploymentError(
+          "RELEASE_MANIFEST_REQUIRED",
+          "A verified release manifest is required before Argus can plan an update.",
+          { recovery: "Install Argus through the signed release channel, then retry the update." },
+        );
+      }
+      const [release, rollbackRelease] = await Promise.all([
+        updateIntegration.fetchUpdateRelease(),
+        updateIntegration.fetchRollbackRelease(),
+      ]);
+      return planUpdate({ root, release, rollbackRelease, executor });
+    },
+    async applyUpdate(inspection) {
+      if (updateIntegration === undefined) {
+        throw new DeploymentError(
+          "RELEASE_MANIFEST_REQUIRED",
+          "A verified release manifest is required before Argus can apply an update.",
+        );
+      }
+      const plan = inspection as UpdatePlan;
+      await updateIntegration.stageCurrentRelease(plan.release);
+      const applied = await applyUpdate({ root, plan, executor });
+      if (!applied.health.healthy) {
+        throw new DeploymentError(
+          "UPDATE_HEALTHCHECK_FAILED",
+          "Argus update health verification failed.",
+          { recovery: "Run 'argus doctor --json' before retrying the update." },
+        );
+      }
+      await updateIntegration.promoteCurrentRelease(plan.release);
+      return applied;
+    },
+    async verifyUpdate(applied) {
+      const result = applied as { health?: { healthy?: unknown } } | undefined;
+      if (result?.health?.healthy !== true) {
+        throw new DeploymentError(
+          "UPDATE_VERIFY_FAILED",
+          "Argus update did not return a final health report.",
+          { recovery: "Run 'argus doctor --json' before retrying the update." },
+        );
+      }
+      return result.health;
+    },
+    async inspectRollbackUpdate() {
+      if (updateIntegration === undefined) {
+        throw new DeploymentError("RELEASE_MANIFEST_REQUIRED", "A verified signed rollback release is required.");
+      }
+      return { release: await updateIntegration.fetchRollbackRelease() };
+    },
+    async applyRollbackUpdate(inspection) {
+      const rollback = inspection as { release?: unknown };
+      if (!rollback.release) {
+        throw new DeploymentError("UPDATE_ROLLBACK_UNAVAILABLE", "No verified rollback release was selected.");
+      }
+      return rollbackUpdate({ root, executor, release: rollback.release as VerifiedReleaseManifest });
+    },
     async inspectOnboarding(answers, secrets) {
       const preflight = await inspectHost(executor, {
         apiPort: answers.deployment.apiPort,
@@ -1325,13 +1455,14 @@ export const createNodeCliDependencies = ({
   io,
   onboardingIntegration,
   installedConfigIntegration,
+  updateIntegration,
   version,
 }: NodeCliDependenciesOptions): CliDependencies => ({
   root,
   version: version ?? resolveCliBuildVersion(),
   prompt,
   io,
-  deployment: createDeploymentAdapter(root, executor, onboardingIntegration),
+  deployment: createDeploymentAdapter(root, executor, onboardingIntegration, updateIntegration),
   files: {
     readText: (path) => readFile(path, "utf8"),
     stat: async (path) => ({ mode: (await stat(path)).mode }),

@@ -144,6 +144,7 @@ jobs:
             ARGUS_REVISION=${{ github.sha }}
             ARGUS_RELEASE_PUBLIC_KEY_B64=${{ steps.public-key.outputs.b64 }}
             ARGUS_RELEASE_MANIFEST_URL=${{ steps.release.outputs.release_base_url }}/manifest.json
+            ARGUS_UPDATE_MANIFEST_URL=https://argus.gpsxtre.me/releases/stable/manifest.json
 
       - name: Build pinned FxEmbed worker
         shell: bash
