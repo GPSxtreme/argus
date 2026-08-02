@@ -8,14 +8,16 @@ const repositoryRoot = join(import.meta.dirname, "../../..");
 const loadSkill = async (relativePath: string) => {
   const source = await readFile(join(repositoryRoot, relativePath, "SKILL.md"), "utf8");
   const match = /^---\n([\s\S]+?)\n---\n([\s\S]*)$/u.exec(source);
-  if (!match) throw new Error("Skill frontmatter is missing.");
+  const frontmatterSource = match?.[1];
+  const body = match?.[2];
+  if (!frontmatterSource || body === undefined) throw new Error("Skill frontmatter is missing.");
   const frontmatter = Object.fromEntries(
-    match[1].split("\n").map((line) => {
+    frontmatterSource.split("\n").map((line) => {
       const separator = line.indexOf(":");
       return [line.slice(0, separator), line.slice(separator + 1).trim()];
     }),
   );
-  return { frontmatter, body: match[2] };
+  return { frontmatter, body };
 };
 
 describe("Argus Agent Skill", () => {
