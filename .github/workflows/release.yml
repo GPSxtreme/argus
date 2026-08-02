@@ -26,7 +26,9 @@ jobs:
       FXEMBED_LICENSE_SHA256: 30ee0a78e6df8c8210bbee02a477c57f2cf8c7db13a756ea577678aee7014d37
       FXEMBED_LOCK_SHA256: 88ae1a737ca41e9a7d69593fd9e82ad35dee90d4fabc51ae3c5b33d5868535bc
       FXEMBED_COMPATIBILITY_DATE: "2026-04-11"
-      FXEMBED_OUTPUT_SHA256: aee0406fc38830fce35e4d493bc93a44d0a3aa15f7305fe2a36e8185b588c868
+      FXEMBED_PATCH: scripts/release/fxembed-reproducible.patch
+      FXEMBED_PATCH_SHA256: cdbb1a5351286f19d3486d4921026bb751f939cd6e7b8aabba29bb2549609e1e
+      FXEMBED_OUTPUT_SHA256: 1a9a52d5c49747cbcd2aec5c3aa593cffc02358f5fb01b2dc5542921d0012260
       NODE_VERSION: "24.16.0"
       NPM_VERSION: "11.13.0"
       PNPM_VERSION: "10.33.0"
@@ -157,6 +159,12 @@ jobs:
           test "$(git -C dist/fxembed-source rev-parse HEAD)" = "$FXEMBED_REVISION"
           printf '%s  %s\n' "$FXEMBED_LICENSE_SHA256" dist/fxembed-source/LICENSE.md | sha256sum --check --strict
           printf '%s  %s\n' "$FXEMBED_LOCK_SHA256" dist/fxembed-source/package-lock.json | sha256sum --check --strict
+          printf '%s  %s\n' "$FXEMBED_PATCH_SHA256" "$FXEMBED_PATCH" | sha256sum --check --strict
+          git -C dist/fxembed-source apply --check "$GITHUB_WORKSPACE/$FXEMBED_PATCH"
+          git -C dist/fxembed-source apply "$GITHUB_WORKSPACE/$FXEMBED_PATCH"
+          SOURCE_DATE_EPOCH="$(git -C dist/fxembed-source show -s --format=%ct "$FXEMBED_REVISION")"
+          [[ "$SOURCE_DATE_EPOCH" =~ ^(0|[1-9][0-9]*)$ ]]
+          export SOURCE_DATE_EPOCH
           (
             cd dist/fxembed-source
             test "$(node --version)" = "v${NODE_VERSION}"

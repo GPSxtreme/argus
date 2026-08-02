@@ -8,8 +8,12 @@
   "packageLockSha256": "88ae1a737ca41e9a7d69593fd9e82ad35dee90d4fabc51ae3c5b33d5868535bc",
   "compatibilityDate": "2026-04-11",
   "nodeVersion": "24.16.0",
-  "outputSha256": "aee0406fc38830fce35e4d493bc93a44d0a3aa15f7305fe2a36e8185b588c868",
+  "sourceDateEpoch": 1785545724,
+  "reproducibilityPatch": "scripts/release/fxembed-reproducible.patch",
+  "reproducibilityPatchSha256": "cdbb1a5351286f19d3486d4921026bb751f939cd6e7b8aabba29bb2549609e1e",
+  "outputSha256": "1a9a52d5c49747cbcd2aec5c3aa593cffc02358f5fb01b2dc5542921d0012260",
   "build": [
+    "git apply scripts/release/fxembed-reproducible.patch",
     "npm ci --ignore-scripts",
     "npm run build:atmosphere",
     "npm run build-local"
