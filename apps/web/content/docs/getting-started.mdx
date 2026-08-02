@@ -6,9 +6,11 @@ description: Install Argus and create your first local configuration.
 # Getting started
 
 ```bash
-curl -fsSL https://argus.gpsxtre.me/install.sh | sh
+curl -fsSL https://argus.gpsxtre.me/install.sh | ARGUS_GITHUB_TOKEN="<your GitHub token>" sh
 argus onboard
 ```
+
+Until the release repository is public, replace the placeholder with a GitHub token that has read access to the Argus repository. The installer receives the token through `ARGUS_GITHUB_TOKEN` to download private release assets; it never belongs in your configuration file or documentation.
 
 The installer verifies a signed release manifest before installing the Argus wrapper. `argus onboard` guides the initial VPS configuration without placing secrets in your config file.
 
@@ -17,9 +19,11 @@ The installer verifies a signed release manifest before installing the Argus wra
 If you prefer not to pipe a remote script to a shell, download it and inspect the checksum yourself before running it:
 
 ```bash
+export ARGUS_GITHUB_TOKEN="<your GitHub token>"
 curl -fsSLO https://argus.gpsxtre.me/install.sh
 shasum -a 256 install.sh
 sh install.sh
+unset ARGUS_GITHUB_TOKEN
 ```
 
 After onboarding, inspect health and validate configuration:

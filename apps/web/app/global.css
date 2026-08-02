@@ -34,10 +34,11 @@ h1 { max-width: 760px; font-size: clamp(3rem, 8vw, 6.8rem); letter-spacing: -.08
 h2 { font-size: clamp(2rem, 4vw, 3.5rem); letter-spacing: -.06em; line-height: 1; }
 .lede { color: var(--muted); font-size: 1.18rem; max-width: 680px; }
 .hero-actions { display: flex; flex-wrap: wrap; gap: .75rem; margin: 2rem 0; }
-.button, .copy-command { border: 1px solid var(--line); border-radius: .25rem; padding: .7rem 1rem; background: transparent; color: var(--ink); font: inherit; text-decoration: none; }
+.button { border: 1px solid var(--line); border-radius: .25rem; padding: .7rem 1rem; background: transparent; color: var(--ink); font: inherit; text-decoration: none; }
 .primary { border-color: var(--accent); background: var(--accent); color: #07110e; font-weight: 700; }
-.install-box { display: grid; grid-template-columns: 1fr auto; gap: .75rem; padding: 1rem; border: 1px solid var(--line); background: var(--surface); }
-.install-box code:last-child { grid-column: 1 / -1; color: var(--accent); }
+.install-box { display: grid; gap: .75rem; padding: 1rem; border: 1px solid var(--line); background: var(--surface); overflow-wrap: anywhere; }
+.install-note { margin: 0; color: var(--muted); font-size: .85rem; }
+.install-box code:last-child { color: var(--accent); }
 .data-trinity, .pipeline, .agent-callout { border-top: 1px solid var(--line); padding: 5rem 0; }
 .source-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; }
 .source-card { border: 1px solid var(--line); min-height: 12rem; padding: 1.25rem; background: var(--surface); }

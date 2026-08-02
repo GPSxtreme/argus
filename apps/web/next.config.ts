@@ -19,6 +19,24 @@ const nextConfig: NextConfig = {
 
     return config;
   },
+  async headers() {
+    return [
+      {
+        source: "/releases/stable/manifest.json",
+        headers: [
+          { key: "Cache-Control", value: "public, max-age=300, stale-while-revalidate=3600" },
+          { key: "Content-Type", value: "application/json; charset=utf-8" },
+        ],
+      },
+      {
+        source: "/releases/stable/manifest.sig",
+        headers: [
+          { key: "Cache-Control", value: "public, max-age=300, stale-while-revalidate=3600" },
+          { key: "Content-Type", value: "application/octet-stream" },
+        ],
+      },
+    ];
+  },
   async rewrites() {
     return [
       {

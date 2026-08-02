@@ -6,6 +6,8 @@
     "dev": "next dev",
     "build": "next build --webpack",
     "check:links": "start-server-and-test start 3000 \"linkinator http://localhost:3000 --recurse --skip '(^https://github.com|https://argus.gpsxtre.me)'\"",
+    "generate": "fumadocs-mdx",
+    "postinstall": "fumadocs-mdx",
     "start": "next start",
     "typecheck": "tsc --noEmit"
   },

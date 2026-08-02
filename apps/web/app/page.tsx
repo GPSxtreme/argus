@@ -1,8 +1,8 @@
-import { CopyCommand } from "../components/copy-command";
 import { DataTrinity } from "../components/data-trinity";
 import { Pipeline } from "../components/pipeline";
+import { stableReleaseTag, stableReleaseUrl } from "../lib/release";
 
-const installCommand = "curl -fsSL https://argus.gpsxtre.me/install.sh | sh";
+const installCommand = 'curl -fsSL https://argus.gpsxtre.me/install.sh | ARGUS_GITHUB_TOKEN="<your GitHub token>" sh';
 
 export default function Home() {
   return (
@@ -27,7 +27,9 @@ export default function Home() {
         </div>
         <section className="install-box" aria-label="Install Argus">
           <code>{installCommand}</code>
-          <CopyCommand command={installCommand} />
+          <p className="install-note">
+            Until the release repository is public, replace the placeholder with a GitHub token that has read access to Argus. The token is passed only to the installer.
+          </p>
           <code>argus onboard</code>
         </section>
       </section>
@@ -47,7 +49,7 @@ export default function Home() {
           <a href="/docs">Docs</a>
           <a href="https://github.com/GPSxtreme/argus">Source</a>
           <a href="https://github.com/GPSxtreme/argus/blob/main/LICENSE">License</a>
-          <a href="https://github.com/GPSxtreme/argus/releases/tag/v0.1.2">v0.1.2</a>
+          <a href={stableReleaseUrl}>{stableReleaseTag}</a>
         </div>
       </footer>
     </main>

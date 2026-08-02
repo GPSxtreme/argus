@@ -11,7 +11,7 @@ import { releasePublicKey } from "../lib/release-public-key";
 
 const expectedManifestUrl = "https://argus.gpsxtre.me/releases/stable/manifest.json";
 const expectedPublicKey = `-----BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEAX5aHXYBKZ+lpi4/k61gstTYs+u5gvFyno7/LCJ1zXRw=
+MCowBQYDK2VwAyEAX5aHXYBKV+lpb4/k61gstTYs+u5gvFyno7/LCJ1zXRw=
 -----END PUBLIC KEY-----`;
 
 describe("distribution routes", () => {
