@@ -243,7 +243,9 @@ chmod 700 "$argus_tmp"
 
 if [ -n "\${ARGUS_GITHUB_TOKEN:-}" ]; then
   command -v jq >/dev/null 2>&1 || argus_die "GitHub token requires jq"
-  printf '%s\\n' "$ARGUS_GITHUB_TOKEN" | LC_ALL=C grep -Eq '^[A-Za-z0-9_]+$' ||
+  argus_github_token_lines=$(printf '%s\\n' "$ARGUS_GITHUB_TOKEN" | wc -l | tr -d '[:space:]')
+  [ "$argus_github_token_lines" = 1 ] &&
+    printf '%s\\n' "$ARGUS_GITHUB_TOKEN" | LC_ALL=C grep -Eq '^[!-~]+$' ||
     argus_die "ARGUS_GITHUB_TOKEN contains unsafe characters"
   argus_github_headers="$argus_tmp/github.headers"
   {

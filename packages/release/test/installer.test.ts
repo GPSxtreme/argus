@@ -336,6 +336,8 @@ describe("renderInstaller", () => {
     expect(installer).toContain("Docker installation declined");
     expect(installer).toContain("--connect-timeout 10 --max-time 60 --retry 3");
     expect(installer).toContain("ARGUS_GITHUB_TOKEN");
+    expect(installer).toContain("grep -Eq '^[!-~]+$'");
+    expect(installer).toContain("wc -l");
     expect(installer).toContain("https://api.github.com/repos/");
     expect(installer).toContain("application/octet-stream");
     expect(installer).toContain("GitHub token requires jq");
@@ -584,6 +586,31 @@ describe("renderInstaller", () => {
       runInstaller(fixture, bytes, {}, Buffer.alloc(64)),
     ).rejects.toMatchObject({
       stderr: expect.stringContaining("signature is invalid"),
+    });
+  });
+
+  it("accepts opaque visible-ASCII GitHub tokens and rejects header injection", async () => {
+    const fixture = await createFixture();
+    const wrapperSha = createHash("sha256")
+      .update(await readFile(fixture.wrapper))
+      .digest("hex");
+    const bytes = Buffer.from(JSON.stringify(manifest(wrapperSha)));
+
+    await expect(
+      runInstaller(fixture, bytes, {
+        ARGUS_GITHUB_TOKEN: "github_pat:opaque-token.value~+/=",
+      }),
+    ).resolves.toMatchObject({ stdout: "argus onboard\n" });
+
+    const unsafe = await createFixture();
+    await expect(
+      runInstaller(unsafe, bytes, {
+        ARGUS_GITHUB_TOKEN: "github_pat_safe\nInjected: header",
+      }),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining(
+        "ARGUS_GITHUB_TOKEN contains unsafe characters",
+      ),
     });
   });
 

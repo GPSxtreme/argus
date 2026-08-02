@@ -144,6 +144,10 @@ argus_vps_cleanup_inner() {
 trap argus_vps_cleanup_inner EXIT HUP INT TERM
 
 if [ -n "${ARGUS_GITHUB_TOKEN:-}" ]; then
+  argus_vps_token_lines=$(printf '%s\n' "$ARGUS_GITHUB_TOKEN" | wc -l | tr -d '[:space:]')
+  [ "$argus_vps_token_lines" = 1 ] &&
+    printf '%s\n' "$ARGUS_GITHUB_TOKEN" | LC_ALL=C grep -Eq '^[!-~]+$' ||
+    argus_vps_die "ARGUS_GITHUB_TOKEN contains unsafe characters"
   argus_vps_headers=$argus_vps_work/github.headers
   {
     printf 'Authorization: Bearer %s\n' "$ARGUS_GITHUB_TOKEN"
