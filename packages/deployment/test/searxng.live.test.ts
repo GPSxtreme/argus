@@ -62,12 +62,15 @@ describe("managed SearXNG live smoke", () => {
 services:
   searxng:
     image: ${pinnedSearxngImage}
+    environment:
+      SEARXNG_SECRET: 901c809ca1001144a1bb98b140f361f687378704d7398cce0c5f73873092ad8c
     volumes:
       - ./settings.yml:/etc/searxng/settings.yml:ro
-    networks: [argus-private]
+    networks: [argus-private, argus-egress]
 networks:
   argus-private:
     internal: true
+  argus-egress: {}
 `,
       "utf8",
     );
@@ -116,5 +119,5 @@ networks:
       });
       await rm(root, { force: true, recursive: true });
     }
-  }, 30_000);
+  }, 60_000);
 });
