@@ -438,7 +438,16 @@ esac`,
     const bin = join(directory, "bin");
     const artifacts = join(directory, "artifacts");
     const sequence = join(directory, "sequence");
-    await mkdir(bin, { recursive: true });
+    const systemRoot = join(directory, "host");
+    await Promise.all([
+      mkdir(bin, { recursive: true }),
+      mkdir(join(systemRoot, "var/lib/docker"), { recursive: true }),
+      mkdir(join(systemRoot, "var/lib/containerd"), { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(join(systemRoot, "var/lib/docker/state"), "stable\n"),
+      writeFile(join(systemRoot, "var/lib/containerd/state"), "stable\n"),
+    ]);
     const command = async (name: string, source: string) => {
       const path = join(bin, name);
       await writeFile(path, `#!/bin/sh\n${source}\n`);
@@ -499,6 +508,7 @@ exit 42
           TMPDIR: directory,
           ARGUS_FAKE_INSTALLER: fakeInstaller,
           ARGUS_INSPECT_SEQUENCE: sequence,
+          ARGUS_SMOKE_SYSTEM_ROOT: systemRoot,
           ARGUS_INSTALLER_URL: "https://example.com/release/install.sh",
           ARGUS_MANIFEST_URL: "https://example.com/release/manifest.json",
           ARGUS_EXPECTED_VERSION: "1.2.3",

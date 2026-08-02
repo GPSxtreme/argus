@@ -495,9 +495,10 @@ if ! argus_check_docker; then
     0) argus_die "Docker Engine and Compose are required; ARGUS_INSTALL_DOCKER=0 forbids installation" ;;
     1) argus_install_docker ;;
     '')
-      if ! { exec 3<>/dev/tty; } 2>/dev/null; then
+      if ! (exec 3<>/dev/tty) 2>/dev/null; then
         argus_die "Docker is missing and no controlling terminal is available; set ARGUS_INSTALL_DOCKER=1 to approve installation"
       fi
+      exec 3<>/dev/tty
       printf '%s' "Docker Engine and Compose are required. Install from Docker's official apt repository? [y/N] " >&3
       IFS= read -r argus_answer <&3 || argus_die "could not read Docker installation approval"
       exec 3>&-
