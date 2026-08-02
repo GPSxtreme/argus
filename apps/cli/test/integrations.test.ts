@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createInstalledConfigIntegration,
   createProductionOnboardingIntegration,
+  createProductionUpdateIntegration,
   createReleaseComposition,
 } from "../src/integrations.js";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
@@ -195,34 +196,34 @@ class DeploymentExecutor implements CommandExecutor {
   }
 }
 
-const releaseFixture = () => {
+const releaseFixture = ({ version = "1.2.3", appMarker = "a" }: { version?: string; appMarker?: string } = {}) => {
   const fxembed = Buffer.from("export default { fetch() {} };\n");
   const wrapper = Buffer.from("#!/bin/sh\nexec true\n");
   const built = buildReleaseArtifacts({
-    version: "1.2.3",
+    version,
     sourceDateEpoch: "1785580200",
     images: [
-      { name: "app", reference: `ghcr.io/gpsxtreme/argus@sha256:${digest("a")}` },
+      { name: "app", reference: `ghcr.io/gpsxtreme/argus@sha256:${digest(appMarker)}` },
       { name: "cli", reference: `ghcr.io/gpsxtreme/argus-cli@sha256:${digest("b")}` },
       { name: "searxng", reference: `docker.io/searxng/searxng@sha256:${digest("c")}` },
       { name: "postgres", reference: `docker.io/library/postgres@sha256:${digest("d")}` },
     ],
     fxembed: {
       bytes: fxembed,
-      url: "https://release.example/v1.2.3/fxembed.js",
+      url: `https://release.example/v${version}/fxembed.js`,
       compatibilityDate: "2026-04-11",
     },
-    wrapper: { bytes: wrapper, url: "https://release.example/v1.2.3/argus" },
-    installer: { bytes: Buffer.from("installer"), url: "https://release.example/v1.2.3/install.sh" },
-    publicKeyUrl: "https://release.example/v1.2.3/release-public.pem",
-    fxembedLicense: { bytes: Buffer.from("MIT"), url: "https://release.example/v1.2.3/FXEMBED-LICENSE.md" },
+    wrapper: { bytes: wrapper, url: `https://release.example/v${version}/argus` },
+    installer: { bytes: Buffer.from("installer"), url: `https://release.example/v${version}/install.sh` },
+    publicKeyUrl: `https://release.example/v${version}/release-public.pem`,
+    fxembedLicense: { bytes: Buffer.from("MIT"), url: `https://release.example/v${version}/FXEMBED-LICENSE.md` },
     fxembedProvenance: {
       bytes: Buffer.from("{}"),
-      url: "https://release.example/v1.2.3/fxembed-provenance.json",
+      url: `https://release.example/v${version}/fxembed-provenance.json`,
     },
     privateKeyPem: fixturePrivateKey,
   });
-  return { ...built, fxembed };
+  return { ...built, fxembed, version };
 };
 
 describe("production onboarding integration", () => {
@@ -256,6 +257,7 @@ describe("production onboarding integration", () => {
       updateIntegration: expect.objectContaining({
         fetchUpdateRelease: expect.any(Function),
         fetchRollbackRelease: expect.any(Function),
+        promoteCurrentRelease: expect.any(Function),
       }),
     });
   });
@@ -270,7 +272,12 @@ describe("production onboarding integration", () => {
         ARGUS_RELEASE_MANIFEST_URL: "https://release.example/manifest.json",
       },
       fetcher: async (input) => {
-        const bytes = String(input).endsWith(".sig") ? fixture.signature : fixture.manifestBytes;
+        const url = String(input);
+        const bytes = url.endsWith(".sig")
+          ? fixture.signature
+          : url.endsWith("fxembed.js")
+            ? fixture.fxembed
+            : fixture.manifestBytes;
         return new Response(Uint8Array.from(bytes).buffer);
       },
     });
@@ -279,6 +286,47 @@ describe("production onboarding integration", () => {
       manifest: { version: "1.2.3" },
       manifestSha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
     });
+  });
+
+  it("promotes the verified target context only after success so the next update rolls back to it", async () => {
+    const root = await mkdtemp(join(tmpdir(), "argus-update-context-"));
+    const releaseA = releaseFixture({ version: "1.0.0", appMarker: "a" });
+    const releaseB = releaseFixture({ version: "2.0.0", appMarker: "b" });
+    const releaseC = releaseFixture({ version: "3.0.0", appMarker: "c" });
+    await writeFile(
+      join(root, "release-context.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        manifest: Buffer.from(releaseA.manifestBytes).toString("base64"),
+        signature: Buffer.from(releaseA.signature).toString("base64"),
+        fxembed: Buffer.from(releaseA.fxembed).toString("base64"),
+      }),
+    );
+    let target = releaseB;
+    const integration = createProductionUpdateIntegration({
+      root,
+      manifestUrl: "https://release.example/manifest.json",
+      publicKeyPem: releaseA.publicKeyPem,
+      fetcher: async (input) => {
+        const url = String(input);
+        const bytes = url.endsWith("manifest.sig")
+          ? target.signature
+          : url.endsWith("manifest.json")
+            ? target.manifestBytes
+            : url === `https://release.example/v${target.version}/fxembed.js`
+              ? target.fxembed
+              : undefined;
+        return bytes === undefined
+          ? new Response(null, { status: 404 })
+          : new Response(Uint8Array.from(bytes).buffer);
+      },
+    });
+
+    const verifiedB = await integration.fetchUpdateRelease();
+    await integration.promoteCurrentRelease(verifiedB);
+    target = releaseC;
+    await expect(integration.fetchUpdateRelease()).resolves.toMatchObject({ manifest: { version: "3.0.0" } });
+    await expect(integration.fetchRollbackRelease()).resolves.toMatchObject({ manifest: { version: "2.0.0" } });
   });
 
   it("verifies assets, applies one exact plan, and reverifies persisted signed context", async () => {

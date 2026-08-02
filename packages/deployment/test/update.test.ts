@@ -143,6 +143,19 @@ describe("safe update state machine", () => {
     expect(calls).toBe(0);
   });
 
+  it("rejects a rollback release that does not exactly describe the current deployment", async () => {
+    const root = await rootWithState();
+
+    await expect(
+      planUpdate({
+        root,
+        release: release(),
+        rollbackRelease: release("0.9.0", 1, "e"),
+        executor: executor(),
+      }),
+    ).rejects.toMatchObject({ code: "UPDATE_ROLLBACK_RELEASE_MISMATCH" });
+  });
+
   it("restores SQLite sidecars to their original data directory with the verified old image", async () => {
     const root = await rootWithState();
     const { mkdir, rm } = await import("node:fs/promises");

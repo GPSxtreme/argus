@@ -264,6 +264,7 @@ export interface ReleaseCompositionOptions {
 export interface ProductionUpdateIntegration {
   fetchUpdateRelease(): Promise<VerifiedReleaseManifest>;
   fetchRollbackRelease(): Promise<VerifiedReleaseManifest>;
+  promoteCurrentRelease(release: VerifiedReleaseManifest): Promise<void>;
 }
 
 export const createReleaseComposition = ({
@@ -420,6 +421,13 @@ export interface ProductionUpdateIntegrationOptions {
   timeoutMs?: number;
 }
 
+interface FetchedUpdateRelease {
+  release: VerifiedReleaseManifest;
+  manifestBytes: Uint8Array;
+  signature: Uint8Array;
+  fxembedBytes: Uint8Array;
+}
+
 export const createProductionUpdateIntegration = ({
   root,
   manifestUrl,
@@ -427,27 +435,75 @@ export const createProductionUpdateIntegration = ({
   fetcher = fetch,
   timeoutMs = defaultTimeoutMs,
 }: ProductionUpdateIntegrationOptions): ProductionUpdateIntegration => {
+  const fetchedReleases = new Map<string, FetchedUpdateRelease>();
+  const fetchBounded = async (
+    url: string,
+    maximumBytes: number,
+    code: string,
+    message: string,
+  ): Promise<Uint8Array> => {
+    try {
+      return await withHttpDeadline(timeoutMs, async (signal) =>
+        boundedBytes(await fetcher(url, { signal }), maximumBytes, code, message),
+      );
+    } catch (error) {
+      if (error instanceof DeploymentError) throw error;
+      throw new DeploymentError(code, message);
+    }
+  };
+
   const fetchVerified = async (): Promise<VerifiedReleaseManifest> => {
-    const fetchBounded = async (
-      url: string,
-      maximumBytes: number,
-      code: string,
-      message: string,
-    ): Promise<Uint8Array> => {
-      try {
-        return await withHttpDeadline(timeoutMs, async (signal) =>
-          boundedBytes(await fetcher(url, { signal }), maximumBytes, code, message),
-        );
-      } catch (error) {
-        if (error instanceof DeploymentError) throw error;
-        throw new DeploymentError(code, message);
-      }
-    };
     const [manifestBytes, signature] = await Promise.all([
       fetchBounded(manifestUrl, MAX_RELEASE_MANIFEST_BYTES, "RELEASE_MANIFEST_DOWNLOAD_FAILED", "The bounded release manifest download failed."),
       fetchBounded(signatureUrl(manifestUrl), maximumSignatureBytes, "RELEASE_SIGNATURE_DOWNLOAD_FAILED", "The bounded release signature download failed."),
     ]);
-    return verifyReleaseManifestWithIdentity(manifestBytes, signature, publicKeyPem);
+    const release = verifyReleaseManifestWithIdentity(manifestBytes, signature, publicKeyPem);
+    const fxembedBytes = await fetchBounded(
+      release.manifest.assets.fxembed.url,
+      maximumFxEmbedBytes,
+      "RELEASE_ASSET_DOWNLOAD_FAILED",
+      "The bounded FxEmbed download failed.",
+    );
+    if (sha256(fxembedBytes) !== release.manifest.assets.fxembed.sha256) {
+      throw new DeploymentError(
+        "RELEASE_ASSET_HASH_MISMATCH",
+        "Downloaded FxEmbed bytes do not match the signed SHA-256.",
+      );
+    }
+    fetchedReleases.set(release.manifestSha256, {
+      release,
+      manifestBytes,
+      signature,
+      fxembedBytes,
+    });
+    return release;
+  };
+
+  const promoteCurrentRelease = async (release: VerifiedReleaseManifest): Promise<void> => {
+    const fetched = fetchedReleases.get(release.manifestSha256);
+    if (
+      fetched === undefined ||
+      fetched.release.manifest.version !== release.manifest.version ||
+      fetched.release.manifest.images.app.reference !== release.manifest.images.app.reference ||
+      fetched.release.manifest.images.postgres.reference !== release.manifest.images.postgres.reference ||
+      fetched.release.manifest.images.searxng.reference !== release.manifest.images.searxng.reference
+    ) {
+      throw new DeploymentError(
+        "UPDATE_RELEASE_UNVERIFIED",
+        "Argus can only promote the exact verified release that was downloaded for this update.",
+      );
+    }
+    const context: PersistedReleaseContext = {
+      schemaVersion: 1,
+      manifest: Buffer.from(fetched.manifestBytes).toString("base64"),
+      signature: Buffer.from(fetched.signature).toString("base64"),
+      fxembed: Buffer.from(fetched.fxembedBytes).toString("base64"),
+    };
+    await atomicBytes(
+      join(root, releaseContextFile),
+      Buffer.from(JSON.stringify(context)),
+      0o644,
+    );
   };
 
   const fetchRollback = async (): Promise<VerifiedReleaseManifest> => {
@@ -457,17 +513,30 @@ export const createProductionUpdateIntegration = ({
     } catch {
       throw new DeploymentError("UPDATE_ROLLBACK_UNAVAILABLE", "No persisted signed release is available for rollback.");
     }
-    if (parsed.schemaVersion !== 1) {
+    if (
+      parsed.schemaVersion !== 1 ||
+      Object.keys(parsed).some(
+        (key) => !["schemaVersion", "manifest", "signature", "fxembed"].includes(key),
+      )
+    ) {
       throw new DeploymentError("UPDATE_ROLLBACK_UNAVAILABLE", "Persisted signed rollback release is invalid.");
     }
-    return verifyReleaseManifestWithIdentity(
+    const release = verifyReleaseManifestWithIdentity(
       exactBase64(parsed.manifest, "UPDATE_ROLLBACK_UNAVAILABLE"),
       exactBase64(parsed.signature, "UPDATE_ROLLBACK_UNAVAILABLE"),
       publicKeyPem,
     );
+    const fxembedBytes = exactBase64(parsed.fxembed, "UPDATE_ROLLBACK_UNAVAILABLE");
+    if (sha256(fxembedBytes) !== release.manifest.assets.fxembed.sha256) {
+      throw new DeploymentError(
+        "UPDATE_ROLLBACK_UNAVAILABLE",
+        "Persisted FxEmbed bytes do not match the signed rollback release.",
+      );
+    }
+    return release;
   };
 
-  return { fetchUpdateRelease: fetchVerified, fetchRollbackRelease: fetchRollback };
+  return { fetchUpdateRelease: fetchVerified, fetchRollbackRelease: fetchRollback, promoteCurrentRelease };
 };
 
 const verifiedRelease = (

@@ -1330,7 +1330,10 @@ const createDeploymentAdapter = (
           "A verified release manifest is required before Argus can apply an update.",
         );
       }
-      return applyUpdate({ root, plan: inspection as UpdatePlan, executor });
+      const plan = inspection as UpdatePlan;
+      const applied = await applyUpdate({ root, plan, executor });
+      await updateIntegration.promoteCurrentRelease(plan.release);
+      return applied;
     },
     async verifyUpdate(applied) {
       const result = applied as { health?: unknown } | undefined;

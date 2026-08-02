@@ -133,6 +133,26 @@ const assertCompatible = (state: DeploymentStateV1, release: VerifiedReleaseMani
   }
 };
 
+const assertRollbackMatchesCurrent = (
+  state: DeploymentStateV1,
+  rollbackRelease: VerifiedReleaseManifest,
+): void => {
+  const compose = state.compose;
+  if (
+    compose === undefined ||
+    rollbackRelease.manifest.version !== state.argusVersion ||
+    rollbackRelease.manifest.images.app.reference !== compose.images.argus ||
+    rollbackRelease.manifest.images.postgres.reference !== compose.images.postgres ||
+    rollbackRelease.manifest.images.searxng.reference !== compose.images.searxng
+  ) {
+    throw new DeploymentError(
+      "UPDATE_ROLLBACK_RELEASE_MISMATCH",
+      "The verified rollback release does not exactly match the current Argus deployment.",
+      { recovery: "Restore the signed release context for the currently deployed Argus version before updating." },
+    );
+  }
+};
+
 const environmentFor = (state: DeploymentStateV1, release: VerifiedReleaseManifest): Record<string, string> => ({
   ARGUS_API_PORT: String(state.compose?.apiPort ?? 8788),
   ARGUS_IMAGE: release.manifest.images.app.reference,
@@ -219,6 +239,7 @@ export const planUpdate = async ({ root, release, rollbackRelease }: PlanUpdateI
   }
   assertCompatible(state, release);
   assertCompatible(state, rollbackRelease);
+  assertRollbackMatchesCurrent(state, rollbackRelease);
   const noop = state.argusVersion === release.manifest.version;
   const services: Array<"argus" | "postgres" | "searxng"> = ["argus"];
   if (state.compose.storage === "postgres") services.push("postgres");
