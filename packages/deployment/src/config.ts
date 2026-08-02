@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { OnboardingAnswersV1 } from "./contracts.js";
 import { stringify } from "yaml";
 
@@ -34,6 +35,14 @@ export const renderInstanceConfig = (
   const openrouterApiKey = answers.intelligence.enabled
     ? requiredSecret("OPENROUTER_API_KEY", endpoints.openrouterApiKey)
     : undefined;
+  const apiToken = requiredSecret("ARGUS_API_TOKEN", endpoints.apiToken);
+  const searxngSecret =
+    answers.managed.searxng === "managed"
+      ? createHash("sha256")
+          .update("argus-managed-searxng\0")
+          .update(apiToken)
+          .digest("hex")
+      : undefined;
   const storageUrl =
     answers.deployment.storage === "sqlite"
       ? "/app/data/argus.db"
@@ -111,7 +120,10 @@ export const renderInstanceConfig = (
     },
   });
   const secretEnvironment: Record<string, string> = {
-    ARGUS_API_TOKEN: requiredSecret("ARGUS_API_TOKEN", endpoints.apiToken),
+    ARGUS_API_TOKEN: apiToken,
+    ...(searxngSecret === undefined
+      ? {}
+      : { SEARXNG_SECRET: searxngSecret }),
     ...(postgresPassword === undefined
       ? {}
       : {

@@ -48,6 +48,8 @@ describe("renderInstanceConfig", () => {
     expect(rendered.yaml).toContain("token: ${ARGUS_API_TOKEN}");
     expect(rendered.yaml).not.toContain("api-secret");
     expect(rendered.secrets).toContain("ARGUS_API_TOKEN=api-secret");
+    expect(rendered.secretEnvironment.SEARXNG_SECRET).toMatch(/^[a-f0-9]{64}$/u);
+    expect(rendered.secretEnvironment.SEARXNG_SECRET).not.toBe("api-secret");
   });
 
   it("renders the configured storage, sources, and API endpoint deterministically", () => {
@@ -135,6 +137,7 @@ api:
     expect(rendered.yaml).not.toContain("openrouter-secret");
     expect(rendered.secretEnvironment).toEqual({
       ARGUS_API_TOKEN: "api-secret",
+      SEARXNG_SECRET: expect.stringMatching(/^[a-f0-9]{64}$/u),
       POSTGRES_PASSWORD: "p@ss:word",
       ARGUS_POSTGRES_URL: "postgres://argus:p%40ss%3Aword@postgres:5432/argus",
       OPENROUTER_API_KEY: "openrouter-secret",
@@ -200,7 +203,8 @@ api:
         fxembed: "https://argus-fx.workers.dev/api",
         apiToken: value,
       });
-      expect(rendered.secrets).toBe(`ARGUS_API_TOKEN=${value}\n`);
+      expect(rendered.secrets).toContain(`ARGUS_API_TOKEN=${value}\n`);
+      expect(rendered.secrets).toMatch(/SEARXNG_SECRET=[a-f0-9]{64}\n/u);
       expect(rendered.secretEnvironment.ARGUS_API_TOKEN).toBe(value);
     }
   });

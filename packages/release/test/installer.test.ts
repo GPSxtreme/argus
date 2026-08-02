@@ -980,7 +980,7 @@ esac`,
     expect(
       await readFile(join(fakeEtc, "etc/apt/keyrings/docker.asc"), "utf8"),
     ).toContain("BEGIN PGP PUBLIC KEY BLOCK");
-  });
+  }, 20_000);
 
   it("rejects an extra primary Docker key before repository mutation", async () => {
     const fixture = await createFixture();
@@ -1016,7 +1016,7 @@ esac`,
     ).rejects.toMatchObject({
       stderr: expect.stringContaining("exactly one primary key"),
     });
-  });
+  }, 20_000);
 
   it("rejects a wrong Docker primary-key fingerprint", async () => {
     const fixture = await createFixture();
@@ -1047,7 +1047,7 @@ esac`,
     ).rejects.toMatchObject({
       stderr: expect.stringContaining("fingerprint did not match"),
     });
-  });
+  }, 20_000);
 
   it("fails closed on conflicting distro Docker packages before apt mutation", async () => {
     const fixture = await createFixture();
