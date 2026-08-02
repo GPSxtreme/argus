@@ -28,8 +28,7 @@ COPY packages/deployment packages/deployment
 COPY packages/release packages/release
 COPY packages/scheduler packages/scheduler
 
-RUN pnpm --filter @argus/cli... build \
-  && pnpm exec esbuild apps/cli/src/main.ts \
+RUN pnpm exec esbuild apps/cli/src/main.ts \
     --bundle \
     --banner:js='import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' \
     --format=esm \
@@ -47,7 +46,8 @@ RUN pnpm --filter @argus/cli... build \
     --packages=bundle \
     --platform=node \
     --target=node24 \
-  && pnpm --config.ignore-scripts=true --filter @argus/cli deploy --legacy --prod /workspace/deployed
+  && pnpm --config.ignore-scripts=true --config.inject-workspace-packages=true \
+    --filter @argus/cli --prod deploy /workspace/deployed
 
 ARG DOCKER_VERSION
 ARG COMPOSE_VERSION

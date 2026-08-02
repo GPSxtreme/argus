@@ -147,6 +147,19 @@ describe("production image definitions", () => {
     expect(appDockerfile).toMatch(/python3=[^\s\\]+/u);
     expect(cliDockerfile).not.toMatch(/better-sqlite3|AS native-build|storage-sqlite|storage-postgres/u);
     expect(cliDockerfile).not.toContain("COPY apps/argus");
+    expect(cliDockerfile).toContain(
+      "pnpm exec esbuild apps/cli/src/main.ts",
+    );
+    expect(cliDockerfile).not.toMatch(
+      /pnpm\s+--filter\s+@argus\/cli\.\.\.\s+build/u,
+    );
+    expect(cliDockerfile).toContain(
+      "--config.inject-workspace-packages=true",
+    );
+    expect(cliDockerfile).toMatch(
+      /--filter @argus\/cli --prod deploy \/workspace\/deployed/u,
+    );
+    expect(cliDockerfile).not.toContain("deploy --legacy");
   });
 
   it("locks builder tooling with registry integrity", () => {
