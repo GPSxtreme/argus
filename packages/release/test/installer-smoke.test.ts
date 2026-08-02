@@ -980,19 +980,24 @@ exit 42
     expect(smoke).toContain(`-re {${promptPattern}}`);
     expect(smoke).not.toContain("-re {Argus API token}");
     expect(
-      spawnSync(
-        "expect",
-        [
-          "-c",
-          `if {![regexp -- {${promptPattern}} $env(ARGUS_PROMPT_FIXTURE)]} { exit 1 }`,
-        ],
-        {
-          env: {
-            ...process.env,
-            ARGUS_PROMPT_FIXTURE: fragmentedPrompt,
-          },
+      new RegExp(promptPattern.replace("(?s)", ""), "su").test(
+        fragmentedPrompt,
+      ),
+    ).toBe(true);
+
+    const tclMatch = spawnSync(
+      "expect",
+      [
+        "-c",
+        `if {![regexp -- {${promptPattern}} $env(ARGUS_PROMPT_FIXTURE)]} { exit 1 }`,
+      ],
+      {
+        env: {
+          ...process.env,
+          ARGUS_PROMPT_FIXTURE: fragmentedPrompt,
         },
-      ).status,
-    ).toBe(0);
+      },
+    );
+    if (tclMatch.error === undefined) expect(tclMatch.status).toBe(0);
   });
 });
