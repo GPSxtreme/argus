@@ -136,8 +136,8 @@ const parseStatus = (stdout: string): DeploymentStatus["services"] => {
   if (!stdout.trim()) return [];
   try {
     const parsed: unknown = JSON.parse(stdout);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.flatMap((entry) => {
+    const entries: unknown[] = Array.isArray(parsed) ? parsed : [parsed];
+    return entries.flatMap((entry) => {
       if (!entry || typeof entry !== "object") return [];
       const value = entry as Record<string, unknown>;
       const name =

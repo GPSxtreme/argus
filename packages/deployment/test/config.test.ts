@@ -65,18 +65,45 @@ runtime:
 storage:
   adapter: sqlite
   url: /app/data/argus.db
-sources:
-  x:
-    enabled: true
-    endpoint: https://argus-fx.workers.dev/api
-  web:
-    enabled: true
-    searchEndpoint: http://searxng:8080
 api:
   host: 0.0.0.0
   port: 8788
   token: \${ARGUS_API_TOKEN}
 `);
+  });
+
+  it("renders sources only for watch inputs and omits the disabled SearXNG endpoint", () => {
+    const rendered = renderInstanceConfig(
+      {
+        ...answers,
+        managed: { searxng: "disabled", fxembed: "disabled" },
+        watches: [
+          {
+            id: "smoke-web",
+            enabled: true,
+            schedule: "*/5 * * * *",
+            x: { accounts: [], queries: [] },
+            telegram: { channels: [] },
+            web: {
+              urls: ["https://example.com/"],
+              feeds: [],
+              queries: [],
+            },
+            keywords: [],
+          },
+        ],
+      },
+      {
+        searxng: "http://searxng.invalid",
+        fxembed: "https://fxembed.invalid",
+        apiToken: "api-secret",
+      },
+    );
+
+    expect(rendered.yaml).toContain("id: smoke-web");
+    expect(rendered.yaml).not.toContain("endpoint: https://fxembed.invalid");
+    expect(rendered.yaml).not.toContain("searchEndpoint");
+    expect(rendered.yaml).toContain("web:\n    enabled: true");
   });
 
   it("faithfully renders Postgres, watches, processors, and required secrets", () => {

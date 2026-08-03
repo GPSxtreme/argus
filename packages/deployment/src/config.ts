@@ -50,6 +50,30 @@ export const renderInstanceConfig = (
   const telegramEnabled = answers.watches.some(
     (watch) => watch.telegram.channels.length > 0,
   );
+  const xEnabled = answers.watches.some(
+    (watch) => watch.x.accounts.length > 0 || watch.x.queries.length > 0,
+  );
+  const webEnabled = answers.watches.some(
+    (watch) =>
+      watch.web.urls.length > 0 ||
+      watch.web.feeds.length > 0 ||
+      watch.web.queries.length > 0,
+  );
+  const searxngEnabled = answers.managed.searxng !== "disabled";
+  const sources = {
+    ...(xEnabled ? { x: { enabled: true, endpoint: endpoints.fxembed } } : {}),
+    ...(telegramEnabled
+      ? { telegram: { enabled: true, adapter: "public-web" } }
+      : {}),
+    ...(webEnabled
+      ? {
+          web: {
+            enabled: true,
+            ...(searxngEnabled ? { searchEndpoint: endpoints.searxng } : {}),
+          },
+        }
+      : {}),
+  };
   const yaml = stringify({
     version: 1,
     runtime: { role: "all" },
@@ -57,13 +81,7 @@ export const renderInstanceConfig = (
       adapter: answers.deployment.storage,
       url: storageUrl,
     },
-    sources: {
-      x: { enabled: true, endpoint: endpoints.fxembed },
-      ...(telegramEnabled
-        ? { telegram: { enabled: true, adapter: "public-web" } }
-        : {}),
-      web: { enabled: true, searchEndpoint: endpoints.searxng },
-    },
+    ...(Object.keys(sources).length === 0 ? {} : { sources }),
     ...(answers.watches.length === 0
       ? {}
       : {
