@@ -1000,7 +1000,7 @@ const atomicSecretWrite = async (
   const existing = await readSecretsFile(root);
   existing[name] = value;
   const contents = `${Object.entries(existing)
-    .sort(([left], [right]) => left.localeCompare(right))
+    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
     .map(([key, entry]) => `${key}=${entry}`)
     .join("\n")}\n`;
   const temporary = `${path}.${process.pid}.${crypto.randomUUID()}.tmp`;

@@ -303,4 +303,53 @@ describe("loadConfig", () => {
     expect(String(thrown)).not.toContain(invalidUrl);
     expect(String(thrown)).not.toContain("Generic-Projection-Secret");
   });
+
+  it("accepts valid five-field cron schedules", () => {
+    for (const schedule of [
+      "* * * * *",
+      "*/5 * * * *",
+      "0 9 * * 1-5",
+      "15 3 * * 0",
+    ]) {
+      expect(() =>
+        validateConfig({
+          version: 1,
+          storage: { adapter: "sqlite", url: ":memory:" },
+          sources: {},
+          watches: [
+            {
+              id: "scheduled",
+              schedule,
+              inputs: { web: { urls: ["https://example.com/"] } },
+            },
+          ],
+        }),
+      ).not.toThrow();
+    }
+  });
+
+  it("rejects malformed cron schedules at parse time", () => {
+    for (const schedule of [
+      "* * * *",
+      "* * * * * *",
+      "61 * * * *",
+      "not a cron schedule",
+      "*/0 * * * *",
+    ]) {
+      expect(() =>
+        validateConfig({
+          version: 1,
+          storage: { adapter: "sqlite", url: ":memory:" },
+          sources: {},
+          watches: [
+            {
+              id: "scheduled",
+              schedule,
+              inputs: { web: { urls: ["https://example.com/"] } },
+            },
+          ],
+        }),
+      ).toThrow(/Schedule must be a valid five-field cron expression/u);
+    }
+  });
 });

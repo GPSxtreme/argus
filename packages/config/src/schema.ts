@@ -1,10 +1,20 @@
 import { z } from "zod";
+import { Cron } from "croner";
 
 import { isCanonicalPostgresUrl, POSTGRES_URL_ERROR } from "./sanitize.js";
 
 const cronSchema = z.string().refine(
-  (value) => value.trim().split(/\s+/u).length === 5,
-  "Schedule must be a five-field cron expression",
+  (value) => {
+    const fields = value.trim().split(/\s+/u);
+    if (fields.length !== 5) return false;
+    try {
+      new Cron(value);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  "Schedule must be a valid five-field cron expression",
 );
 
 export const runtimeRoleSchema = z.enum([
