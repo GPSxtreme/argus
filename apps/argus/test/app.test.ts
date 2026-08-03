@@ -382,4 +382,23 @@ describe("Argus API", () => {
     });
     expect(wrongValue.status).toBe(401);
   });
+
+  it("rejects non-ISO since and until filters", async () => {
+    const repository = await createSqliteRepository({ filename: ":memory:" });
+    repositories.push(repository);
+    const app = createApp({ config, repository });
+    const badSince = await app.request("/v1/records?since=not-a-date", {
+      headers: { authorization: "Bearer secret" },
+    });
+    expect(badSince.status).toBe(400);
+    const badUntil = await app.request("/v1/records?until=2026-13-99", {
+      headers: { authorization: "Bearer secret" },
+    });
+    expect(badUntil.status).toBe(400);
+    const valid = await app.request(
+      "/v1/records?since=2026-08-01T00:00:00Z&until=2026-08-02",
+      { headers: { authorization: "Bearer secret" } },
+    );
+    expect(valid.status).toBe(200);
+  });
 });

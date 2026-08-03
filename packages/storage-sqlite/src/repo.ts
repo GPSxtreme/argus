@@ -18,6 +18,7 @@ import type {
 import {
   decodeRecordsCursor,
   encodeRecordsCursor,
+  escapeSubstringPattern,
 } from "@argus/contracts";
 
 type RecordRow = {
@@ -230,8 +231,11 @@ export class SqliteRepository implements StorageRepository {
       parameters.push(...input.watchIds);
     }
     if (input.text) {
-      conditions.push("(title LIKE ? OR text LIKE ?)");
-      parameters.push(`%${input.text}%`, `%${input.text}%`);
+      const pattern = `%${escapeSubstringPattern(input.text)}%`;
+      conditions.push(
+        "(title LIKE ? ESCAPE '\\' OR text LIKE ? ESCAPE '\\')",
+      );
+      parameters.push(pattern, pattern);
     }
     if (input.since) {
       conditions.push("ingested_at >= ?");

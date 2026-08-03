@@ -163,6 +163,33 @@ describe("SQLite repository", () => {
     ).toHaveLength(1);
   });
 
+  it("matches LIKE wildcards literally in search text", async () => {
+    const repo = await createRepo();
+    await repo.upsertRecord({
+      ...record("a", "100% battery life"),
+      id: "web:target-3:page-1",
+      targetId: "target-3",
+      externalId: "page-1",
+    });
+    await repo.upsertRecord({
+      ...record("b", "underscore_test value"),
+      id: "web:target-3:page-2",
+      targetId: "target-3",
+      externalId: "page-2",
+    });
+    expect(
+      (await repo.queryRecords({ text: "100%" })).items.map(({ id }) => id),
+    ).toEqual(["web:target-3:page-1"]);
+    expect(
+      (await repo.queryRecords({ text: "underscore_test" })).items.map(
+        ({ id }) => id,
+      ),
+    ).toEqual(["web:target-3:page-2"]);
+    expect(
+      (await repo.queryRecords({ text: "100%_anything" })).items,
+    ).toHaveLength(0);
+  });
+
   it("uses a strict keyset cursor across inserts and equal timestamps", async () => {
     const repo = await createRepo();
     await Promise.all([

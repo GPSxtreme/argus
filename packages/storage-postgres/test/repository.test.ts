@@ -97,6 +97,33 @@ describe.skipIf(
     expect((await repo.queryRecords({ text: "missing" })).items).toHaveLength(0);
   });
 
+  it("matches LIKE wildcards literally in search text", async () => {
+    const suffix = randomUUID();
+    await repo.upsertRecord({
+      ...record(`${suffix}:a`, "100% battery life"),
+      id: `web:${suffix}:page-1`,
+      targetId: suffix,
+      externalId: "page-1",
+    });
+    await repo.upsertRecord({
+      ...record(`${suffix}:b`, "underscore_test value"),
+      id: `web:${suffix}:page-2`,
+      targetId: suffix,
+      externalId: "page-2",
+    });
+    expect(
+      (await repo.queryRecords({ text: "100%" })).items.map(({ id }) => id),
+    ).toEqual([`web:${suffix}:page-1`]);
+    expect(
+      (await repo.queryRecords({ text: "underscore_test" })).items.map(
+        ({ id }) => id,
+      ),
+    ).toEqual([`web:${suffix}:page-2`]);
+    expect(
+      (await repo.queryRecords({ text: "100%_anything" })).items,
+    ).toHaveLength(0);
+  });
+
   it("uses a strict keyset cursor across inserts and equal timestamps", async () => {
     const suffix = randomUUID();
     await Promise.all([

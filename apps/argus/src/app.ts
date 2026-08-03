@@ -67,6 +67,15 @@ export const createApp = ({ config, repository, diagnosticResolver }: CreateAppI
     if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
       return context.json({ error: "limit must be an integer from 1 to 200" }, 400);
     }
+    if (
+      (since !== undefined && Number.isNaN(Date.parse(since))) ||
+      (until !== undefined && Number.isNaN(Date.parse(until)))
+    ) {
+      return context.json(
+        { error: "since and until must be ISO-8601 timestamps" },
+        400,
+      );
+    }
     try {
       const result = await query.search({
         ...(text ? { text } : {}),
