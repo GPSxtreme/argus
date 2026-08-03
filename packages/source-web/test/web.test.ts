@@ -37,6 +37,19 @@ describe("web source", () => {
     });
   });
 
+  it("never expands DOCTYPE entities and unescapes predefined ones", () => {
+    const items = parseFeed(
+      "https://example.com/rss",
+      `<?xml version="1.0"?><!DOCTYPE rss [<!ENTITY bomb "exploded">]>
+       <rss version="2.0"><channel><title>Feed</title>
+       <item><guid>post-1</guid><title>AT&amp;T</title>
+       <description>&bomb; &amp; literal</description></item>
+       </channel></rss>`,
+    );
+    expect(items[0]?.title).toBe("AT&T");
+    expect(items[0]?.text).toBe("&bomb; & literal");
+  });
+
   it("discovers URLs through SearXNG", async () => {
     const request = vi.fn().mockResolvedValue(
       Response.json({

@@ -4,15 +4,25 @@ import { safeHttpGet, type SafeHttpOptions } from "./safe-http.js";
 
 const array = <T>(value: T | T[] | undefined): T[] =>
   value === undefined ? [] : Array.isArray(value) ? value : [value];
+const unescapeEntities = (value: string): string =>
+  value
+    .replaceAll("&amp;", "&")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&quot;", '"')
+    .replaceAll("&apos;", "'");
 const text = (value: unknown): string =>
-  typeof value === "string" || typeof value === "number" ? String(value) : "";
+  typeof value === "string" || typeof value === "number"
+    ? unescapeEntities(String(value))
+    : "";
 const stripHtml = (value: string): string =>
-  value.replace(/<[^>]+>/gu, " ").replace(/\s+/gu, " ").trim();
+  unescapeEntities(value.replace(/<[^>]+>/gu, " ").replace(/\s+/gu, " ").trim());
 
 export const parseFeed = (feedUrl: string, xml: string): SourceItem[] => {
   const parsed = new XMLParser({
     ignoreAttributes: false,
     attributeNamePrefix: "@_",
+    processEntities: false,
   }).parse(xml) as Record<string, unknown>;
   const rss = parsed.rss as Record<string, unknown> | undefined;
   const channel = rss?.channel as Record<string, unknown> | undefined;

@@ -1,4 +1,10 @@
 import type { SourceItem } from "@argus/contracts";
+import {
+  readBoundedBody,
+  SAFE_HTTP_MAX_TIMEOUT_MS,
+} from "@argus/source-web";
+
+const FXEMBED_MAX_BODY_BYTES = 2 * 1024 * 1024;
 
 type Tweet = Record<string, unknown>;
 
@@ -66,13 +72,21 @@ export class FxEmbedClient {
   private async request(path: string): Promise<SourceItem[]> {
     const response = await this.fetcher(`${this.endpoint}${path}`, {
       headers: { accept: "application/json" },
+      signal: AbortSignal.timeout(SAFE_HTTP_MAX_TIMEOUT_MS),
     });
     if (!response.ok) {
       throw new Error(
-        `FxEmbed request failed (${response.status}): ${await response.text()}`,
+        `FxEmbed request failed (${response.status}): ${await readBoundedBody(
+          response,
+          FXEMBED_MAX_BODY_BYTES,
+        ).catch(() => "")}`,
       );
     }
-    return tweetsFrom((await response.json()) as unknown)
+    return tweetsFrom(
+      JSON.parse(
+        await readBoundedBody(response, FXEMBED_MAX_BODY_BYTES),
+      ) as unknown,
+    )
       .map(toItem)
       .filter((item): item is SourceItem => item !== undefined);
   }

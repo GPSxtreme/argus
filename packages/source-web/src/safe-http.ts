@@ -120,7 +120,7 @@ const boundedNumber = (
     ? Math.min(Math.max(Math.trunc(value), minimum), maximum)
     : fallback;
 
-const readBoundedBody = async (
+export const readBoundedBody = async (
   response: Response,
   maximumBytes: number,
 ): Promise<string> => {
