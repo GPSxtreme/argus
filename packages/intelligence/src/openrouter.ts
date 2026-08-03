@@ -1,4 +1,10 @@
 import type { RecordEnvelope } from "@argus/contracts";
+import {
+  readBoundedBody,
+  SAFE_HTTP_MAX_TIMEOUT_MS,
+} from "@argus/source-web";
+
+const OPENROUTER_MAX_BODY_BYTES = 2 * 1024 * 1024;
 
 export interface OpenRouterClientOptions {
   apiKey: string;
@@ -58,11 +64,14 @@ export class OpenRouterClient {
           },
         ],
       }),
+      signal: AbortSignal.timeout(SAFE_HTTP_MAX_TIMEOUT_MS),
     });
     if (!response.ok) {
       throw new Error(`OpenRouter request failed (${response.status})`);
     }
-    const body = (await response.json()) as {
+    const body = JSON.parse(
+      await readBoundedBody(response, OPENROUTER_MAX_BODY_BYTES),
+    ) as {
       id?: string;
       model?: string;
       choices?: Array<{ message?: { content?: string } }>;

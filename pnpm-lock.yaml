@@ -236,6 +236,9 @@ importers:
       '@argus/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@argus/source-web':
+        specifier: workspace:*
+        version: link:../source-web
 
   packages/query:
     dependencies:
@@ -280,6 +283,9 @@ importers:
       '@argus/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@argus/source-web':
+        specifier: workspace:*
+        version: link:../source-web
       cheerio:
         specifier: ^1.1.0
         version: 1.2.0
@@ -311,6 +317,9 @@ importers:
       '@argus/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@argus/source-web':
+        specifier: workspace:*
+        version: link:../source-web
 
   packages/storage-postgres:
     dependencies:
