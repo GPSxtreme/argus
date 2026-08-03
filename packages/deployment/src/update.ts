@@ -1,8 +1,12 @@
 import { copyFile, mkdir, open, readFile, rename, stat } from "node:fs/promises";
-import { dirname, join, relative } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
+import { z } from "zod";
 import type { VerifiedReleaseManifest } from "@argus/release";
 import { DeploymentError } from "./errors.js";
-import type { DeploymentStateV1 } from "./contracts.js";
+import {
+  deploymentStateSchema,
+  type DeploymentStateV1,
+} from "./contracts.js";
 import type { CommandExecutor } from "./executor.js";
 import { loadDeploymentState, saveDeploymentState } from "./files.js";
 
@@ -78,6 +82,84 @@ export interface RollbackUpdateInput {
 
 const updateStatePath = (root: string): string => join(root, "update-state.json");
 
+const releaseSnapshotSchema = z
+  .object({
+    manifestSha256: z.string().regex(/^[a-f0-9]{64}$/u),
+    manifest: z
+      .object({
+        version: z.string().min(1),
+        minimumStateSchema: z.number().int(),
+        images: z
+          .object({
+            app: z
+              .object({
+                digest: z.string().min(1),
+                reference: z.string().min(1),
+              })
+              .passthrough(),
+            postgres: z
+              .object({
+                digest: z.string().min(1),
+                reference: z.string().min(1),
+              })
+              .passthrough(),
+            searxng: z
+              .object({
+                digest: z.string().min(1),
+                reference: z.string().min(1),
+              })
+              .passthrough(),
+          })
+          .passthrough(),
+      })
+      .passthrough(),
+  })
+  .passthrough();
+
+const confinedRelativePathSchema = z
+  .string()
+  .refine(
+    (value) =>
+      value.length > 0 &&
+      !value.startsWith("/") &&
+      !value.includes("\\") &&
+      value.split("/").every((part) => part !== ".." && part !== "."),
+    "Update backup paths must stay within the instance root",
+  );
+
+const persistedUpdateSchema = z
+  .object({
+    phase: z.enum([
+      "planned",
+      "backed_up",
+      "pulled",
+      "migrated",
+      "restarted",
+      "verified",
+      "rolled_back",
+    ]),
+    plan: z
+      .object({
+        currentVersion: z.string().min(1),
+        targetVersion: z.string().min(1),
+      })
+      .passthrough(),
+    previousState: deploymentStateSchema,
+    release: releaseSnapshotSchema,
+    rollbackRelease: releaseSnapshotSchema,
+    backup: z
+      .object({
+        path: z.string().min(1),
+        state: deploymentStateSchema,
+        sqliteFiles: z.array(
+          z.object({ relativePath: confinedRelativePathSchema }).passthrough(),
+        ),
+      })
+      .passthrough()
+      .optional(),
+  })
+  .passthrough();
+
 const atomicWrite = async (path: string, source: string): Promise<void> => {
   await mkdir(dirname(path), { recursive: true });
   const temporary = `${path}.${process.pid}.${crypto.randomUUID()}.tmp`;
@@ -97,7 +179,9 @@ const persist = async (root: string, state: PersistedUpdate): Promise<void> =>
 
 const loadPersisted = async (root: string): Promise<PersistedUpdate> => {
   try {
-    return JSON.parse(await readFile(updateStatePath(root), "utf8")) as PersistedUpdate;
+    return persistedUpdateSchema.parse(
+      JSON.parse(await readFile(updateStatePath(root), "utf8")),
+    ) as unknown as PersistedUpdate;
   } catch {
     throw new DeploymentError(
       "UPDATE_ROLLBACK_UNAVAILABLE",
@@ -105,6 +189,19 @@ const loadPersisted = async (root: string): Promise<PersistedUpdate> => {
       { recovery: "Run 'argus doctor --json' and inspect the update state before retrying." },
     );
   }
+};
+
+const confinedPath = (root: string, candidate: string): string => {
+  const resolved = resolve(root, candidate);
+  const boundary = `${resolve(root)}${"/"}`;
+  if (resolved !== resolve(root) && !resolved.startsWith(boundary)) {
+    throw new DeploymentError(
+      "UPDATE_ROLLBACK_UNAVAILABLE",
+      "The persisted Argus update backup is outside the instance root.",
+      { recovery: "Restore from the instance backup and retry the rollback." },
+    );
+  }
+  return resolved;
 };
 
 const assertVerifiedRelease = (release: VerifiedReleaseManifest): void => {
@@ -371,10 +468,11 @@ export const rollbackUpdate = async ({ root, executor, release }: RollbackUpdate
       { recovery: "Keep the backup and select a release compatible with its state schema." },
     );
   }
+  const backupRoot = confinedPath(root, backup.path);
   for (const file of backup.sqliteFiles) {
-    const destination = join(root, file.relativePath);
+    const destination = confinedPath(root, file.relativePath);
     await mkdir(dirname(destination), { recursive: true });
-    await copyFile(join(backup.path, file.relativePath), destination);
+    await copyFile(confinedPath(backupRoot, file.relativePath), destination);
   }
   const environment = environmentFor(backup.state, persisted.rollbackRelease);
   await command(root, executor, ["up", "-d"], environment, "Argus rollback restart failed.");

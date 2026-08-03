@@ -16,7 +16,7 @@ const argusService = `  argus:
       - ./argus.yaml:/app/argus.yaml:ro
       - argus-data:/app/data
     ports:
-      - "\${ARGUS_API_PORT}:8788"
+      - "\${ARGUS_API_PORT}:\${ARGUS_API_PORT}"
     networks: [argus-private, argus-egress]
     restart: unless-stopped
 `;

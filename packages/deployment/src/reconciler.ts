@@ -53,7 +53,7 @@ const runCompose = async (
   operation: string,
   environment?: Record<string, string>,
 ) => {
-  const timeoutMs = Math.min(Math.max(context.composeTimeoutMs ?? 30_000, 1), 30_000);
+  const timeoutMs = Math.min(Math.max(context.composeTimeoutMs ?? 30_000, 1), 300_000);
   let timer: ReturnType<typeof setTimeout> | undefined;
   const execution = context.executor.run("docker", composeArgs(...args), {
     cwd: context.root,

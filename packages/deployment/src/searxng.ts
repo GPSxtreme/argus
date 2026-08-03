@@ -124,7 +124,7 @@ const wait = (milliseconds: number): Promise<void> =>
 
 const boundedComposeTimeout = (timeoutMs: number | undefined): number =>
   typeof timeoutMs === "number" && Number.isFinite(timeoutMs)
-    ? Math.min(Math.max(1_000, timeoutMs), 30_000)
+    ? Math.min(Math.max(1_000, timeoutMs), 300_000)
     : 30_000;
 
 const diagnostic = (
