@@ -2,7 +2,7 @@ import { DataTrinity } from "../components/data-trinity";
 import { Pipeline } from "../components/pipeline";
 import { stableReleaseTag, stableReleaseUrl } from "../lib/release";
 
-const installCommand = 'curl -fsSL https://argus.gpsxtre.me/install.sh | ARGUS_GITHUB_TOKEN="<your GitHub token>" sh';
+const installCommand = "curl -fsSL https://argus.gpsxtre.me/install.sh | sh";
 
 export default function Home() {
   return (
@@ -28,7 +28,7 @@ export default function Home() {
         <section className="install-box" aria-label="Install Argus">
           <code>{installCommand}</code>
           <p className="install-note">
-            Until the release repository is public, replace the placeholder with a GitHub token that has read access to Argus. The token is passed only to the installer.
+            The installer downloads the signed release from the public repository and verifies the manifest signature before touching your system.
           </p>
           <code>argus onboard</code>
         </section>

@@ -981,6 +981,8 @@ exit 42
     expect(smoke).not.toContain("-re {Argus API token}");
     expect(smoke).toContain("while {1}");
     expect(smoke).not.toContain("exp_continue");
+    expect(smoke).toContain("set argus_sent 0");
+    expect(smoke).toContain("if {!$argus_sent}");
     expect(
       new RegExp(promptPattern.replace("(?s)", ""), "su").test(
         fragmentedPrompt,

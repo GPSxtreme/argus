@@ -7,8 +7,8 @@ describe("Argus landing page", () => {
 
   it("keeps the installation path and primary navigation visible", () => {
     expect((html.match(/<h1/g) ?? []).length).toBe(1);
-    expect(html).toContain("curl -fsSL https://argus.gpsxtre.me/install.sh | ARGUS_GITHUB_TOKEN=&quot;&lt;your GitHub token&gt;&quot; sh");
-    expect(html).toContain("Until the release repository is public");
+    expect(html).toContain("curl -fsSL https://argus.gpsxtre.me/install.sh | sh");
+    expect(html).toContain("verifies the manifest signature");
     expect(html).toContain('href="/docs/getting-started"');
     expect(html).toContain('href="/docs"');
     expect(html).not.toContain("Copy install command");
@@ -22,7 +22,7 @@ describe("Argus landing page", () => {
   });
 
   it("links documentation, source, license, and the current version without third-party embeds", () => {
-    for (const label of ["Docs", "Source", "License", "v0.1.6"]) {
+    for (const label of ["Docs", "Source", "License", "v0.1.7"]) {
       expect(html).toContain(label);
     }
     expect(html).not.toMatch(/<script[^>]+(?:analytics|chat|video)/iu);
