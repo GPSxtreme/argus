@@ -120,6 +120,35 @@ describe("safe update state machine", () => {
     await expect(rollbackUpdate({ root, executor: executor(), release: release("1.0.0", 2, "f") })).rejects.toThrow(/incompatible/u);
   });
 
+  it("rejects a persisted rollback with a path that escapes the instance root", async () => {
+    const root = await rootWithState();
+    const plan = await planUpdate({ root, release: release(), rollbackRelease: release("1.0.0", 1, "f"), executor: executor() });
+    await backupInstance({ root, plan });
+    const state = JSON.parse(await readFile(join(root, "update-state.json"), "utf8")) as {
+      backup: { sqliteFiles: Array<{ relativePath: string }> };
+    };
+    state.backup.sqliteFiles = [
+      { relativePath: "../../etc/cron.d/argus" },
+      ...state.backup.sqliteFiles,
+    ];
+    await writeFile(join(root, "update-state.json"), JSON.stringify(state));
+
+    await expect(rollbackUpdate({ root, executor: executor(), release: release("1.0.0", 1, "f") })).rejects.toThrow(/No persisted Argus update backup/u);
+  });
+
+  it("rejects a persisted rollback with an absolute path", async () => {
+    const root = await rootWithState();
+    const plan = await planUpdate({ root, release: release(), rollbackRelease: release("1.0.0", 1, "f"), executor: executor() });
+    await backupInstance({ root, plan });
+    const state = JSON.parse(await readFile(join(root, "update-state.json"), "utf8")) as {
+      backup: { path: string; sqliteFiles: Array<{ relativePath: string }> };
+    };
+    state.backup.path = "/etc";
+    await writeFile(join(root, "update-state.json"), JSON.stringify(state));
+
+    await expect(rollbackUpdate({ root, executor: executor(), release: release("1.0.0", 1, "f") })).rejects.toThrow(/outside the instance root|No persisted Argus update backup/u);
+  });
+
   it("reports a no-op for the current release version", async () => {
     const root = await rootWithState();
     const plan = await planUpdate({ root, release: release("1.0.0", 1, "f"), rollbackRelease: release("1.0.0", 1, "f"), executor: executor() });
