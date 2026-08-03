@@ -14,12 +14,9 @@ CREATE TABLE IF NOT EXISTS records (
   watch_ids_json jsonb NOT NULL,
   content_hash text NOT NULL,
   ingested_at timestamptz NOT NULL,
-  search_document tsvector GENERATED ALWAYS AS
-    (to_tsvector('simple', coalesce(title, '') || ' ' || text)) STORED,
   UNIQUE(source, target_id, external_id)
 );
 CREATE INDEX IF NOT EXISTS records_ingested_idx ON records(ingested_at DESC, id);
-CREATE INDEX IF NOT EXISTS records_search_idx ON records USING gin(search_document);
 
 CREATE TABLE IF NOT EXISTS revisions (
   id text PRIMARY KEY,

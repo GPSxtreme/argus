@@ -70,3 +70,10 @@ export const contentHash = (value: unknown): string =>
   createHash("sha256")
     .update(JSON.stringify(sortRecursively(value)))
     .digest("hex");
+
+/** Escapes LIKE/ILIKE wildcards so user input matches literally in both storage adapters. */
+export const escapeSubstringPattern = (value: string): string =>
+  value
+    .replace(/\\/g, "\\\\")
+    .replace(/%/g, "\\%")
+    .replace(/_/g, "\\_");

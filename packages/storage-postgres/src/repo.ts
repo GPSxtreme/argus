@@ -18,6 +18,7 @@ import type {
 import {
   decodeRecordsCursor,
   encodeRecordsCursor,
+  escapeSubstringPattern,
 } from "@argus/contracts";
 import { POSTGRES_SCHEMA } from "./schema.js";
 
@@ -256,10 +257,12 @@ export class PostgresRepository implements StorageRepository {
       clauses.push(`target_id = ANY(${bind(input.targetIds)})`);
     if (input.watchIds?.length)
       clauses.push(`watch_ids_json ?| ${bind(input.watchIds)}::text[]`);
-    if (input.text)
+    if (input.text) {
+      const pattern = `%${escapeSubstringPattern(input.text)}%`;
       clauses.push(
-        `search_document @@ websearch_to_tsquery('simple', ${bind(input.text)})`,
+        `(title ILIKE ${bind(pattern)} ESCAPE '\\' OR text ILIKE ${bind(pattern)} ESCAPE '\\')`,
       );
+    }
     if (input.since) clauses.push(`ingested_at >= ${bind(input.since)}`);
     if (input.until) clauses.push(`ingested_at <= ${bind(input.until)}`);
     const cursor = decodeRecordsCursor(input.cursor);
