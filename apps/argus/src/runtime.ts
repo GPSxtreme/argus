@@ -14,6 +14,20 @@ import { createAdapterFactory, findDiagnosticTarget, findTarget, runTarget, type
 const logger = pino({ name: "argus" });
 export const JOB_LEASE_MS = SAFE_HTTP_MAX_TIMEOUT_MS * 3;
 
+const isLoopbackHost = (host: string): boolean =>
+  host === "127.0.0.1" ||
+  host === "::1" ||
+  host === "::ffff:127.0.0.1" ||
+  host === "localhost";
+
+export const assertApiBindGuard = (config: ArgusConfig): void => {
+  if (!config.api.token && !isLoopbackHost(config.api.host)) {
+    throw new Error(
+      "api.token is required when the API binds a non-loopback host",
+    );
+  }
+};
+
 export interface MigrationRuntimeDependencies {
   loadConfig?: typeof loadConfig;
   openRepository?: typeof openRepository;
@@ -172,6 +186,7 @@ export const startRuntime = async (
   let server: ServerType | undefined;
 
   if (config.runtime.role === "all" || config.runtime.role === "api") {
+    assertApiBindGuard(config);
     server = serve({
       fetch: createApp({ config, repository: repository.repository }).fetch,
       hostname: config.api.host,

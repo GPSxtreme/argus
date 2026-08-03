@@ -309,4 +309,77 @@ describe("Argus API", () => {
       planId: plan.planId,
     });
   });
+
+  it("rejects summary requests with malformed bodies", async () => {
+    const repository = await createSqliteRepository({ filename: ":memory:" });
+    repositories.push(repository);
+    const intelligenceConfig = validateConfig({
+      version: 1,
+      storage: { adapter: "sqlite", url: ":memory:" },
+      sources: {},
+      watches: [],
+      api: { token: "secret" },
+      intelligence: {
+        enabled: true,
+        apiKey: "sk-openrouter",
+        model: "openai/gpt-4.1-mini",
+      },
+    });
+    const app = createApp({ config: intelligenceConfig, repository });
+    const malformed = await app.request("/v1/summaries", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+      },
+      body: "{not-json",
+    });
+    expect(malformed.status).toBe(400);
+    const outOfRange = await app.request("/v1/summaries", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ query: "security", limit: 10_000 }),
+    });
+    expect(outOfRange.status).toBe(400);
+    const nonNumeric = await app.request("/v1/summaries", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ limit: "many" }),
+    });
+    expect(nonNumeric.status).toBe(400);
+  });
+
+  it("requires a token even for disabled intelligence summary attempts", async () => {
+    const repository = await createSqliteRepository({ filename: ":memory:" });
+    repositories.push(repository);
+    const response = await createApp({ config, repository }).request(
+      "/v1/summaries",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      },
+    );
+    expect(response.status).toBe(401);
+  });
+
+  it("rejects non-matching bearer tokens with constant-time comparison", async () => {
+    const repository = await createSqliteRepository({ filename: ":memory:" });
+    repositories.push(repository);
+    const app = createApp({ config, repository });
+    const wrongLength = await app.request("/v1/records", {
+      headers: { authorization: "Bearer wrong" },
+    });
+    expect(wrongLength.status).toBe(401);
+    const wrongValue = await app.request("/v1/records", {
+      headers: { authorization: `Bearer ${"x".repeat("secret".length)}` },
+    });
+    expect(wrongValue.status).toBe(401);
+  });
 });

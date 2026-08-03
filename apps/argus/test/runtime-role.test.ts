@@ -1,6 +1,10 @@
 import { validateConfig } from "@argus/config";
 import { describe, expect, it } from "vitest";
-import { migrateRuntime, resolveRuntimeRole } from "../src/runtime.js";
+import {
+  assertApiBindGuard,
+  migrateRuntime,
+  resolveRuntimeRole,
+} from "../src/runtime.js";
 
 describe("runtime role override", () => {
   it("rejects split roles when the configured storage is SQLite", () => {
@@ -45,5 +49,47 @@ describe("runtime role override", () => {
     });
 
     expect(closed).toBe(true);
+  });
+
+  it("refuses a non-loopback bind without an API token", () => {
+    const exposed = validateConfig({
+      version: 1,
+      storage: { adapter: "sqlite", url: ":memory:" },
+      sources: {},
+      watches: [],
+      api: { host: "0.0.0.0" },
+    });
+    expect(() => assertApiBindGuard(exposed)).toThrow(
+      "api.token is required when the API binds a non-loopback host",
+    );
+    const v6Exposed = validateConfig({
+      version: 1,
+      storage: { adapter: "sqlite", url: ":memory:" },
+      sources: {},
+      watches: [],
+      api: { host: "::" },
+    });
+    expect(() => assertApiBindGuard(v6Exposed)).toThrow(/api.token is required/u);
+  });
+
+  it("allows loopback binds and token-protected binds", () => {
+    for (const host of ["127.0.0.1", "::1", "localhost"]) {
+      const config = validateConfig({
+        version: 1,
+        storage: { adapter: "sqlite", url: ":memory:" },
+        sources: {},
+        watches: [],
+        api: { host },
+      });
+      expect(() => assertApiBindGuard(config)).not.toThrow();
+    }
+    const protectedBind = validateConfig({
+      version: 1,
+      storage: { adapter: "sqlite", url: ":memory:" },
+      sources: {},
+      watches: [],
+      api: { host: "0.0.0.0", token: "secret" },
+    });
+    expect(() => assertApiBindGuard(protectedBind)).not.toThrow();
   });
 });

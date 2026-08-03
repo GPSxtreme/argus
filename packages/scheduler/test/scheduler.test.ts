@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { backoffDelay, expandWatchTargets } from "../src/index.js";
+import { validateConfig } from "@argus/config";
+import type { StorageRepository } from "@argus/contracts";
+import { backoffDelay, enqueueDueTargets, expandWatchTargets } from "../src/index.js";
 
 describe("scheduler", () => {
   it("uses bounded exponential retry delays", () => {
@@ -35,5 +37,47 @@ describe("scheduler", () => {
       "markets:web:feed:https%3A%2F%2Fexample.com%2Frss",
       "markets:web:query:solana%20news",
     ]);
+  });
+
+  it("skips targets with invalid cron schedules instead of aborting the tick", async () => {
+    const base = validateConfig({
+      version: 1,
+      storage: { adapter: "sqlite", url: ":memory:" },
+      sources: {},
+      watches: [],
+    });
+    const config = {
+      ...base,
+      watches: [
+        {
+          id: "broken",
+          enabled: true,
+          schedule: "61 * * * *",
+          inputs: { web: { urls: ["https://example.com/broken"] } },
+          classify: { keywords: [] },
+        },
+        {
+          id: "healthy",
+          enabled: true,
+          schedule: "* * * * *",
+          inputs: { web: { urls: ["https://example.com/ok"] } },
+          classify: { keywords: [] },
+        },
+      ],
+    } as unknown as typeof base;
+    let enqueued = 0;
+    const repository = {
+      enqueueJob: async () => {
+        enqueued += 1;
+        return true;
+      },
+    } as unknown as StorageRepository;
+    const queued = await enqueueDueTargets(
+      config,
+      repository,
+      new Date("2026-08-03T00:00:30.000Z"),
+    );
+    expect(queued).toBe(1);
+    expect(enqueued).toBe(1);
   });
 });

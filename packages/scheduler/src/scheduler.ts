@@ -86,7 +86,14 @@ export const enqueueDueTargets = async (
   let queued = 0;
   for (const scheduled of targetsFromConfig(config)) {
     const previousMinute = new Date(now.getTime() - 60_000);
-    const next = new Cron(scheduled.schedule, { paused: true }).nextRun(previousMinute);
+    let next: Date | null;
+    try {
+      next = new Cron(scheduled.schedule, { paused: true }).nextRun(
+        previousMinute,
+      );
+    } catch {
+      continue;
+    }
     if (!next || next > now) continue;
     const runAt = next.toISOString();
     const job: Job = {

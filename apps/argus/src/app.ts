@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import type { ArgusConfig } from "@argus/config";
 import {
   InvalidRecordsCursorError,
@@ -22,6 +22,19 @@ export interface CreateAppInput {
   diagnosticResolver?: DiagnosticResolver;
 }
 
+const tokenMatches = (
+  config: ArgusConfig,
+  presented: string | undefined,
+): boolean => {
+  if (!config.api.token) return true;
+  if (!presented?.startsWith("Bearer ")) return false;
+  const provided = Buffer.from(presented.slice("Bearer ".length));
+  const expected = Buffer.from(config.api.token);
+  return (
+    provided.length === expected.length && timingSafeEqual(provided, expected)
+  );
+};
+
 export const createApp = ({ config, repository, diagnosticResolver }: CreateAppInput): Hono => {
   const app = new Hono();
   const query = new QueryService(repository);
@@ -36,10 +49,7 @@ export const createApp = ({ config, repository, diagnosticResolver }: CreateAppI
   );
 
   app.use("/v1/*", async (context, next) => {
-    if (
-      config.api.token &&
-      context.req.header("authorization") !== `Bearer ${config.api.token}`
-    ) {
+    if (!tokenMatches(config, context.req.header("authorization"))) {
       return context.json({ error: "unauthorized" }, 401);
     }
     await next();
@@ -256,16 +266,25 @@ export const createApp = ({ config, repository, diagnosticResolver }: CreateAppI
     if (!config.intelligence.enabled || !config.intelligence.apiKey) {
       return context.json({ error: "intelligence is disabled" }, 409);
     }
-    const request = await context.req.json<{
-      query?: string;
-      watchIds?: string[];
-      limit?: number;
-      prompt?: string;
-    }>();
+    const request = await context.req
+      .json<{
+        query?: string;
+        watchIds?: string[];
+        limit?: number;
+        prompt?: string;
+      }>()
+      .catch(() => undefined);
+    if (!request || typeof request !== "object" || Array.isArray(request)) {
+      return context.json({ error: "invalid summary request" }, 400);
+    }
+    const limit = request.limit ?? 50;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+      return context.json({ error: "limit must be an integer from 1 to 100" }, 400);
+    }
     const records = await repository.queryRecords({
       ...(request.query ? { text: request.query } : {}),
       ...(request.watchIds ? { watchIds: request.watchIds } : {}),
-      limit: request.limit ?? 50,
+      limit,
     });
     const result = await new OpenRouterClient({
       apiKey: config.intelligence.apiKey,

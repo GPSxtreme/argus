@@ -30,8 +30,8 @@ const collectFiles = async (root: string, path = root): Promise<string[]> => {
   if (!metadata.isDirectory()) return [path];
 
   const files: string[] = [];
-  for (const entry of (await readdir(path, { withFileTypes: true })).sort((a, b) =>
-    a.name.localeCompare(b.name),
+  for (const entry of (await readdir(path, { withFileTypes: true })).sort(
+    (a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0),
   )) {
     files.push(...(await collectFiles(root, resolve(path, entry.name))));
   }
