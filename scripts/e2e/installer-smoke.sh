@@ -470,10 +470,12 @@ cat > "$argus_expect" <<'ARGUS_EXPECT'
 log_user 0
 set timeout 600
 spawn argus onboard --from "$env(ARGUS_SMOKE_ANSWERS)" --yes --json
-expect {
-  -re {(?s)A.{0,255}r.{0,255}g.{0,255}u.{0,255}s.{0,255}A.{0,255}P.{0,255}I.{0,255}t.{0,255}o.{0,255}k.{0,255}e.{0,255}n} { send -- "$env(ARGUS_SMOKE_TOKEN)\r"; exp_continue }
-  eof
-  timeout { exit 124 }
+while {1} {
+  expect {
+    -re {(?s)A.{0,255}r.{0,255}g.{0,255}u.{0,255}s.{0,255}A.{0,255}P.{0,255}I.{0,255}t.{0,255}o.{0,255}k.{0,255}e.{0,255}n} { send -- "$env(ARGUS_SMOKE_TOKEN)\r" }
+    eof { break }
+    timeout { exit 124 }
+  }
 }
 set result [wait]
 exit [lindex $result 3]
