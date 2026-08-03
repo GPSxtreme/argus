@@ -35,7 +35,6 @@ watches:
         queries: ["open source AI infrastructure"]
     classify:
       keywords: [release, security, research]
-    retentionDays: 90
 
 intelligence:
   enabled: false

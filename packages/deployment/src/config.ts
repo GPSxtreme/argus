@@ -104,9 +104,6 @@ export const renderInstanceConfig = (
                 : { web: watch.web }),
             },
             classify: { keywords: watch.keywords },
-            ...(watch.retentionDays === undefined
-              ? {}
-              : { retentionDays: watch.retentionDays }),
           })),
         }),
     ...(answers.intelligence.enabled

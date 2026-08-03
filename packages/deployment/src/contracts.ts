@@ -31,7 +31,6 @@ export interface OnboardingAnswersV1 {
     telegram: { channels: string[] };
     web: { urls: string[]; feeds: string[]; queries: string[] };
     keywords: string[];
-    retentionDays?: number;
   }>;
   intelligence: {
     enabled: boolean;
@@ -122,7 +121,6 @@ const watchSchema = z
       })
       .strict(),
     keywords: z.array(z.string()),
-    retentionDays: z.number().int().positive().optional(),
   })
   .strict();
 
