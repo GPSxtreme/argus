@@ -124,7 +124,6 @@ api:
               queries: ["signed releases"],
             },
             keywords: ["security"],
-            retentionDays: 30,
           },
         ],
         intelligence: {

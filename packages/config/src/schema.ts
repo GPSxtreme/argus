@@ -116,7 +116,6 @@ const watchSchema = z
       })
       .strict()
       .default({ keywords: [] }),
-    retentionDays: z.number().int().positive().optional(),
   })
   .strict();
 
