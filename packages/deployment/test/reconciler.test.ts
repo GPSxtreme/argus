@@ -34,10 +34,25 @@ class FixtureExecutor implements CommandExecutor {
   private running: boolean;
   private readonly ignoreLifecycleActions: boolean;
 
-  constructor({ running = true, ignoreLifecycleActions = false } = {}) {
+  constructor({
+    running = true,
+    ignoreLifecycleActions = false,
+    psShape = "array",
+    health = "healthy",
+  }: {
+    running?: boolean;
+    ignoreLifecycleActions?: boolean;
+    psShape?: "array" | "object";
+    health?: string;
+  } = {}) {
     this.running = running;
     this.ignoreLifecycleActions = ignoreLifecycleActions;
+    this.psShape = psShape;
+    this.health = health;
   }
+
+  private readonly psShape: "array" | "object";
+  private readonly health: string;
 
   async run(
     command: string,
@@ -46,12 +61,13 @@ class FixtureExecutor implements CommandExecutor {
   ): Promise<CommandResult> {
     this.calls.push({ command, args, cwd: options?.cwd, env: options?.env });
     if (args.at(-1) === "json") {
+      const services = [
+        { Service: "argus", State: this.running ? "running" : "exited", Health: this.health },
+        { Service: "searxng", State: this.running ? "running" : "exited", Health: this.health },
+      ];
       return {
         exitCode: 0,
-        stdout: JSON.stringify([
-          { Service: "argus", State: this.running ? "running" : "exited", Health: "healthy" },
-          { Service: "searxng", State: this.running ? "running" : "exited", Health: "healthy" },
-        ]),
+        stdout: JSON.stringify(this.psShape === "object" ? services[0] : services),
         stderr: "",
       };
     }
@@ -124,6 +140,35 @@ describe("deployment reconciliation", () => {
     executor.calls.splice(0);
     await applyDeployment(second, context);
     expect(executor.calls).toEqual([]);
+  });
+
+  it("parses single-object Compose ps output for a one-service project", async () => {
+    const { context } = await contextFor({ psShape: "object" });
+    const status = await getDeploymentStatus(context);
+    expect(status.services).toEqual([
+      { name: "argus", state: "running", health: "healthy" },
+    ]);
+    expect(status.healthy).toBe(true);
+  });
+
+  it("treats a starting single-object service as not unhealthy", async () => {
+    const executor = new FixtureExecutor({
+      psShape: "object",
+      health: "starting",
+    });
+    const root = await mkdtemp(join(tmpdir(), "argus-reconciler-starting-"));
+    roots.push(root);
+    const status = await getDeploymentStatus({ root, executor, desired });
+    expect(status.services).toEqual([
+      { name: "argus", state: "running", health: "starting" },
+    ]);
+    expect(status.healthy).toBe(true);
+  });
+
+  it("reports an exited single-object service as not healthy", async () => {
+    const { context } = await contextFor({ psShape: "object", running: false });
+    const status = await getDeploymentStatus(context);
+    expect(status.healthy).toBe(false);
   });
 
   it("validates Compose before applying a changed plan", async () => {
