@@ -12,6 +12,9 @@
       "!**/dist",
       "!**/coverage",
       "!**/.turbo",
+      "!**/.next",
+      "!**/.source",
+      "!**/.lighthouseci",
       "!data"
     ]
   },

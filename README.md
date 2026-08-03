@@ -5,6 +5,13 @@ X, public Telegram announcement channels, and the Web; stores canonical,
 revisioned records; and exposes deterministic queries with source links.
 OpenRouter summaries are optional and remain separate from the ingestion path.
 
+## Project site
+
+The public project site and documentation live at
+[argus.gpsxtre.me](https://argus.gpsxtre.me). The Vercel app in `apps/web`
+serves the landing page, docs, LLM-readable documentation, installer, and
+Agent Skill endpoints from one codebase.
+
 ## What V1 includes
 
 - X account and search ingestion through your own FxEmbed endpoint

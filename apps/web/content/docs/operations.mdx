@@ -1,0 +1,19 @@
+---
+title: Operations
+description: Validate, apply, inspect, and repair Argus using stable CLI contracts.
+---
+
+# Operations
+
+Use the CLI for operational changes:
+
+```bash
+argus config validate
+argus config apply
+argus status --json
+argus doctor --json
+```
+
+For a single VPS deployment, use SQLite. Add managed SearXNG only when Web queries are configured. Docker Compose and runtime state are managed by Argus; do not edit generated service settings or backups directly.
+
+When a diagnostic reports a recovery command, review it and obtain approval before any host or Cloudflare mutation.

@@ -1,0 +1,33 @@
+---
+title: Getting started
+description: Install Argus and create your first local configuration.
+---
+
+# Getting started
+
+```bash
+curl -fsSL https://argus.gpsxtre.me/install.sh | sh
+argus onboard
+```
+
+The installer downloads the signed release from the public repository and verifies the manifest signature before installing the Argus wrapper. `argus onboard` guides the initial VPS configuration without placing secrets in your config file.
+
+## Inspect before installing
+
+If you prefer not to pipe a remote script to a shell, download it and inspect the checksum yourself before running it:
+
+```bash
+curl -fsSLO https://argus.gpsxtre.me/install.sh
+shasum -a 256 install.sh
+sh install.sh
+```
+
+After onboarding, inspect health and validate configuration:
+
+```bash
+argus status --json
+argus config validate
+argus doctor --json
+```
+
+Continue with [configuration](/docs/configuration) to define your watches.

@@ -1,0 +1,11 @@
+{
+  "title": "Argus documentation",
+  "pages": [
+    "index",
+    "getting-started",
+    "configuration",
+    "sources",
+    "operations",
+    "agents"
+  ]
+}

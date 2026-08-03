@@ -1,6 +1,10 @@
 .worktrees/
 node_modules/
 .turbo/
+.next/
+.source/
+.lighthouseci/
+*.tsbuildinfo
 dist/
 coverage/
 .env
@@ -10,3 +14,4 @@ data/
 *.db
 *.db-shm
 *.db-wal
+.vercel

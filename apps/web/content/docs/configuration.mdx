@@ -1,0 +1,18 @@
+---
+title: Configuration
+description: Define versioned Argus watches and keep secrets outside the YAML file.
+---
+
+# Configuration
+
+Argus uses one versioned YAML configuration. Environment variables supply only secrets; resolved secrets are never written to applied snapshots.
+
+```bash
+cp argus.example.yaml argus.yaml
+argus config validate argus.yaml
+argus config apply argus.yaml
+```
+
+A watch can combine X accounts or searches, public Telegram channel usernames, direct URLs, feeds, and managed web queries. Keyword classification adds metadata; it does not discard the original record.
+
+For V1, deploy a single VPS with SQLite or split `api`, `scheduler`, `worker`, and `processor` roles with PostgreSQL. Private chats and direct infrastructure edits are outside the product boundary.
