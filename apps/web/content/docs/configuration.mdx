@@ -96,8 +96,16 @@ runtime:
 storage:
   adapter: postgres
   url: postgresql://argus:password@postgres:5432/argus?sslmode=disable
-sources: {}
-watches: []
+sources:
+  web:
+    enabled: true
+    browserFallback: false
+watches:
+  - id: public-signals
+    schedule: "*/15 * * * *"
+    inputs:
+      web:
+        urls: [https://example.com/news]
 intelligence:
   enabled: true
   provider: openrouter
@@ -136,7 +144,7 @@ Use a PostgreSQL URL for multi-role deployments. URL credentials are treated as 
 
 ## `sources`
 
-`sources` is a strict object and defaults each source to disabled. Enable a source whenever an enabled watch has inputs for it; the schema accepts the mismatch, but a worker cannot collect through a globally disabled adapter.
+`sources` is a strict object and defaults each source to disabled. Source enablement is an operator consistency invariant: enable a source whenever an enabled watch has inputs for it. The schema does not compare the two, and runtime target expansion and adapter selection do not filter on `enabled`; a disabled flag alone does not prevent an enabled watch’s target from being scheduled or collected.
 
 ### `sources.x`
 
@@ -162,14 +170,18 @@ Use a PostgreSQL URL for multi-role deployments. URL credentials are treated as 
 - `id`: required lowercase identifier matching `^[a-z0-9][a-z0-9_-]*$`; example `id: public-signals`.
 - `enabled`: boolean, default `true`; `false` prevents scheduled target expansion. Example: `enabled: false`.
 - `schedule`: required valid five-field cron expression. The fields are minute, hour, day of month, month, and day of week; seconds are not accepted. Example: `schedule: "*/15 * * * *"`.
-- `inputs`: required strict object. Include only source inputs that have configured, enabled source adapters.
-  - `inputs.x.accounts`: non-empty strings, default `[]`; each is an account handle. Example: `accounts: [openai]`.
-  - `inputs.x.queries`: non-empty strings, default `[]`; each is an X search query. Example: `queries: ["AI safety"]`.
-  - `inputs.telegram.channels`: usernames matching `^[A-Za-z0-9_]+$`, default `[]`. Example: `channels: [telegram]`.
-  - `inputs.web.urls`: absolute URLs, default `[]`. Example: `urls: [https://example.com/news]`.
-  - `inputs.web.feeds`: absolute URLs, default `[]`. Example: `feeds: [https://example.com/feed.xml]`.
-  - `inputs.web.queries`: non-empty strings, default `[]`; requires the Web source’s `searchEndpoint`. Example: `queries: ["critical infrastructure"]`.
-- `classify.keywords`: non-empty strings, default `[]`. Matching keywords are metadata attached to records; they do not filter, discard, or change source data. Example: `keywords: [release, security]`.
+- `inputs`: required strict object with no default; omitted source objects create no targets for that source. Maintain the source-enable consistency invariant above. Example: `inputs: { web: { urls: [https://example.com/news] } }`.
+  - `inputs.x`: optional strict object with no default. Its presence creates X account and query targets; it does not itself require `sources.x.enabled`. Example: `x: { accounts: [openai] }`.
+    - `accounts`: array of non-empty strings, default `[]`; each value becomes an `account` target. Example: `accounts: [openai]`.
+    - `queries`: array of non-empty strings, default `[]`; each value becomes a `query` target. Example: `queries: ["AI safety"]`.
+  - `inputs.telegram`: optional strict object with no default. Its presence creates public channel targets; it does not itself require `sources.telegram.enabled`. Example: `telegram: { channels: [telegram] }`.
+    - `channels`: array of usernames matching `^[A-Za-z0-9_]+$`, default `[]`; each value becomes a `channel` target. Example: `channels: [telegram]`.
+  - `inputs.web`: optional strict object with no default. Its presence creates direct, feed, or query targets; it does not itself require `sources.web.enabled`. Example: `web: { urls: [https://example.com/news] }`.
+    - `urls`: array of absolute URLs, default `[]`; each value becomes a direct `url` target. Example: `urls: [https://example.com/news]`.
+    - `feeds`: array of absolute URLs, default `[]`; each value becomes a `feed` target. Example: `feeds: [https://example.com/feed.xml]`.
+    - `queries`: array of non-empty strings, default `[]`; each value becomes a Web `query` target and needs the Web source’s `searchEndpoint` at collection time. Example: `queries: ["critical infrastructure"]`.
+- `classify`: strict object, default `{ keywords: [] }`. Its values become metadata on every record collected by this watch; they do not filter, discard, or change source data. Example: `classify: { keywords: [release, security] }`.
+  - `keywords`: array of non-empty strings, default `[]`; each matching term is recorded as classification metadata. Example: `keywords: [release, security]`.
 
 ## `intelligence`
 
@@ -179,7 +191,12 @@ The strict `intelligence` object defaults to disabled with provider `openrouter`
 - `provider`: literal `openrouter`, default `openrouter`. Example: `provider: openrouter`.
 - `apiKey`: optional string, but required when enabled. Keep it in the environment: `apiKey: ${OPENROUTER_API_KEY}`.
 - `model`: non-empty string, default `openai/gpt-4.1-mini`. Example: `model: openai/gpt-4.1-mini`.
-- `processors`: array, default `[]`. Each processor has a non-empty `id`, literal `kind: summary`, optional five-field `schedule`, optional `watchIds` string array, and optional `prompt`. A processor without a schedule is available for configuration but is not scheduled. Example: `- { id: daily, kind: summary, schedule: "0 8 * * *" }`.
+- `processors`: array of strict processor objects, default `[]`. Each item is evaluated by an `all` or `processor` runtime; a processor without a schedule is not scheduled. Example: `processors: [{ id: daily, kind: summary, schedule: "0 8 * * *" }]`.
+  - `id`: required non-empty string; it identifies the processor in logs and saved artifact provenance. The schema does not require uniqueness. Example: `id: daily-brief`.
+  - `kind`: required literal `summary`; no other processor kind is valid. Example: `kind: summary`.
+  - `schedule`: optional valid five-field cron string, with no default. When present, it starts this processor on an `all` or `processor` runtime; when absent, it is not scheduled. Example: `schedule: "0 8 * * *"`.
+  - `watchIds`: optional array of strings, with no default and no schema referential check. When present, it is passed as the stored-record watch filter; non-matching IDs yield no matching records. Example: `watchIds: [public-signals]`.
+  - `prompt`: optional string, with no default or non-empty validation. When present, it replaces the summary client’s default prompt, including when it is an empty string. Example: `prompt: "Summarize changes and cite every claim."`.
 
 ## `api`
 

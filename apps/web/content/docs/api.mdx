@@ -34,7 +34,7 @@ curl -H "Authorization: Bearer $ARGUS_API_TOKEN" \
 
 Authentication: bearer token when configured. Request: no body; optional `kind` filters exact artifact kind and `limit` is an integer from 1 to 200 (default 50).
 
-Success: `200` with `{ "items": [artifact], "nextCursor": "..." }`; `nextCursor` may be absent. An artifact has `id`, `recordIds`, `kind`, `content`, `provenance`, and `createdAt`, with optional `provider` and `model`.
+Success: `200` with `{ "items": [artifact] }`. There is no artifact cursor or `nextCursor`. An artifact has `id`, `recordIds`, `kind`, `content`, `provenance`, and `createdAt`, with optional `provider` and `model`.
 
 Deterministic errors: `400 {"error":"limit must be an integer from 1 to 200"}` and `401` authentication failure.
 
@@ -110,7 +110,7 @@ The installed host wrapper uses these three routes to inspect, apply, and verify
 
 ### `POST /v1/management/config/plan`
 
-Authentication: a configured exact bearer token is required. Request: exactly `{ "path": "/absolute/path", "config": { ... } }`; `path` must start with `/`, and `config` must pass `validateConfig`. Success: `200` with `{ "contractVersion": 1, "planId": "sha256", "baseContentHash": "sha256", "desiredContentHash": "sha256", "operations": [{ "resource": "applied-config", "action": "create|update", "summary": "..." }] }`; `baseContentHash` is omitted on first apply.
+Authentication: a configured exact bearer token is required. Request: exactly `{ "path": "/absolute/path", "config": { ... } }`; `path` must start with `/`, and `config` must pass `validateConfig`. Success: `200` with `{ "contractVersion": 1, "planId": "sha256", "path": "/absolute/path", "baseContentHash": "sha256", "desiredContentHash": "sha256", "operations": [{ "resource": "applied-config", "action": "create|update", "summary": "..." }] }`; `baseContentHash` is omitted on first apply. Preserve the returned `path` verbatim in the plan object: it is part of the plan identity used by both apply and verify.
 
 Deterministic errors: `400 {"error":"invalid configuration plan request"}` and `401 {"error":"unauthorized"}`.
 
@@ -132,7 +132,7 @@ curl -X POST "$ARGUS_URL/v1/management/config/apply" \
   --data @apply-request.json
 ```
 
-`apply-request.json` must contain the original `path`, `config`, and `inspection` from the plan call; changing any hash or operation makes the plan stale.
+`apply-request.json` must contain the original `path`, `config`, and `inspection` from the plan call; preserve `inspection.path` verbatim and make the request `path` match it. Changing the path, any hash, or any operation makes the plan stale.
 
 ### `POST /v1/management/config/verify`
 
@@ -146,4 +146,4 @@ curl -X POST "$ARGUS_URL/v1/management/config/verify" \
   --data @verify-request.json
 ```
 
-`verify-request.json` contains `{ "inspection": <the unchanged plan response> }`.
+`verify-request.json` contains `{ "inspection": <the unchanged plan response> }`, including its original `path`; changing that path invalidates the plan identity.
