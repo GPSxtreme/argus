@@ -7,7 +7,7 @@ const docsRoot = path.join(process.cwd(), "apps/web/content/docs");
 
 const positiveLoopbackRecommendationPatterns = [
   /(?<!do not )\b(?:use|bind|set|configure|prefer|recommend)\b(?:(?!\bdo not\b|[.!?\n]).){0,100}(?:(?<!non-)\bloopback\b|\blocalhost\b|\b127\.0\.0\.1\b)/iu,
-  /\bapi\.host\s*:\s*(?:127\.0\.0\.1|localhost)\b/iu,
+  /(?<!do not )\b(?:use|bind|set|configure|prefer|recommend)\b(?:(?!\bdo not\b|[.!?\n]).){0,100}\bapi\.host\s*:?\s*(?:127\.0\.0\.1|localhost)\b/iu,
 ] as const;
 
 const requiredRoutes = [
@@ -52,6 +52,7 @@ describe("Argus documentation", () => {
       "Use localhost for the API.",
       "Bind the API to 127.0.0.1.",
       "Set api.host: 127.0.0.1.",
+      "Use api.host: 127.0.0.1.",
       "Configure a loopback API host.",
       "Prefer a loopback host.",
       "Recommend localhost for API access.",
@@ -60,6 +61,7 @@ describe("Argus documentation", () => {
     }
     for (const safe of [
       "Do not bind the managed Compose API to 127.0.0.1.",
+      "Do not set api.host: 127.0.0.1.",
       "Do not rely on a loopback API host for a managed Compose instance.",
     ]) {
       expect(positiveLoopbackRecommendationPatterns.some((pattern) => pattern.test(safe))).toBe(false);
@@ -204,6 +206,12 @@ describe("Argus documentation", () => {
       /dry-run[\s\S]{0,120}does not validate[\s\S]{0,100}persisted backup/iu,
     );
     expect(troubleshooting).not.toMatch(/dry-run returns a valid rollback plan/iu);
+    expect(troubleshooting).toMatch(
+      /UPDATE_ROLLBACK_UNAVAILABLE[\s\S]{0,100}persisted update state[\s\S]{0,80}(?:missing|unreadable)/iu,
+    );
+    expect(troubleshooting).toMatch(
+      /UPDATE_ROLLBACK_INCOMPATIBLE[\s\S]{0,160}backup[\s\S]{0,80}(?:absent|incompatible)/iu,
+    );
     for (const requirement of [
       "Ubuntu 22.04",
       "Ubuntu 24.04",
