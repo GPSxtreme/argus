@@ -1,10 +1,60 @@
 ---
 title: X
-description: Ingest X accounts and searches through your own Cloudflare FxEmbed endpoint.
+description: Ingest X accounts and searches through your own FxEmbed API endpoint.
 ---
 
 # X
 
-Argus ingests X account and search data through an FxEmbed endpoint that you deploy and control. FxEmbed runs as a Cloudflare Worker; Argus does not rely on a public third-party FxTwitter instance.
+## What it collects
 
-Configure the source endpoint to the Worker’s `/api` realm. Supply the required Cloudflare credentials through the onboarding secret flow, never in committed configuration.
+Argus collects public X posts from configured accounts and search queries. It calls the operator-owned FxEmbed Worker endpoint; it does not use an arbitrary public FxTwitter/FxEmbed service.
+
+## Prerequisites
+
+Deploy and operate an FxEmbed Worker, then obtain its API base URL ending in `/api`. Keep any Worker deployment credentials in the onboarding secret flow, not in Argus YAML.
+
+## Configure the source
+
+```yaml
+sources:
+  x:
+    enabled: true
+    endpoint: https://fxembed.example.com/api
+```
+
+`endpoint` must be an absolute URL. Argus appends account and search paths beneath this `/api` base.
+
+## Configure watches
+
+Accounts and queries are separate inputs: accounts track a handle’s statuses; queries send a search expression. Either list may be empty.
+
+```yaml
+watches:
+  - id: x-signals
+    schedule: "*/10 * * * *"
+    inputs:
+      x:
+        accounts: [openai]
+        queries: ["open source AI"]
+```
+
+## Validate and apply
+
+```bash
+argus config validate /opt/argus/argus.yaml
+argus config apply /opt/argus/argus.yaml
+```
+
+## Verify ingestion
+
+Run `argus doctor --json`, then query authenticated records with `GET /v1/records?source=x`. An immediate `POST /v1/watches/x-signals/ingest` queues the configured target(s).
+
+## Limits and safety
+
+Only public data returned by your FxEmbed API is collected. Requests use a 20-second timeout and a 2 MiB response bound. FxEmbed response shape changes or non-success responses fail that collection job rather than silently inventing records.
+
+## Troubleshooting
+
+- Confirm the URL ends in `/api`; a Worker origin without that realm produces wrong request paths.
+- Confirm the source is enabled and the watch uses non-empty account or query values.
+- Inspect `argus logs argus` for the FxEmbed HTTP status and run `argus doctor --json` for the configured target.

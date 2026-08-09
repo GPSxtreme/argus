@@ -1,0 +1,57 @@
+---
+title: Intelligence
+description: Generate optional OpenRouter summaries from stored Argus records.
+---
+
+# Intelligence
+
+Argus intelligence is optional and currently supports only `provider: openrouter`. It summarizes records already stored by Argus; it does not change collection or classification.
+
+## Enable OpenRouter
+
+Keep the key outside YAML and reference it as a complete secret value:
+
+```yaml
+intelligence:
+  enabled: true
+  provider: openrouter
+  apiKey: ${OPENROUTER_API_KEY}
+  model: openai/gpt-4.1-mini
+  processors: []
+```
+
+`enabled: true` requires a non-empty `apiKey`. Choose any non-empty OpenRouter model identifier; the default is `openai/gpt-4.1-mini`. `argus config show` redacts the key.
+
+## Scheduled summary processors
+
+A processor has a non-empty ID, `kind: summary`, and an optional five-field cron `schedule`. `watchIds` narrows the stored records supplied to that processor; omitting it permits records from all watches. `prompt` replaces the default concise-summary instruction.
+
+```yaml
+intelligence:
+  enabled: true
+  provider: openrouter
+  apiKey: ${OPENROUTER_API_KEY}
+  model: openai/gpt-4.1-mini
+  processors:
+    - id: morning-brief
+      kind: summary
+      schedule: "0 8 * * *"
+      watchIds: [public-signals]
+      prompt: "Summarize material changes and cite each claim."
+```
+
+Only a runtime with the `all` or `processor` role starts scheduled processors. A processor without `schedule` is not scheduled.
+
+## On-demand summaries
+
+`POST /v1/summaries` creates a summary with optional `query`, `watchIds`, `limit` (1–100; default 50), and `prompt`. See the [API reference](/docs/api) for its authenticated request and response.
+
+## Artifacts and citations
+
+Successful scheduled and on-demand summaries are stored as `summary` artifacts. Their content, provider, model, record IDs, and provenance are retained. Argus constructs an ordered source list from the supplied records and instructs OpenRouter to cite factual claims as `[n]`; provenance retains each citation index, record ID, and source URL. Retrieve saved artifacts with `GET /v1/artifacts`.
+
+## Failures, cost, and limits
+
+A scheduled processor catches and logs its own failure, so one OpenRouter failure does not stop other scheduled work. On-demand failures return through the API request. OpenRouter calls use a 20-second timeout and a 2 MiB response limit. Every request sends record text to the selected provider, so choose a model, prompt, schedule, and record scope appropriate to its token pricing and rate limits; Argus does not estimate, cap, or retry provider spend.
+
+Embeddings and local GPU inference are not implemented product features.

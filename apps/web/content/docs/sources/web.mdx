@@ -1,14 +1,63 @@
 ---
 title: Web
-description: Collect direct URLs and feeds, or discover pages through managed SearXNG queries.
+description: Collect public direct URLs and feeds, or discover results through managed SearXNG.
 ---
 
 # Web
 
-Argus supports three Web source modes:
+## What it collects
 
-- **Direct URLs** fetch a specific public page.
-- **Feeds** ingest RSS or Atom updates.
-- **Managed SearXNG queries** discover public pages through the private SearXNG service managed by Argus.
+Direct URLs fetch a public HTML page and extract readable text. RSS and Atom feeds yield their entries. Queries ask the trusted, managed SearXNG endpoint for discovery results; a query is not a general browser crawl.
 
-Direct URLs and feeds are explicit targets. Queries are discovery inputs and require managed SearXNG; none of these modes bypass site access controls.
+## Prerequisites
+
+Use public `http` or `https` URLs without credentials. Configure a managed SearXNG endpoint before adding Web queries. Direct URLs and feeds do not require SearXNG.
+
+## Configure the source
+
+```yaml
+sources:
+  web:
+    enabled: true
+    searchEndpoint: http://searxng:8080
+    userAgent: Argus/0.1
+    browserFallback: false
+```
+
+`browserFallback: false` is the only supported V1 value. Do not configure browser automation as a fallback.
+
+## Configure watches
+
+Keep direct pages, feeds, and query discovery explicit.
+
+```yaml
+watches:
+  - id: web-signals
+    schedule: "*/15 * * * *"
+    inputs:
+      web:
+        urls: [https://example.com/news]
+        feeds: [https://example.com/feed.xml]
+        queries: ["critical infrastructure"]
+```
+
+## Validate and apply
+
+```bash
+argus config validate /opt/argus/argus.yaml
+argus config apply /opt/argus/argus.yaml
+```
+
+## Verify ingestion
+
+Use `argus doctor --json`, then query `GET /v1/records?source=web` with bearer authentication. A `POST /v1/watches/web-signals/ingest` queues the configured targets immediately.
+
+## Limits and safety
+
+Web requests enforce public-network policy: only `http`/`https`, no URL credentials, public DNS answers, and public redirects with no HTTPS downgrade. The resolver is bounded at 2 seconds; a request is bounded to 10 seconds (maximum configurable timeout 20 seconds), follows at most five redirects, and reads at most 2 MiB by default (never more than 10 MiB). SSRF targets such as loopback, private, link-local, documentation, multicast, and non-global IPv6 addresses are rejected.
+
+## Troubleshooting
+
+- A Web query needs `sources.web.searchEndpoint`; set it to the managed SearXNG origin.
+- A rejected direct URL is usually non-public DNS, a credentialed URL, a private redirect, or an HTTPS downgrade.
+- Check `argus logs argus` for bounded request failures or non-success feed/page responses.

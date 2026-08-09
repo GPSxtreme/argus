@@ -12,13 +12,15 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@argus/config": "workspace:*",
     "@argus/release": "workspace:*",
     "fumadocs-core": "16.14.0",
     "fumadocs-mdx": "15.2.1",
     "fumadocs-ui": "16.14.0",
     "next": "16.2.12",
     "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "react-dom": "19.2.8",
+    "yaml": "^2.8.0"
   },
   "devDependencies": {
     "@lhci/cli": "^0.15.1",
