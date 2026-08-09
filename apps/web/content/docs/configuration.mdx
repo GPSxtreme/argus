@@ -95,7 +95,7 @@ runtime:
   role: processor
 storage:
   adapter: postgres
-  url: postgresql://argus@postgres:5432/argus?sslmode=disable
+  url: postgresql://postgres:5432/argus?sslmode=disable
 sources:
   web:
     enabled: true
@@ -138,7 +138,7 @@ Type: one of `all`, `api`, `scheduler`, `worker`, or `processor`; default: `all`
 `storage.adapter` is required and is either `sqlite` or `postgres`.
 
 - `storage.url` for SQLite is a non-empty string, such as `./data/argus.db`. SQLite always runs with `runtime.role: all`.
-- `storage.url` for PostgreSQL must be a canonical `postgres://` or `postgresql://` URL with a non-empty valid TCP host, valid percent encoding, no fragment, and any query `host`/`port` valid. Example: `postgresql://argus@db.example.com:5432/argus?sslmode=require`.
+- `storage.url` for PostgreSQL must be a canonical `postgres://` or `postgresql://` URL with a non-empty valid TCP host, valid percent encoding, no fragment, and any query `host`/`port` valid. Example: `postgresql://db.example.com:5432/argus?sslmode=require`.
 
 Use a PostgreSQL URL for multi-role deployments. URL credentials are treated as secret material and redacted from configuration output.
 

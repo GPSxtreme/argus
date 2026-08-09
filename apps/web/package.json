@@ -12,17 +12,16 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@argus/config": "workspace:*",
     "@argus/release": "workspace:*",
     "fumadocs-core": "16.14.0",
     "fumadocs-mdx": "15.2.1",
     "fumadocs-ui": "16.14.0",
     "next": "16.2.12",
     "react": "19.2.8",
-    "react-dom": "19.2.8",
-    "yaml": "^2.8.0"
+    "react-dom": "19.2.8"
   },
   "devDependencies": {
+    "@argus/config": "workspace:*",
     "@lhci/cli": "^0.15.1",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
@@ -30,6 +29,7 @@
     "linkinator": "^8.0.3",
     "postcss": "^8.5.25",
     "start-server-and-test": "^3.0.12",
-    "tailwindcss": "^4.3.3"
+    "tailwindcss": "^4.3.3",
+    "yaml": "^2.8.0"
   }
 }

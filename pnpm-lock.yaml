@@ -132,9 +132,6 @@ importers:
 
   apps/web:
     dependencies:
-      '@argus/config':
-        specifier: workspace:*
-        version: link:../../packages/config
       '@argus/release':
         specifier: workspace:*
         version: link:../../packages/release
@@ -156,10 +153,10 @@ importers:
       react-dom:
         specifier: 19.2.8
         version: 19.2.8(react@19.2.8)
-      yaml:
-        specifier: ^2.8.0
-        version: 2.9.0
     devDependencies:
+      '@argus/config':
+        specifier: workspace:*
+        version: link:../../packages/config
       '@lhci/cli':
         specifier: ^0.15.1
         version: 0.15.1
@@ -184,6 +181,9 @@ importers:
       tailwindcss:
         specifier: ^4.3.3
         version: 4.3.3
+      yaml:
+        specifier: ^2.8.0
+        version: 2.9.0
 
   packages/config:
     dependencies:
