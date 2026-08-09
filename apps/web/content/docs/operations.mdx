@@ -87,7 +87,7 @@ argus status --json
 argus doctor --json
 ```
 
-For a non-noop plan, Argus persists update state, copies the prior state and discovered SQLite files into `/opt/argus/backups/<version>-<timestamp>/`, pulls the pinned images, runs the application's migration command in Compose, starts Compose, checks selected service health, and then records the new verified state. An already-current release is a no-op plan but still performs health verification. The CLI does not automatically roll back a failed update; preserve the backup, inspect diagnostics, and choose rollback deliberately.
+For a non-noop plan, Argus persists update state, copies the prior state and only eligible SQLite files found under `/opt/argus` or `/opt/argus/data` into `/opt/argus/backups/<version>-<timestamp>/`, pulls the pinned images, runs the application's migration command in Compose, starts Compose, checks selected service health, and then records the new verified state. The managed SQLite database is instead in the named `argus_argus-data` volume. Argus does not back up the managed named volume. An already-current release is a no-op plan but still performs health verification. The CLI does not automatically roll back a failed update; preserve the backup, inspect diagnostics, and choose rollback deliberately.
 
 ```bash
 argus update --rollback --dry-run --json
@@ -96,22 +96,19 @@ argus status --json
 argus doctor --json
 ```
 
-Rollback requires the persisted verified update backup and an exactly matching, compatible signed rollback release. It restores backed-up SQLite files when present, starts the prior pinned Compose services, verifies health, and restores `state.json`. `UPDATE_ROLLBACK_UNAVAILABLE` means there is no usable persisted backup or signed rollback selection; `UPDATE_ROLLBACK_INCOMPATIBLE` means the backup and release cannot safely be paired. Do not delete `/opt/argus/backups`, `update-state.json`, or `release-context.json` until recovery is complete.
+Rollback requires the persisted verified update backup and an exactly matching, compatible signed rollback release. It restores only eligible SQLite files captured by the update backup when present, starts the prior pinned Compose services, verifies health, and restores `state.json`; it does not restore `argus_argus-data`. `UPDATE_ROLLBACK_UNAVAILABLE` means there is no usable persisted backup or signed rollback selection; `UPDATE_ROLLBACK_INCOMPATIBLE` means the backup and release cannot safely be paired. Do not delete `/opt/argus/backups`, `update-state.json`, or `release-context.json` until recovery is complete.
 
 ## Back up and restore
 
-Treat Argus update copies as deployment recovery state, not as your only backup. For SQLite, use a maintenance window: stop the managed deployment, copy the database with its `-wal` and `-shm` files from `argus-data`, then start and verify it. SQLite's online backup tooling is an alternative when an operator cannot stop the service.
+Treat Argus update copies as deployment recovery state, not as a managed SQLite backup. The managed Compose SQLite database is `argus_argus-data`; confirm it first with read-only Docker commands:
 
 ```bash
-argus stop --dry-run --json
-argus stop --yes --json
-# Copy the SQLite database and its -wal/-shm companions from argus-data.
-argus start --dry-run --json
-argus start --yes --json
-argus doctor --json
+cd /opt/argus
+docker compose -p argus config --volumes
+docker volume inspect argus_argus-data
 ```
 
-Restore all copied SQLite files together, then use the same start-and-doctor sequence. For PostgreSQL, use `pg_dump`/`pg_restore` or provider snapshots outside `/opt/argus`; after a restore, start each required role and verify its health. Argus does not create or restore PostgreSQL dumps.
+Before an update, make and verify an operator-managed Docker-volume backup of that confirmed volume. Test recovery against a separate volume or staging instance; this handbook does not prescribe a destructive live-volume restore. After an operator-managed recovery, inspect the managed deployment with `argus status --json` and `argus doctor --json`. For PostgreSQL, use `pg_dump`/`pg_restore` or provider snapshots outside `/opt/argus`; after a restore, start each required role and verify its health. Argus does not create or restore PostgreSQL dumps.
 
 ## Escalation sequence
 

@@ -143,6 +143,21 @@ describe("Argus documentation", () => {
     }
   });
 
+  it("does not overstate managed Compose backup or loopback API support", async () => {
+    const [deployment, operations, security] = await Promise.all([
+      readFile(path.join(docsRoot, "deployment.mdx"), "utf8"),
+      readFile(path.join(docsRoot, "operations.mdx"), "utf8"),
+      readFile(path.join(docsRoot, "security.mdx"), "utf8"),
+    ]);
+
+    for (const content of [deployment, operations]) {
+      expect(content).toContain("argus-data");
+      expect(content).toContain("does not back up the managed named volume");
+    }
+    expect(security).toContain("not suitable for the managed Compose topology");
+    expect(security).not.toContain("Prefer a loopback bind");
+  });
+
   it("does not contain broken local Markdown links", async () => {
     const files = await markdownFiles(docsRoot);
     for (const file of files) {

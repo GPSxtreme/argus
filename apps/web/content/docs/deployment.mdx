@@ -57,7 +57,15 @@ The repository includes Railway templates in `deploy/railway/` for `api`, `sched
 
 ## Backup boundary
 
-For a SQLite VPS, stop Argus before copying the database and its `-wal` and `-shm` companions from `argus-data`, or use SQLite's online backup tooling. Restore all three together. Argus copies discovered SQLite database files and `state.json` into timestamped `/opt/argus/backups/<version>-<timestamp>/` directories before a non-noop update, but that update backup is not a substitute for a separately tested backup.
+The managed SQLite database is in Docker's named `argus-data` volume, which Compose creates as `argus_argus-data` because the project name is `argus`. Confirm that identity without changing the instance before every backup or update:
+
+```bash
+cd /opt/argus
+docker compose -p argus config --volumes
+docker volume inspect argus_argus-data
+```
+
+Argus update copies `state.json` and only eligible SQLite files it finds under `/opt/argus` or `/opt/argus/data` into `/opt/argus/backups/<version>-<timestamp>/`. It does not back up the managed named volume, so it cannot protect or restore the managed Compose SQLite database. Before an update, operators must make and verify their own Docker-volume backup of `argus_argus-data`; test a restore using the operator's backup process away from the live instance. Do not rely on `argus update --rollback` as a database-volume restore.
 
 For PostgreSQL, take regular `pg_dump`/`pg_restore` backups or provider snapshots and store them outside `/opt/argus`. Argus deployment backups do not contain a PostgreSQL dump. After a database restore, start the required runtime roles and verify with `argus status --json` and `argus doctor --json` on a managed VPS.
 
