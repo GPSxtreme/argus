@@ -207,10 +207,22 @@ describe("Argus documentation", () => {
     );
     expect(troubleshooting).not.toMatch(/dry-run returns a valid rollback plan/iu);
     expect(troubleshooting).toMatch(
-      /UPDATE_ROLLBACK_UNAVAILABLE[\s\S]{0,100}persisted update state[\s\S]{0,80}(?:missing|unreadable)/iu,
+      /UPDATE_ROLLBACK_UNAVAILABLE[\s\S]{0,300}persisted update state[\s\S]{0,80}(?:missing|unreadable)/iu,
     );
     expect(troubleshooting).toMatch(
-      /UPDATE_ROLLBACK_INCOMPATIBLE[\s\S]{0,160}backup[\s\S]{0,80}(?:absent|incompatible)/iu,
+      /UPDATE_ROLLBACK_INCOMPATIBLE[\s\S]{0,160}(?:no backup|backup[\s\S]{0,80}(?:absent|incompatible))/iu,
+    );
+    expect(troubleshooting).toMatch(
+      /UPDATE_ROLLBACK_UNAVAILABLE[\s\S]{0,240}rollback support[\s\S]{0,80}unavailable/iu,
+    );
+    expect(troubleshooting).toMatch(
+      /UPDATE_ROLLBACK_UNAVAILABLE[\s\S]{0,260}no verified rollback release[\s\S]{0,40}selected/iu,
+    );
+    expect(troubleshooting).toMatch(
+      /UPDATE_ROLLBACK_UNAVAILABLE[\s\S]{0,360}(?:signed release context|persisted update state)[\s\S]{0,100}(?:missing|unreadable|invalid)/iu,
+    );
+    expect(troubleshooting).toMatch(
+      /UPDATE_ROLLBACK_UNAVAILABLE[\s\S]{0,500}(?:escapes|outside)[\s\S]{0,80}instance root/iu,
     );
     for (const requirement of [
       "Ubuntu 22.04",
