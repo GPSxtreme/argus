@@ -35,7 +35,7 @@ argus logs argus --tail 200 --json
 argus doctor --json
 ```
 
-`status` returns `running` only when every selected service is healthy; otherwise it returns `degraded`. Per-service values are Docker health when present, otherwise Docker state. `logs` accepts only `argus`, `postgres`, or `searxng`; its tail must be a positive integer no larger than 10,000 and is time-bounded. An invalid tail is `LOG_TAIL_INVALID`; an unsupported service is `LOG_SERVICE_INVALID`.
+`status --json` reports `healthy: boolean` plus per-service Docker state and health. The current human status summary reads a nonexistent state field and can display `Argus: unknown`, so use JSON for reliable inspection. `logs` accepts only `argus`, `postgres`, or `searxng`; its tail must be a positive integer no larger than 10,000 and is time-bounded. An invalid tail is `LOG_TAIL_INVALID`; an unsupported service is `LOG_SERVICE_INVALID`.
 
 `doctor` runs independent bounded checks for Docker, the authenticated Argus API, selected storage, SearXNG, FxEmbed, and enabled source smoke targets. A check is `healthy`, `unhealthy`, or `skipped`; the complete report is healthy only when no check is unhealthy. It supplies an error code, bounded log command, and recovery text when available. Source smoke checks create an isolated temporary diagnostic watch, poll it within a deadline, then remove it; they do not use or alter normal watch records.
 

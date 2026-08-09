@@ -143,19 +143,39 @@ describe("Argus documentation", () => {
     }
   });
 
-  it("does not overstate managed Compose backup or loopback API support", async () => {
+  it("keeps managed Compose operator safety boundaries explicit", async () => {
     const [deployment, operations, security] = await Promise.all([
       readFile(path.join(docsRoot, "deployment.mdx"), "utf8"),
       readFile(path.join(docsRoot, "operations.mdx"), "utf8"),
       readFile(path.join(docsRoot, "security.mdx"), "utf8"),
     ]);
+    const backupCorpus = `${deployment}\n${operations}`;
+    const exposureCorpus = `${deployment}\n${operations}\n${security}`;
 
-    for (const content of [deployment, operations]) {
-      expect(content).toContain("argus-data");
-      expect(content).toContain("does not back up the managed named volume");
+    expect(deployment).toMatch(
+      /ARGUS_INSTALL_INSPECT=1 sh \/tmp\/argus-install\.sh[\s\S]*sh \/tmp\/argus-install\.sh/u,
+    );
+    expect(deployment).not.toMatch(
+      /curl -fsSL https:\/\/argus\.gpsxtre\.me\/install\.sh \| sh/u,
+    );
+    expect(backupCorpus).toMatch(/argus_argus-data/u);
+    expect(backupCorpus).toMatch(
+      /does not (?:back up|restore) the managed named volume/iu,
+    );
+    expect(backupCorpus).toMatch(/operator-managed Docker-volume backup/iu);
+    for (const control of ["firewall", "reverse proxy", "private network"]) {
+      expect(exposureCorpus).toMatch(new RegExp(`\\b${control}\\b`, "iu"));
     }
-    expect(security).toContain("not suitable for the managed Compose topology");
-    expect(security).not.toContain("Prefer a loopback bind");
+    for (const recommendation of [
+      /\bprefer\s+(?:a\s+)?loopback\b/iu,
+      /\b(?:set|configure|use)\s+api\.host\s*[:=]?\s*(?:127\.0\.0\.1|localhost|::1)/iu,
+      /\b(?:set|configure|use)\s+(?:a\s+)?loopback\s+(?:API\s+)?(?:host|bind)/iu,
+    ]) {
+      expect(exposureCorpus).not.toMatch(recommendation);
+    }
+    expect(operations).toMatch(/healthy:\s*boolean/iu);
+    expect(operations).toMatch(/per-service Docker state and health/iu);
+    expect(operations).not.toMatch(/`status` returns `running`/u);
   });
 
   it("does not contain broken local Markdown links", async () => {

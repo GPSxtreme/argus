@@ -16,7 +16,8 @@ Inspect the installer before making host changes, then install and onboard:
 ```bash
 curl -fsSLo /tmp/argus-install.sh https://argus.gpsxtre.me/install.sh
 ARGUS_INSTALL_INSPECT=1 sh /tmp/argus-install.sh
-curl -fsSL https://argus.gpsxtre.me/install.sh | sh
+# After review, run the exact file inspected above.
+sh /tmp/argus-install.sh
 argus onboard
 argus status --json
 argus doctor --json
