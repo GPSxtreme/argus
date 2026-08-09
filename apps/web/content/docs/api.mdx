@@ -3,8 +3,6 @@ title: API reference
 description: Query Argus records and artifacts, trigger supported operations, and use host-wrapper configuration routes.
 ---
 
-# API reference
-
 The API serves JSON. `/health` is public. When `api.token` is configured, every `/v1/*` route requires `Authorization: Bearer <token>` and otherwise returns `401 {"error":"unauthorized"}`. The three management routes always require a configured token and an exact bearer match. Examples use `ARGUS_URL=http://127.0.0.1:8788` and `ARGUS_API_TOKEN`.
 
 ## `GET /health`

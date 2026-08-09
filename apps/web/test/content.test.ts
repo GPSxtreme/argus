@@ -130,6 +130,17 @@ describe("Argus documentation", () => {
     }
   });
 
+  it("does not repeat front-matter titles as explicit H1 content", async () => {
+    for (const page of source.getPages()) {
+      const relativePath = page.slugs.length === 0 ? "index" : page.slugs.join("/");
+      const content = await readFile(path.join(docsRoot, `${relativePath}.mdx`), "utf8").catch(() =>
+        readFile(path.join(docsRoot, relativePath, "index.mdx"), "utf8"),
+      );
+
+      expect(content).not.toMatch(new RegExp(`^# ${page.data.title}$`, "mu"));
+    }
+  });
+
   it("gives procedural foundation pages prerequisites, verification, and next steps", async () => {
     for (const slug of ["quick-start", "install"]) {
       const content = await readFile(path.join(docsRoot, `${slug}.mdx`), "utf8");

@@ -3,8 +3,6 @@ title: Configuration
 description: Define validated Argus storage, sources, watches, intelligence, and API access.
 ---
 
-# Configuration
-
 Argus reads one strict, versioned YAML document. Unknown fields are rejected. Put secret values in the instance secrets environment and reference them as `${NAME}`; Argus resolves an entire string only when it has that form, and fails if the named variable is missing. `argus config show` redacts API keys, tokens, and credentials in configured URLs.
 
 ```bash
