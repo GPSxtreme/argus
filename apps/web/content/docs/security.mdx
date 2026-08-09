@@ -1,0 +1,44 @@
+---
+title: Security
+description: Understand Argus release verification, service boundaries, secret handling, and operator responsibilities.
+---
+
+# Security
+
+Argus protects the verified deployment path and limits the authority of its services. It does not turn a public host, operator-managed external endpoint, database backup, or Cloudflare account into a managed security boundary.
+
+## Release trust and images
+
+The installer embeds an Ed25519 public trust root. It downloads `manifest.json` and `manifest.sig`, verifies the signature and manifest shape before trusting it, then verifies the wrapper SHA-256. A malformed manifest, invalid signature, or wrapper hash mismatch stops before replacement.
+
+Onboarding and update use the verified signed manifest to select digest-pinned Argus, PostgreSQL, and SearXNG images. Update also requires the persisted signed release context to match the currently deployed release. These checks establish that the CLI uses the signed release material it verified; they do not validate arbitrary images or releases an operator deploys outside the CLI.
+
+## Secrets and credentials
+
+`/opt/argus/secrets.env` holds runtime credentials and is written atomically as an owner-owned regular file with mode `0600`. The CLI rejects unsafe permissions, symlinks, and non-files. Use `argus secrets set NAME` so the value is collected through a hidden prompt; do not put a secret in a shell command, answers file, or committed YAML.
+
+The CLI redacts known secret values from JSON and human output, redacts configured API and OpenRouter values, and removes URL userinfo in `argus config show`. Deployment errors redact registered secret values. This is output protection, not a guarantee that an operator's shell history, reverse proxy, external log collector, or third-party service never receives a secret.
+
+Managed FxEmbed needs a Cloudflare API token and account ID. Grant the token least privilege: access only the intended Cloudflare account and the Worker operations it needs. The client keeps that token in memory and sends it only as an Authorization header; diagnostic errors intentionally omit Cloudflare response bodies. Remove unused GHCR Docker credentials from `/opt/argus/.docker/config.json` when private image access is no longer needed.
+
+## API exposure and authentication
+
+`/health` is deliberately public. When `api.token` is configured, `/v1/*` requires `Authorization: Bearer <token>`; an absent or incorrect header receives `401`. The management configuration routes always require an exact configured Bearer token.
+
+The runtime refuses to bind a non-loopback API host without `api.token`. Loopback includes `127.0.0.1`, `::1`, `::ffff:127.0.0.1`, and `localhost`. Docker Compose publishes the selected API port, so an Internet-facing VPS still needs an operator-controlled firewall, reverse proxy, or private network policy. Prefer a loopback bind and expose only a terminating proxy when remote access is required.
+
+## Public-source and SSRF protections
+
+Direct Web collection accepts only HTTP(S) URLs without URL userinfo. It resolves every destination and redirect hop, rejects private, loopback, link-local, documentation, multicast, and other non-public IP ranges, and pins the connection to the approved DNS result. This prevents DNS rebinding between validation and connection. Redirects are manual, capped, cannot downgrade HTTPS to HTTP, and are revalidated at every hop.
+
+Web requests have bounded DNS, request, redirect, and body handling. The diagnostic Web target is independently validated by the same public-destination policy before Argus creates its temporary diagnostic watch. These SSRF protections apply to Argus's Web fetch path; they do not make operator-selected external SearXNG, FxEmbed, Telegram, X, OpenRouter, reverse proxies, or arbitrary infrastructure trustworthy.
+
+## Diagnostics, backups, and operations
+
+Doctor source checks use isolated `__argus_doctor:` watches with a short expiry and cleanup path, keeping their records separate from ordinary watches. Diagnostics return stable summaries and bounded log commands rather than command stderr or external response bodies.
+
+Backups are sensitive: SQLite copies can contain all collected records, and PostgreSQL dumps can contain the same data plus credentials if an operator embeds them in a connection URI. Store backups outside the instance where appropriate, encrypt them under your backup policy, restrict access, and test recovery. Never attach `secrets.env`, tokens, signing keys, private keys, or environment dumps to support reports.
+
+## Reporting a vulnerability
+
+Do not publish credentials, a working exploit, or private instance data in an issue. Send a minimal reproduction, affected version, impact, and safe contact details through the repository's private security-reporting channel if one is configured; otherwise contact the maintainers privately before disclosure. Preserve logs only after redacting secrets.

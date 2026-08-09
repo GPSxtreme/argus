@@ -1,4 +1,4 @@
-import { readFile, readdir } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { source } from "../lib/source";
@@ -113,6 +113,33 @@ describe("Argus documentation", () => {
       "argus doctor --json",
     ]) {
       expect(quickStart).toContain(command);
+    }
+  });
+
+  it("documents safe operational lifecycle commands and security boundaries", async () => {
+    const operationsCorpus = await readFile(
+      path.join(docsRoot, "operations.mdx"),
+      "utf8",
+    );
+    for (const command of [
+      "argus start",
+      "argus stop",
+      "argus restart",
+      "argus status --json",
+      "argus logs",
+      "argus doctor --json",
+      "argus repair",
+      "argus update --dry-run --json",
+      "argus update --rollback --dry-run --json",
+      "argus config apply --dry-run --json",
+      "argus secrets set",
+    ]) {
+      expect(operationsCorpus).toContain(command);
+    }
+
+    const security = await readFile(path.join(docsRoot, "security.mdx"), "utf8");
+    for (const term of ["Ed25519", "SSRF", "secrets.env", "Bearer", "least privilege"]) {
+      expect(security).toContain(term);
     }
   });
 

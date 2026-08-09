@@ -1,0 +1,66 @@
+---
+title: Deployment
+description: Deploy Argus on one Docker VPS first, then understand the supported advanced topologies.
+---
+
+# Deployment
+
+## Recommended topology: one VPS and SQLite
+
+Run one Argus instance on a supported Linux VPS. This is the supported onboarding path and the smallest complete deployment: one Argus service runs the API, scheduler, worker, and optional processor with `runtime.role: all` and SQLite.
+
+Use Ubuntu or Debian on Linux x64/amd64 or arm64/aarch64, a sudo-capable account, outbound HTTPS, Docker Engine with the Compose plugin and daemon access, at least 5 GiB free disk, and 1 GiB memory. Choose 2 GiB when onboarding managed SearXNG. Onboarding also verifies that the selected API port is free before it writes an instance.
+
+Inspect the installer before making host changes, then install and onboard:
+
+```bash
+curl -fsSLo /tmp/argus-install.sh https://argus.gpsxtre.me/install.sh
+ARGUS_INSTALL_INSPECT=1 sh /tmp/argus-install.sh
+curl -fsSL https://argus.gpsxtre.me/install.sh | sh
+argus onboard
+argus status --json
+argus doctor --json
+```
+
+The instance root is `/opt/argus`. The CLI owns its generated Compose file and state; do not edit them to change a deployment.
+
+## What the generated Compose deployment contains
+
+Every managed Compose deployment has these networks:
+
+- `argus-private` is internal. The Argus service, PostgreSQL when selected, and managed SearXNG use it.
+- `argus-egress` lets Argus reach configured public sources; managed SearXNG also uses it for search.
+
+The `argus` service mounts `/opt/argus/argus.yaml` read-only and the persistent `argus-data` volume at `/app/data`. It reads `/opt/argus/secrets.env` as its environment file. Docker publishes the selected API port, default `8788`, from the host to the container. Put a firewall or reverse proxy in front of a publicly reachable host port; setting a loopback API host is not the same thing as removing Docker's published port.
+
+SQLite is stored through `argus-data`; there is no separate database container. Selecting PostgreSQL adds a `postgres` service and the persistent `postgres-data` volume. Selecting managed SearXNG adds a `searxng` service with the CLI-owned `/opt/argus/searxng/settings.yml`; SearXNG has no host port of its own.
+
+`state.json` records the verified deployment and pinned image references. `release-context.json` keeps the signed release material used to identify a rollback release. `backups/` and `update-state.json` are update recovery state. They are operational state, not application configuration; preserve them and do not hand-edit them.
+
+## Managed and external dependencies
+
+Managed SearXNG is available only for Web query targets. Argus checks it with a bounded JSON search and can recreate only this managed service with `argus repair searxng`. An external SearXNG endpoint is outside Argus's control: Argus can check it, but it will not repair or change it.
+
+FxEmbed is a Cloudflare Worker, not a VPS container. In managed mode, onboarding deploys the pinned worker bundle into the supplied Cloudflare account; in external mode it records the endpoint. Both endpoints remain a dependency of X ingestion, but only the managed Cloudflare Worker is deployed during onboarding. Argus never repairs an external FxEmbed endpoint.
+
+## Advanced PostgreSQL roles
+
+Use PostgreSQL when the runtime needs independent `api`, `scheduler`, `worker`, or `processor` processes. SQLite is invalid for every role except `all`; it is not a multi-process or multi-role storage mode.
+
+All role processes use the same validated configuration and PostgreSQL database. `ARGUS_ROLE` overrides `runtime.role` for a process. Run at least an API role for the HTTP API, a scheduler role to enqueue due work, and a worker role to collect it; add a processor role only for scheduled intelligence processors. PostgreSQL job leases expire, so a crashed worker's work can be retried without Redis or Kafka.
+
+The generated VPS Compose topology still starts a single `all` Argus service. Splitting roles is an advanced operator-managed deployment concern; the CLI does not render a multi-replica Compose layout.
+
+## Railway boundary
+
+The repository includes Railway templates in `deploy/railway/` for `api`, `scheduler`, `worker`, and `processor` roles. Use PostgreSQL and set `ARGUS_ROLE` for each service. These templates are not a Railway control plane: `argus onboard`, lifecycle commands, managed Compose repair, update backup, and rollback operate on the `/opt/argus` Docker VPS instance, not on Railway services. Use Railway's own deployment, secret, database backup, and recovery controls for that topology.
+
+## Backup boundary
+
+For a SQLite VPS, stop Argus before copying the database and its `-wal` and `-shm` companions from `argus-data`, or use SQLite's online backup tooling. Restore all three together. Argus copies discovered SQLite database files and `state.json` into timestamped `/opt/argus/backups/<version>-<timestamp>/` directories before a non-noop update, but that update backup is not a substitute for a separately tested backup.
+
+For PostgreSQL, take regular `pg_dump`/`pg_restore` backups or provider snapshots and store them outside `/opt/argus`. Argus deployment backups do not contain a PostgreSQL dump. After a database restore, start the required runtime roles and verify with `argus status --json` and `argus doctor --json` on a managed VPS.
+
+## Next step
+
+Read [operations](/docs/operations) for inspect/apply/verify sequences and [security](/docs/security) before exposing the API or granting Cloudflare credentials.
