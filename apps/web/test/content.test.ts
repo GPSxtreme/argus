@@ -5,6 +5,30 @@ import { source } from "../lib/source";
 
 const docsRoot = path.join(process.cwd(), "apps/web/content/docs");
 
+const requiredRoutes = [
+  "/docs",
+  "/docs/quick-start",
+  "/docs/concepts",
+  "/docs/install",
+  "/docs/configuration",
+  "/docs/sources/x",
+  "/docs/sources/telegram",
+  "/docs/sources/web",
+  "/docs/intelligence",
+  "/docs/api",
+  "/docs/deployment",
+  "/docs/operations",
+  "/docs/security",
+  "/docs/troubleshooting",
+  "/docs/agents",
+  "/docs/contributing",
+  "/docs/contributing/architecture",
+  "/docs/contributing/development",
+  "/docs/contributing/testing",
+  "/docs/contributing/releases",
+  "/docs/contributing/documentation",
+] as const;
+
 async function markdownFiles(directory: string): Promise<string[]> {
   const entries = await readdir(directory, { withFileTypes: true });
   const files = await Promise.all(
@@ -18,20 +42,47 @@ async function markdownFiles(directory: string): Promise<string[]> {
 }
 
 describe("Argus documentation", () => {
-  it("publishes every required documentation route", () => {
-    const required = [
-      "/docs/getting-started",
-      "/docs/configuration",
-      "/docs/sources/x",
-      "/docs/sources/telegram",
-      "/docs/sources/web",
-      "/docs/operations",
-      "/docs/agents",
-    ];
-
-    expect(source.getPages().map((page) => page.url)).toEqual(
-      expect.arrayContaining(required),
+  it("publishes the complete operator and contributor handbook", () => {
+    expect(new Set(source.getPages().map((page) => page.url))).toEqual(
+      expect.objectContaining({ size: requiredRoutes.length }),
     );
+    expect(source.getPages().map((page) => page.url)).toEqual(
+      expect.arrayContaining([...requiredRoutes]),
+    );
+  });
+
+  it("separates operator and contributor navigation", async () => {
+    const root = JSON.parse(
+      await readFile(path.join(docsRoot, "meta.json"), "utf8"),
+    );
+    const contributing = JSON.parse(
+      await readFile(path.join(docsRoot, "contributing/meta.json"), "utf8"),
+    );
+
+    expect(root.pages).toEqual([
+      "index",
+      "quick-start",
+      "concepts",
+      "install",
+      "configuration",
+      "sources",
+      "intelligence",
+      "api",
+      "deployment",
+      "operations",
+      "security",
+      "troubleshooting",
+      "agents",
+      "contributing",
+    ]);
+    expect(contributing.pages).toEqual([
+      "index",
+      "architecture",
+      "development",
+      "testing",
+      "releases",
+      "documentation",
+    ]);
   });
 
   it("gives each document a title and description", () => {

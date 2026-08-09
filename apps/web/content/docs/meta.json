@@ -2,10 +2,18 @@
   "title": "Argus documentation",
   "pages": [
     "index",
-    "getting-started",
+    "quick-start",
+    "concepts",
+    "install",
     "configuration",
     "sources",
+    "intelligence",
+    "api",
+    "deployment",
     "operations",
-    "agents"
+    "security",
+    "troubleshooting",
+    "agents",
+    "contributing"
   ]
 }

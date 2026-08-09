@@ -1,0 +1,11 @@
+{
+  "title": "Contributing",
+  "pages": [
+    "index",
+    "architecture",
+    "development",
+    "testing",
+    "releases",
+    "documentation"
+  ]
+}
