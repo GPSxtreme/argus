@@ -34,6 +34,8 @@ pnpm --filter @argus/web check:links
 
 The content tests enforce route inventory, navigation separation, required
 frontmatter, and local Markdown links. Route and distribution tests prove the
-LLM, Markdown, installer, and skill endpoints. The web CI job runs the broader
-web suite, Lighthouse CI, and a tracked-secret-file check before the
-Git-connected Vercel deployment can publish a merged change.
+LLM, Markdown, installer, and skill endpoints. Independently, the web CI job
+runs the broader web suite, Lighthouse CI, and a tracked-secret-file check.
+Run those same checks as a contributor requirement; the repository does not
+configure them as a gate or ordering dependency for the Git-connected Vercel
+deployment.

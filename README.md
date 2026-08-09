@@ -32,7 +32,7 @@ and the current [v0.1.9 release](https://github.com/GPSxtreme/argus/releases/tag
 
 ## Development
 
-Use Node.js 24 and pnpm 10.33.0:
+Use Node.js 24.16.0 and pnpm 10.33.0:
 
 ```bash
 corepack enable

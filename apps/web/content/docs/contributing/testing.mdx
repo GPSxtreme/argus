@@ -22,9 +22,11 @@ tests are skipped unless one of these conditions is true:
 
 - `TEST_DATABASE_URL` points to an available PostgreSQL database (CI provides
   `postgresql://postgres:postgres@localhost:5432/postgres`);
-- `ARGUS_POSTGRES_TEST=1` allows the test to start its Testcontainers PostgreSQL
-  fixture, which requires Docker; or
-- `CI=true` lets the test use its CI container path.
+- otherwise, `ARGUS_POSTGRES_TEST=1` or `CI=true` enables the same
+  Docker-backed Testcontainers PostgreSQL fixture, which requires Docker.
+
+The repository CI workflow supplies `TEST_DATABASE_URL`, so it uses the
+workflow PostgreSQL service rather than the fallback fixture.
 
 Use a disposable database only. No developer, test, or CI connection string
 belongs in the repository.
