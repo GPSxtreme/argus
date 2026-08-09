@@ -1,0 +1,107 @@
+---
+title: Core concepts
+description: Understand how Argus turns public-source watches into revisioned records and optional derived artifacts.
+---
+
+# Core concepts
+
+Argus separates deterministic collection and storage from optional
+intelligence. This separation lets an operator trace a returned record to its
+public source even when no summary provider is configured.
+
+## Watches and targets
+
+A **watch** is the versioned configuration unit that names a collection policy:
+its ID, enabled state, cron schedule, source inputs, and keyword rules. A watch
+persists as the applied configuration snapshot. When enabled, it expands into
+one **target** for each X account or query, public Telegram channel, direct Web
+URL, feed, or Web query. The target ID combines the watch, source, kind, and
+value, so the scheduler can process source inputs independently.
+
+The next layer is a job: the scheduler converts due targets into work without
+changing the watch itself.
+
+## Jobs, retries, leases, and checkpoints
+
+A **job** is a persisted request to collect one target at a scheduled instant.
+The scheduler evaluates enabled watches on its tick and de-duplicates jobs from
+the target ID and scheduled time. A worker claims at most the available work
+under a time-limited lease and lease token. Only the current lease holder can
+complete or fail that job, preventing a stale worker from settling reclaimed
+work.
+
+Failures retry with bounded exponential backoff: five seconds initially,
+doubled up to fifteen minutes, with jitter, for fewer than five attempts. A
+successful ingestion commits its records and target checkpoint together. The
+checkpoint is persisted by target and tells the next collection where to resume.
+That atomic handoff leads to canonical records.
+
+## Records and revisions
+
+A **record** is Argus's canonical stored representation of one public source
+item. Its identity is `source:targetId:externalId`; it preserves the source
+URL, text, optional title and author, source metadata, content hash, watch IDs,
+and ingestion time. Re-reading unchanged content is a duplicate. When the same
+canonical record has a new content hash, Argus persists a **revision** with the
+previous captured representation rather than silently replacing history.
+
+Records and revisions live in the configured SQLite or PostgreSQL repository.
+The query API returns deterministic record pages and source links; summaries
+refer to records instead of becoming their replacement.
+
+## Classification metadata
+
+Each watch may define keyword rules. During ingestion, Argus attaches matching
+classification metadata to the canonical record while preserving the source
+text and URL. Classification is therefore additive: it does not drop a record
+or change its source identity. Operators can use the metadata alongside the
+record's watch and target context when interpreting query results.
+
+Classification belongs to the deterministic ingestion path. Optional
+intelligence can consume the resulting records, but it does not decide whether
+they are stored.
+
+## Artifacts and summaries
+
+An **artifact** is a persisted, derived object with its own ID, kind, content,
+creation time, provenance, and the record IDs it uses. A summary artifact may
+also record its provider and model. Artifacts are stored separately from source
+records and are returned through the artifacts query path.
+
+When OpenRouter intelligence is enabled, a scheduled processor or the summary
+API selects stored records, generates a sourced summary, and writes an artifact.
+If intelligence is disabled or fails, previously collected records and their
+queries remain available.
+
+## Runtime roles
+
+The runtime has four responsibilities: the **API** serves health and authenticated
+queries; the **scheduler** creates due jobs; the **worker** collects targets and
+writes ingestion results; and the **processor** runs scheduled intelligence
+processors. The `all` role runs every responsibility in one process. SQLite
+requires `all`; a PostgreSQL deployment may use separate API, scheduler, worker,
+and processor roles that share the same persisted repository.
+
+Roles exchange state only through the repository and applied configuration, so
+the query result remains independent of which worker performed collection.
+
+## Deterministic core and optional intelligence
+
+The deterministic core is configuration expansion, job scheduling, public
+source collection, normalization, revisioned storage, and API querying. It has
+no LLM dependency. Optional intelligence is specifically OpenRouter-backed
+summary generation, enabled only when its configuration and secret are present.
+
+### End-to-end flow
+
+1. A cron schedule on an enabled Web watch becomes a persisted job for its URL,
+   feed, or query target.
+2. A worker leases the job, collects public source items, and commits canonical
+   records, revisions when content changed, and the target checkpoint together.
+3. Keyword matches become record metadata. A later optional processor may save
+   a summary artifact that names the record IDs it used.
+4. An authenticated `GET /v1/records` query returns the sourced canonical
+   records deterministically, whether or not any summary exists.
+
+Continue with [installation and onboarding](/docs/install) for the host
+boundary or [configuration](/docs/configuration) for the versioned watch input.

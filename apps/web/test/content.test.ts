@@ -94,6 +94,28 @@ describe("Argus documentation", () => {
     }
   });
 
+  it("gives procedural foundation pages prerequisites, verification, and next steps", async () => {
+    for (const slug of ["quick-start", "install"]) {
+      const content = await readFile(path.join(docsRoot, `${slug}.mdx`), "utf8");
+      expect(content).toMatch(/^---[\s\S]+title:[\s\S]+description:[\s\S]+---/u);
+      expect(content).toContain("## Prerequisites");
+      expect(content).toContain("## Verify");
+      expect(content).toContain("## Next step");
+    }
+  });
+
+  it("gives the quick start its supported first-run commands", async () => {
+    const quickStart = await readFile(path.join(docsRoot, "quick-start.mdx"), "utf8");
+    for (const command of [
+      "curl -fsSL https://argus.gpsxtre.me/install.sh | sh",
+      "argus onboard",
+      "argus status --json",
+      "argus doctor --json",
+    ]) {
+      expect(quickStart).toContain(command);
+    }
+  });
+
   it("does not contain broken local Markdown links", async () => {
     const files = await markdownFiles(docsRoot);
     for (const file of files) {
