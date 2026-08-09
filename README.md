@@ -57,6 +57,7 @@ credentials, or generated instance state.
 - [Agent interfaces](https://argus.gpsxtre.me/docs/agents)
 - [Current architecture guide](https://argus.gpsxtre.me/docs/contributing/architecture)
 - [Architecture and verification design](docs/superpowers/specs/2026-08-09-operator-documentation-and-verification-design.md)
+- [VPS smoke workflow](.github/workflows/vps-smoke.yml) for released-version VPS verification
 
 ## Test
 
