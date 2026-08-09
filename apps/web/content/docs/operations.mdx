@@ -96,7 +96,7 @@ argus status --json
 argus doctor --json
 ```
 
-Rollback requires the persisted verified update backup and an exactly matching, compatible signed rollback release. It restores only eligible SQLite files captured by the update backup when present, starts the prior pinned Compose services, verifies health, and restores `state.json`; it does not restore `argus_argus-data`. `UPDATE_ROLLBACK_UNAVAILABLE` means there is no usable persisted backup or signed rollback selection; `UPDATE_ROLLBACK_INCOMPATIBLE` means the backup and release cannot safely be paired. Do not delete `/opt/argus/backups`, `update-state.json`, or `release-context.json` until recovery is complete.
+Rollback requires the persisted verified update backup and an exactly matching, compatible signed rollback release. It restores only eligible SQLite files captured by the update backup when present, starts the prior pinned Compose services, verifies health, and restores `state.json`; it does not restore `argus_argus-data`. `UPDATE_ROLLBACK_UNAVAILABLE` means required rollback support or recovery material is unavailable: this CLI integration does not support rollback, no verified rollback release is selected, the signed release context or persisted update state is missing, unreadable, or invalid, or a persisted recovery path escapes the instance root. `UPDATE_ROLLBACK_INCOMPATIBLE` means readable persisted update state has no backup, or its recorded backup/release pairing fails the required schema, manifest, or version metadata. Do not delete `/opt/argus/backups`, `update-state.json`, or `release-context.json` until recovery is complete.
 
 ## Back up and restore
 

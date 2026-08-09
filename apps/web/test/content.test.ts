@@ -224,6 +224,17 @@ describe("Argus documentation", () => {
     expect(troubleshooting).toMatch(
       /UPDATE_ROLLBACK_UNAVAILABLE[\s\S]{0,500}(?:escapes|outside)[\s\S]{0,80}instance root/iu,
     );
+    for (const rollbackDocumentation of [operations, troubleshooting]) {
+      expect(rollbackDocumentation).toMatch(
+        /UPDATE_ROLLBACK_UNAVAILABLE[\s\S]{0,120}required rollback support or recovery material[\s\S]{0,240}(?:missing|unreadable|invalid)[\s\S]{0,120}(?:escapes|outside)[\s\S]{0,80}instance root/iu,
+      );
+      expect(rollbackDocumentation).toMatch(
+        /UPDATE_ROLLBACK_INCOMPATIBLE[\s\S]{0,120}readable persisted update state[\s\S]{0,180}(?:no backup|backup\/release pairing)/iu,
+      );
+      expect(rollbackDocumentation).not.toMatch(
+        /UPDATE_ROLLBACK_UNAVAILABLE[\s\S]{0,180}(?:no usable persisted backup|(?:no|absent|missing) persisted backup)/iu,
+      );
+    }
     for (const requirement of [
       "Ubuntu 22.04",
       "Ubuntu 24.04",
