@@ -7,7 +7,7 @@ import {
 import { OpenRouterClient } from "@argus/intelligence";
 import { QueryService } from "@argus/query";
 import { enqueueWatchNow, targetsFromConfig } from "@argus/scheduler";
-import { Hono } from "hono";
+import { type Handler, Hono } from "hono";
 import {
   applyManagementConfig,
   inspectManagementConfig,
@@ -36,6 +36,26 @@ export const API_ROUTES = {
   createSummary: { method: "POST", path: "/v1/summaries" },
 } as const;
 
+type ApiRoute = (typeof API_ROUTES)[keyof typeof API_ROUTES];
+
+const registerApiRoute = (
+  app: Hono,
+  route: ApiRoute,
+  handler: Handler,
+): void => {
+  switch (route.method) {
+    case "GET":
+      app.get(route.path, handler);
+      return;
+    case "POST":
+      app.post(route.path, handler);
+      return;
+    case "DELETE":
+      app.delete(route.path, handler);
+      return;
+  }
+};
+
 const tokenMatches = (
   config: ArgusConfig,
   presented: string | undefined,
@@ -53,7 +73,7 @@ export const createApp = ({ config, repository, diagnosticResolver }: CreateAppI
   const app = new Hono();
   const query = new QueryService(repository);
 
-  app.get(API_ROUTES.health.path, (context) =>
+  registerApiRoute(app, API_ROUTES.health, (context) =>
     context.json({
       status: "ok",
       version: 1,
@@ -69,7 +89,7 @@ export const createApp = ({ config, repository, diagnosticResolver }: CreateAppI
     await next();
   });
 
-  app.get(API_ROUTES.records.path, async (context) => {
+  registerApiRoute(app, API_ROUTES.records, async (context) => {
     const sources = context.req.queries("source");
     const targets = context.req.queries("target");
     const text = context.req.query("q");
@@ -116,7 +136,7 @@ export const createApp = ({ config, repository, diagnosticResolver }: CreateAppI
     }
   });
 
-  app.get(API_ROUTES.artifacts.path, async (context) => {
+  registerApiRoute(app, API_ROUTES.artifacts, async (context) => {
     const limit = Number(context.req.query("limit") ?? 50);
     if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
       return context.json({ error: "limit must be an integer from 1 to 200" }, 400);
@@ -131,7 +151,7 @@ export const createApp = ({ config, repository, diagnosticResolver }: CreateAppI
     );
   });
 
-  app.post(API_ROUTES.ingestWatch.path, async (context) => {
+  registerApiRoute(app, API_ROUTES.ingestWatch, async (context) => {
     const watch = config.watches.find(
       (candidate) =>
         candidate.id === context.req.param("watchId") && candidate.enabled,
@@ -141,7 +161,7 @@ export const createApp = ({ config, repository, diagnosticResolver }: CreateAppI
     return context.json({ queued, watchId: watch.id }, 202);
   });
 
-  app.post(API_ROUTES.createSmokeWatch.path, async (context) => {
+  registerApiRoute(app, API_ROUTES.createSmokeWatch, async (context) => {
     const body: unknown = await context.req.json().catch(() => undefined);
     if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).length !== 2 || !Object.keys(body).every((key) => key === "source" || key === "targetId")) return context.json({ error: "invalid diagnostic watch request" }, 400);
     const input = body as { source?: unknown; targetId?: unknown };
@@ -167,7 +187,7 @@ export const createApp = ({ config, repository, diagnosticResolver }: CreateAppI
     return context.json({ id, targetId }, 202);
   });
 
-  app.get(API_ROUTES.smokeWatchRecords.path, async (context) => {
+  registerApiRoute(app, API_ROUTES.smokeWatchRecords, async (context) => {
     const targetId = `__argus_doctor:${context.req.param("id")}`;
     const state = await repository.getDiagnosticWatch(targetId);
     if (!state) return context.json({ error: "diagnostic watch not found" }, 404);
@@ -176,7 +196,7 @@ export const createApp = ({ config, repository, diagnosticResolver }: CreateAppI
     });
   });
 
-  app.delete(API_ROUTES.deleteSmokeWatch.path, async (context) => {
+  registerApiRoute(app, API_ROUTES.deleteSmokeWatch, async (context) => {
     const id = context.req.param("id");
     const targetId = `__argus_doctor:${id}`;
     const state = await repository.getDiagnosticWatch(targetId);
@@ -186,7 +206,7 @@ export const createApp = ({ config, repository, diagnosticResolver }: CreateAppI
     return context.body(null, 204);
   });
 
-  app.post(API_ROUTES.planManagementConfig.path, async (context) => {
+  registerApiRoute(app, API_ROUTES.planManagementConfig, async (context) => {
     if (
       !config.api.token ||
       context.req.header("authorization") !== `Bearer ${config.api.token}`
@@ -217,7 +237,7 @@ export const createApp = ({ config, repository, diagnosticResolver }: CreateAppI
     }
   });
 
-  app.post(API_ROUTES.applyManagementConfig.path, async (context) => {
+  registerApiRoute(app, API_ROUTES.applyManagementConfig, async (context) => {
     if (
       !config.api.token ||
       context.req.header("authorization") !== `Bearer ${config.api.token}`
@@ -255,7 +275,7 @@ export const createApp = ({ config, repository, diagnosticResolver }: CreateAppI
     }
   });
 
-  app.post(API_ROUTES.verifyManagementConfig.path, async (context) => {
+  registerApiRoute(app, API_ROUTES.verifyManagementConfig, async (context) => {
     if (
       !config.api.token ||
       context.req.header("authorization") !== `Bearer ${config.api.token}`
@@ -285,7 +305,7 @@ export const createApp = ({ config, repository, diagnosticResolver }: CreateAppI
     }
   });
 
-  app.post(API_ROUTES.createSummary.path, async (context) => {
+  registerApiRoute(app, API_ROUTES.createSummary, async (context) => {
     if (!config.intelligence.enabled || !config.intelligence.apiKey) {
       return context.json({ error: "intelligence is disabled" }, 409);
     }
