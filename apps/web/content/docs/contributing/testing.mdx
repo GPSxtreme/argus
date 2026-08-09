@@ -28,8 +28,9 @@ tests are skipped unless one of these conditions is true:
 The repository CI workflow supplies `TEST_DATABASE_URL`, so it uses the
 workflow PostgreSQL service rather than the fallback fixture.
 
-Use a disposable database only. No developer, test, or CI connection string
-belongs in the repository.
+Use a disposable database only. Never commit credentialed, shared, production,
+or otherwise non-disposable connection strings. The workflow's isolated
+disposable PostgreSQL service URL is the intentional exception.
 
 ## Tier 2: web content and routes
 
