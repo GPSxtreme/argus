@@ -111,6 +111,16 @@ describe("Argus documentation", () => {
     ]);
   });
 
+  it("links repository readers to public documentation and releases", async () => {
+    const readme = await readFile(path.join(process.cwd(), "README.md"), "utf8");
+
+    expect(readme).not.toContain("The token is needed only while the release repository is private");
+    expect(readme).not.toContain('ARGUS_GITHUB_TOKEN="<GitHub token with read access>"');
+    expect(readme).toContain("https://argus.gpsxtre.me/docs/quick-start");
+    expect(readme).toContain("https://argus.gpsxtre.me/docs/contributing");
+    expect(readme).toContain("https://github.com/GPSxtreme/argus/releases/tag/v0.1.9");
+  });
+
   it("gives each document a title and description", () => {
     for (const page of source.getPages()) {
       expect(page.data.title).toEqual(expect.any(String));

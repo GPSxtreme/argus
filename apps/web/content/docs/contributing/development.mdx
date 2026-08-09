@@ -1,0 +1,59 @@
+---
+title: Development
+description: Bootstrap the pinned Node.js and pnpm toolchain, run Argus locally, and keep configuration and secrets out of commits.
+---
+
+# Development
+
+Use Node.js 24 and pnpm 10.33.0. The root package manifest records the exact
+pnpm integrity-pinned version; use Corepack or another toolchain manager that
+honors it.
+
+## Bootstrap
+
+```bash
+corepack enable
+pnpm install --frozen-lockfile
+cp argus.example.yaml argus.yaml
+cp .env.example .env
+set -a
+source .env
+set +a
+pnpm argus config validate
+pnpm argus config apply
+pnpm start
+```
+
+This starts the combined local runtime. The API is at `http://localhost:8788`;
+use the generated local API token only in your shell or local `.env` file.
+
+## Configuration and environment
+
+`argus.yaml` is the versioned configuration input; `.env` is local-only.
+The supplied environment example names the runtime inputs:
+
+| Variable | Purpose |
+| --- | --- |
+| `ARGUS_CONFIG` | Runtime configuration path. |
+| `ARGUS_API_TOKEN` | API bearer token. |
+| `OPENROUTER_API_KEY` | Optional OpenRouter credential for intelligence. |
+| `FXEMBED_ENDPOINT` | X source endpoint. |
+
+Never commit `argus.yaml`, `.env`, `secrets.env`, deployment state, test
+credentials, or release signing material. Do not put secret values in YAML
+fixtures, test transcripts, issue reports, or shell history. See
+[security](/docs/security) for the operator-facing secret boundary.
+
+## Everyday commands
+
+```bash
+pnpm lint
+pnpm test
+pnpm typecheck
+pnpm build
+```
+
+Use `pnpm argus --help` to discover local CLI commands. For a production-like
+managed instance, follow the canonical [installation](/docs/install) and
+[operations](/docs/operations) documentation rather than manually constructing
+Compose files or deployment state.

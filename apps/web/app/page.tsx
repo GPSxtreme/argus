@@ -22,7 +22,7 @@ export default function Home() {
           Argus collects public signals, normalizes them into revisioned records, and gives your agents deterministic answers with source links.
         </p>
         <div className="hero-actions">
-          <a className="button primary" href="/docs/getting-started">Get Started</a>
+          <a className="button primary" href="/docs/quick-start">Get Started</a>
           <a className="button" href="/docs">Read the Docs</a>
         </div>
         <section className="install-box" aria-label="Install Argus">

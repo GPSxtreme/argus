@@ -1,57 +1,42 @@
 # Argus
 
-Argus is a self-hosted data layer for AI agents. It continuously collects from
-X, public Telegram announcement channels, and the Web; stores canonical,
-revisioned records; and exposes deterministic queries with source links.
-OpenRouter summaries are optional and remain separate from the ingestion path.
+Argus is a self-hosted data layer for AI agents. It collects from X, public
+Telegram announcement channels, and the Web; stores canonical revisioned
+records; and provides deterministic queries with source links. Optional
+OpenRouter summaries remain outside the ingestion path.
 
-## Project site
+## Capabilities
 
-The public project site and documentation live at
-[argus.gpsxtre.me](https://argus.gpsxtre.me). The Vercel app in `apps/web`
-serves the landing page, docs, LLM-readable documentation, installer, and
-Agent Skill endpoints from one codebase.
+- X account and search ingestion through your FxEmbed endpoint
+- public Telegram announcement, URL, RSS/Atom, and SearXNG-backed Web sources
+- scheduled watches, leases, retries, deduplication, revisions, and checkpoints
+- SQLite for a one-process deployment or PostgreSQL for separated runtime roles
+- authenticated JSON API and optional sourced intelligence artifacts
 
-## What V1 includes
+Argus does not access private Telegram chats, bypass site controls, or require
+an LLM for collection and querying.
 
-- X account and search ingestion through your own FxEmbed endpoint
-- anonymous monitoring of public Telegram announcement channels
-- URL extraction, RSS/Atom ingestion, and SearXNG web discovery
-- cron watches, checkpoints, retries, leases, deduplication, and revisions
-- SQLite for a one-process VPS deployment
-- PostgreSQL for `api`, `scheduler`, `worker`, and `processor` roles
-- authenticated JSON API and optional sourced OpenRouter summaries
-- one versioned YAML configuration; environment variables only for secrets
+## Install
 
-Argus does not access private Telegram chats, bypass site access controls, or
-make an LLM part of the core data path.
-
-## One-command VPS install
-
-On a fresh Ubuntu 24.04 or Debian 13 VPS, install the signed host wrapper and
-start the guided setup:
+Install the signed public release on a supported VPS, then start interactive
+onboarding:
 
 ```bash
-curl -fsSL https://argus.gpsxtre.me/install.sh |
-  ARGUS_GITHUB_TOKEN="<GitHub token with read access>" sh
+curl -fsSL https://argus.gpsxtre.me/install.sh | sh
 argus onboard
 ```
 
-The token is needed only while the release repository is private. The installer
-resolves your GitHub username automatically for a personal access token; set
-`ARGUS_GITHUB_USER` as well for tokens that cannot access GitHub's `/user`
-endpoint. Onboarding
-can manage SearXNG for Web queries, keep FxEmbed external, and store the
-instance under `/opt/argus`. See the
-[VPS operations guide](docs/operations.md#vps-installation-and-onboarding) for
-non-interactive JSON automation, backups, updates, and recovery.
+The installer verifies the release manifest signature and wrapper hash before
+installation. See the [quick start](https://argus.gpsxtre.me/docs/quick-start)
+and the current [v0.1.9 release](https://github.com/GPSxtreme/argus/releases/tag/v0.1.9).
 
-## Local development quick start
+## Development
 
-Requirements: Node.js 24 and pnpm 10.
+Use Node.js 24 and pnpm 10.33.0:
 
 ```bash
-pnpm install
+corepack enable
+pnpm install --frozen-lockfile
 cp argus.example.yaml argus.yaml
 cp .env.example .env
 set -a
@@ -62,65 +47,18 @@ pnpm argus config apply
 pnpm start
 ```
 
-Edit `argus.yaml` before applying it. Remove unused secret references or
-set their environment variables. The API listens on `http://localhost:8788`;
-`GET /health` is public and `/v1/*` accepts `Authorization: Bearer <token>`.
+Keep `argus.yaml` and `.env` local. Never commit runtime configuration,
+credentials, or generated instance state.
 
-```bash
-curl http://localhost:8788/health
-curl -H "Authorization: Bearer $ARGUS_API_TOKEN" \
-  "http://localhost:8788/v1/records?q=security&source=telegram"
-```
+## Documentation
 
-Trigger every target in a configured watch immediately:
+- [Operator handbook](https://argus.gpsxtre.me/docs)
+- [Contributor guide](https://argus.gpsxtre.me/docs/contributing)
+- [Agent interfaces](https://argus.gpsxtre.me/docs/agents)
+- [Current architecture guide](https://argus.gpsxtre.me/docs/contributing/architecture)
+- [Architecture and verification design](docs/superpowers/specs/2026-08-09-operator-documentation-and-verification-design.md)
 
-```bash
-curl -X POST -H "Authorization: Bearer $ARGUS_API_TOKEN" \
-  http://localhost:8788/v1/watches/ecosystem-news/ingest
-```
-
-Create a sourced summary when intelligence is enabled:
-
-```bash
-curl -X POST \
-  -H "Authorization: Bearer $ARGUS_API_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"query":"security release","limit":30}' \
-  http://localhost:8788/v1/summaries
-```
-
-Scheduled and on-demand summaries are stored separately and available from
-`GET /v1/artifacts?kind=summary`.
-
-## Configuration
-
-`argus.example.yaml` shows the full surface. A watch chooses any
-combination of X accounts/searches, Telegram channel usernames, URLs, feeds,
-and web queries. `classify.keywords` adds match metadata; it never discards the
-original record.
-
-Run `pnpm argus config validate [path]` before
-`pnpm argus config apply [path]`. Apply is content-addressed and idempotent.
-Resolved secrets are never stored in the applied snapshot.
-
-## Deployment
-
-For a single VPS, use SQLite and:
-
-```bash
-docker compose -f deploy/docker/compose.yaml up -d --build
-```
-
-Add `--profile search` to run SearXNG, or `--profile postgres` for the bundled
-database. For Railway, use PostgreSQL and create services from the role
-templates in `deploy/railway/`. See [docs/operations.md](docs/operations.md).
-
-FxEmbed is a Cloudflare Worker upstream rather than a normal long-running
-container. Deploy your own copy under your Cloudflare account and set the X
-source endpoint to its `/api` realm; Argus itself has no dependency on a
-third-party public FxTwitter instance.
-
-## Development
+## Test
 
 ```bash
 pnpm lint
@@ -128,37 +66,3 @@ pnpm test
 pnpm typecheck
 pnpm build
 ```
-
-Published releases pass a clean-host installer smoke before they are treated as
-VPS alpha candidates. The matrix installs the same signed wrapper twice on
-native amd64/arm64 Ubuntu and Debian hosts, performs Web-only onboarding with a
-disposable generated token, and requires `argus doctor --json` to be healthy.
-Run it from the **Installer smoke** GitHub Actions workflow with an immutable
-release tag. See [docs/operations.md](docs/operations.md#installer-smoke) for
-the local command and limitations.
-
-The separate
-[VPS smoke workflow](.github/workflows/vps-smoke.yml) repeats onboarding on
-Ubuntu 24.04 and Debian 13, requires an empty second plan, ingests a controlled
-Web record, checks managed SearXNG JSON, and proves that only API port `8788`
-is published.
-
-## Agent Skill
-
-The portable [Argus setup skill](skills/argus-setup/SKILL.md) routes install,
-onboarding, health checks, and recovery exclusively through the Argus CLI. Its
-deterministic release archive contains the skill, license, and references.
-
-Validate the package and deterministic smoke scenarios with:
-
-```bash
-pnpm tsx scripts/skills/validate.ts skills/argus-setup
-pnpm tsx scripts/skills/smoke-scenarios.ts --client=fake
-```
-
-The `--client=codex` and `--client=claude` smoke adapters are opt-in. They run
-only when their CLI and explicit disposable test credentials are available; no
-credential values are recorded in scenario transcripts.
-
-The architecture and decisions are documented in
-`docs/superpowers/specs/2026-07-31-argus-v1-design.md`.

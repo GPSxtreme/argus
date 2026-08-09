@@ -1,0 +1,85 @@
+---
+title: Testing
+description: Choose the smallest Argus test tier that proves a change, including PostgreSQL, live FxEmbed, Agent Skill, installer, VPS, and web documentation checks.
+---
+
+# Testing
+
+Run the smallest tier that exercises the changed boundary, then run the root
+quality gates before proposing a release. Tests use Vitest unless a workflow or
+shell smoke is named below.
+
+## Tier 1: ordinary workspace tests
+
+```bash
+pnpm test
+pnpm typecheck
+pnpm lint
+```
+
+This covers package, CLI, runtime, release, and web tests. PostgreSQL repository
+tests are skipped unless one of these conditions is true:
+
+- `TEST_DATABASE_URL` points to an available PostgreSQL database (CI provides
+  `postgresql://postgres:postgres@localhost:5432/postgres`);
+- `ARGUS_POSTGRES_TEST=1` allows the test to start its Testcontainers PostgreSQL
+  fixture, which requires Docker; or
+- `CI=true` lets the test use its CI container path.
+
+Use a disposable database only. No developer, test, or CI connection string
+belongs in the repository.
+
+## Tier 2: web content and routes
+
+```bash
+pnpm --filter @argus/web generate
+pnpm vitest run apps/web/test/content.test.ts apps/web/test/routes.test.ts apps/web/test/distribution.test.ts
+pnpm --filter @argus/web build
+pnpm --filter @argus/web check:links
+```
+
+Generation refreshes Fumadocs' derived source before route assertions. The web
+workflow also runs Lighthouse CI and rejects tracked `.env`, `state.json`,
+`secrets.env`, and `argus.yaml` files.
+
+## Tier 3: controlled live integrations
+
+The managed FxEmbed live smoke is deliberately disabled by default. Run it only
+against a dedicated Cloudflare test account, with all four variables supplied
+outside the repository:
+
+```bash
+ARGUS_FXEMBED_LIVE=1 \
+ARGUS_FXEMBED_LIVE_DEDICATED_ACCOUNT=1 \
+ARGUS_FXEMBED_LIVE_ACCOUNT_ID=... \
+ARGUS_FXEMBED_LIVE_API_TOKEN=... \
+pnpm vitest run packages/deployment/test/fxembed.live.test.ts
+```
+
+It deploys and reconciles a real worker, so never point it at a shared or
+production account.
+
+## Tier 4: skill and release checks
+
+```bash
+pnpm tsx scripts/skills/validate.ts skills/argus-setup
+pnpm tsx scripts/skills/smoke-scenarios.ts --client=fake
+```
+
+Codex and Claude smoke adapters are opt-in: each requires its CLI plus
+`ARGUS_SKILL_SMOKE_TEST_CREDENTIALS=enabled` and explicit disposable test
+credentials. The release workflow additionally runs lint, typecheck, tests,
+and the build before it signs and publishes release assets.
+
+## Tier 5: clean-host smoke tests
+
+The **Installer smoke** workflow runs automatically after a signed release and
+uses isolated Ubuntu/Debian hosts on both AMD64 and ARM64 paths. The **VPS
+smoke** workflow is manually dispatched with an immutable `release_tag`; its
+script requires `ARGUS_VPS_E2E=1`, `ARGUS_INSTALLER_URL`,
+`ARGUS_MANIFEST_URL`, `ARGUS_MANIFEST_ASSET_URL`, and
+`ARGUS_EXPECTED_VERSION`. It also accepts a controlled HTTPS URL and CI-only
+GitHub access variables when needed to resolve release assets.
+
+These tests create and remove disposable hosts and instance data. Run them only
+through their workflows or an intentionally isolated fixture environment.

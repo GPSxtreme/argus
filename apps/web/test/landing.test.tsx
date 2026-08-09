@@ -9,7 +9,7 @@ describe("Argus landing page", () => {
     expect((html.match(/<h1/g) ?? []).length).toBe(1);
     expect(html).toContain("curl -fsSL https://argus.gpsxtre.me/install.sh | sh");
     expect(html).toContain("verifies the manifest signature");
-    expect(html).toContain('href="/docs/getting-started"');
+    expect(html).toContain('href="/docs/quick-start"');
     expect(html).toContain('href="/docs"');
     expect(html).not.toContain("Copy install command");
   });
