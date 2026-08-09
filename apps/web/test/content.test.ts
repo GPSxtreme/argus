@@ -144,10 +144,11 @@ describe("Argus documentation", () => {
   });
 
   it("keeps managed Compose operator safety boundaries explicit", async () => {
-    const [deployment, operations, security] = await Promise.all([
+    const [deployment, operations, security, troubleshooting] = await Promise.all([
       readFile(path.join(docsRoot, "deployment.mdx"), "utf8"),
       readFile(path.join(docsRoot, "operations.mdx"), "utf8"),
       readFile(path.join(docsRoot, "security.mdx"), "utf8"),
+      readFile(path.join(docsRoot, "troubleshooting.mdx"), "utf8"),
     ]);
     const backupCorpus = `${deployment}\n${operations}`;
     const exposureCorpus = `${deployment}\n${operations}\n${security}`;
@@ -158,24 +159,34 @@ describe("Argus documentation", () => {
     expect(deployment).not.toMatch(
       /curl -fsSL https:\/\/argus\.gpsxtre\.me\/install\.sh \| sh/u,
     );
-    expect(backupCorpus).toMatch(/argus_argus-data/u);
     expect(backupCorpus).toMatch(
-      /does not (?:back up|restore) the managed named volume/iu,
+      /(?:managed named volume|argus_argus-data)[\s\S]{0,240}(?:does not|cannot)[\s\S]{0,80}(?:back up|restore)/iu,
     );
-    expect(backupCorpus).toMatch(/operator-managed Docker-volume backup/iu);
-    for (const control of ["firewall", "reverse proxy", "private network"]) {
-      expect(exposureCorpus).toMatch(new RegExp(`\\b${control}\\b`, "iu"));
-    }
+    expect(backupCorpus).toMatch(
+      /operator(?:-|\s)managed[\s\S]{0,120}(?:Docker(?:-|\s)volume|argus_argus-data)[\s\S]{0,80}backup/iu,
+    );
+    expect(exposureCorpus).toMatch(
+      /(?:Internet-facing|publicly reachable)[\s\S]{0,300}(?:host )?firewall[\s\S]{0,160}reverse proxy[\s\S]{0,160}private network policy/iu,
+    );
     for (const recommendation of [
       /\bprefer\s+(?:a\s+)?loopback\b/iu,
-      /\b(?:set|configure|use)\s+api\.host\s*[:=]?\s*(?:127\.0\.0\.1|localhost|::1)/iu,
-      /\b(?:set|configure|use)\s+(?:a\s+)?loopback\s+(?:API\s+)?(?:host|bind)/iu,
+      /\brecommend\s+(?:a\s+)?loopback\b/iu,
+      /\b(?:set|configure)\s+(?:the\s+)?api\.host\s*(?:to|:|=)\s*(?:127\.0\.0\.1|localhost|::1)/iu,
+      /\b(?:set|configure)\s+(?:the\s+)?bind(?:\s+host)?\s*(?:to|:|=)\s*127\.0\.0\.1/iu,
+      /\b(?:set|configure)\s+(?:a\s+)?loopback\s+(?:API\s+)?(?:host|bind)/iu,
     ]) {
       expect(exposureCorpus).not.toMatch(recommendation);
     }
-    expect(operations).toMatch(/healthy:\s*boolean/iu);
-    expect(operations).toMatch(/per-service Docker state and health/iu);
-    expect(operations).not.toMatch(/`status` returns `running`/u);
+    expect(operations).toMatch(/state:\s*"running"\s*\|\s*"degraded"/u);
+    expect(operations).toMatch(/Docker health when present, otherwise Docker state/iu);
+    expect(operations).not.toMatch(/healthy:\s*boolean/iu);
+    expect(troubleshooting).toMatch(
+      /dry-run[\s\S]{0,120}does not validate[\s\S]{0,100}persisted backup/iu,
+    );
+    expect(troubleshooting).not.toMatch(/dry-run returns a valid rollback plan/iu);
+    for (const requirement of ["Ubuntu 22.04", "Ubuntu 24.04", "Debian 12", "Debian 13"]) {
+      expect(deployment).toContain(requirement);
+    }
   });
 
   it("does not contain broken local Markdown links", async () => {

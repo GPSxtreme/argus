@@ -99,6 +99,6 @@ Each recovery starts with a non-mutating inspection. Run a `--dry-run` plan befo
 
 **Inspect:** `argus update --rollback --dry-run --json`, then `argus doctor --json`.
 
-**Meaning:** `UPDATE_ROLLBACK_UNAVAILABLE` means there is no valid persisted update backup or verified rollback selection. `UPDATE_ROLLBACK_INCOMPATIBLE` means the backup and requested signed release cannot be safely paired.
+**Meaning:** `UPDATE_ROLLBACK_UNAVAILABLE` means there is no valid persisted update backup or verified rollback selection. `UPDATE_ROLLBACK_INCOMPATIBLE` means the backup and requested signed release cannot be safely paired. Rollback dry-run fetches and selects the signed rollback release only; it does not validate the persisted backup or prove the rollback can be applied. Backup availability and compatibility are checked during apply.
 
-**Recover:** Do not delete recovery files. If the dry-run returns a valid rollback plan, run `argus update --rollback --yes --json`; otherwise restore from the separately retained SQLite or PostgreSQL backup and verify with `argus status --json` and `argus doctor --json`.
+**Recover:** Do not delete recovery files. Run the dry-run first, then use `argus update --rollback --yes --json` only after reviewing the selected release and accepting that apply can still return an unavailable or incompatible rollback error. If it does, restore from the separately retained SQLite or PostgreSQL backup and verify with `argus status --json` and `argus doctor --json`.

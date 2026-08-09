@@ -9,7 +9,7 @@ description: Deploy Argus on one Docker VPS first, then understand the supported
 
 Run one Argus instance on a supported Linux VPS. This is the supported onboarding path and the smallest complete deployment: one Argus service runs the API, scheduler, worker, and optional processor with `runtime.role: all` and SQLite.
 
-Use Ubuntu or Debian on Linux x64/amd64 or arm64/aarch64, a sudo-capable account, outbound HTTPS, Docker Engine with the Compose plugin and daemon access, at least 5 GiB free disk, and 1 GiB memory. Choose 2 GiB when onboarding managed SearXNG. Onboarding also verifies that the selected API port is free before it writes an instance.
+Use Ubuntu 22.04 and Ubuntu 24.04, or Debian 12 and Debian 13, on Linux amd64/x64 or arm64/aarch64. The host needs a sudo-capable account, outbound HTTPS, Docker Engine with the Compose plugin and daemon access, at least 5 GiB free disk, and 1 GiB memory. Choose 2 GiB when onboarding managed SearXNG. Onboarding also verifies that the selected API port is free before it writes an instance.
 
 Inspect the installer before making host changes, then install and onboard:
 
