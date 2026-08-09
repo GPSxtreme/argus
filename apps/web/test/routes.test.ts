@@ -12,15 +12,6 @@ function titleHeadingPattern(title: string): RegExp {
   return new RegExp(`(?<!#)# ${escapeRegExp(title)}`, "gu");
 }
 
-function bodyMarker(markdown: string): string {
-  const marker = markdown
-    .split("\n")
-    .map((line) => line.trim())
-    .find((line) => line !== "");
-  if (marker === undefined) throw new Error("Documentation page has no processed body marker");
-  return marker;
-}
-
 describe("LLM documentation routes", () => {
   it("lists every document with its title, description, and canonical URL", async () => {
     const text = await (await getIndex()).text();
@@ -31,7 +22,7 @@ describe("LLM documentation routes", () => {
     }
   });
 
-  it("keeps every page title and processed body marker in its Markdown and the full guide", async () => {
+  it("keeps every page title and complete processed body in its Markdown and the full guide", async () => {
     const full = await (await getFull()).text();
 
     for (const page of source.getPages()) {
@@ -44,7 +35,7 @@ describe("LLM documentation routes", () => {
 
       for (const output of [pageMarkdown, full]) {
         expect(output).toContain(`# ${page.data.title}`);
-        expect(output).toContain(bodyMarker(processedBody));
+        expect(output).toContain(processedBody.trim());
       }
     }
   });

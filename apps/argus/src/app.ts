@@ -8,19 +8,33 @@ import { OpenRouterClient } from "@argus/intelligence";
 import { QueryService } from "@argus/query";
 import { enqueueWatchNow, targetsFromConfig } from "@argus/scheduler";
 import { Hono } from "hono";
-import { safeDiagnosticWebTarget, type DiagnosticResolver } from "./web-safety.js";
 import {
   applyManagementConfig,
   inspectManagementConfig,
   type ManagementConfigPlan,
   verifyManagementConfig,
 } from "./management-config.js";
+import { type DiagnosticResolver, safeDiagnosticWebTarget } from "./web-safety.js";
 
 export interface CreateAppInput {
   config: ArgusConfig;
   repository: StorageRepository;
   diagnosticResolver?: DiagnosticResolver;
 }
+
+export const API_ROUTES = {
+  health: { method: "GET", path: "/health" },
+  records: { method: "GET", path: "/v1/records" },
+  artifacts: { method: "GET", path: "/v1/artifacts" },
+  ingestWatch: { method: "POST", path: "/v1/watches/:watchId/ingest" },
+  createSmokeWatch: { method: "POST", path: "/v1/diagnostics/smoke-watches" },
+  smokeWatchRecords: { method: "GET", path: "/v1/diagnostics/smoke-watches/:id/records" },
+  deleteSmokeWatch: { method: "DELETE", path: "/v1/diagnostics/smoke-watches/:id" },
+  planManagementConfig: { method: "POST", path: "/v1/management/config/plan" },
+  applyManagementConfig: { method: "POST", path: "/v1/management/config/apply" },
+  verifyManagementConfig: { method: "POST", path: "/v1/management/config/verify" },
+  createSummary: { method: "POST", path: "/v1/summaries" },
+} as const;
 
 const tokenMatches = (
   config: ArgusConfig,
@@ -39,7 +53,7 @@ export const createApp = ({ config, repository, diagnosticResolver }: CreateAppI
   const app = new Hono();
   const query = new QueryService(repository);
 
-  app.get("/health", (context) =>
+  app.get(API_ROUTES.health.path, (context) =>
     context.json({
       status: "ok",
       version: 1,
@@ -55,7 +69,7 @@ export const createApp = ({ config, repository, diagnosticResolver }: CreateAppI
     await next();
   });
 
-  app.get("/v1/records", async (context) => {
+  app.get(API_ROUTES.records.path, async (context) => {
     const sources = context.req.queries("source");
     const targets = context.req.queries("target");
     const text = context.req.query("q");
@@ -102,7 +116,7 @@ export const createApp = ({ config, repository, diagnosticResolver }: CreateAppI
     }
   });
 
-  app.get("/v1/artifacts", async (context) => {
+  app.get(API_ROUTES.artifacts.path, async (context) => {
     const limit = Number(context.req.query("limit") ?? 50);
     if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
       return context.json({ error: "limit must be an integer from 1 to 200" }, 400);
@@ -117,7 +131,7 @@ export const createApp = ({ config, repository, diagnosticResolver }: CreateAppI
     );
   });
 
-  app.post("/v1/watches/:watchId/ingest", async (context) => {
+  app.post(API_ROUTES.ingestWatch.path, async (context) => {
     const watch = config.watches.find(
       (candidate) =>
         candidate.id === context.req.param("watchId") && candidate.enabled,
@@ -127,7 +141,7 @@ export const createApp = ({ config, repository, diagnosticResolver }: CreateAppI
     return context.json({ queued, watchId: watch.id }, 202);
   });
 
-  app.post("/v1/diagnostics/smoke-watches", async (context) => {
+  app.post(API_ROUTES.createSmokeWatch.path, async (context) => {
     const body: unknown = await context.req.json().catch(() => undefined);
     if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).length !== 2 || !Object.keys(body).every((key) => key === "source" || key === "targetId")) return context.json({ error: "invalid diagnostic watch request" }, 400);
     const input = body as { source?: unknown; targetId?: unknown };
@@ -153,7 +167,7 @@ export const createApp = ({ config, repository, diagnosticResolver }: CreateAppI
     return context.json({ id, targetId }, 202);
   });
 
-  app.get("/v1/diagnostics/smoke-watches/:id/records", async (context) => {
+  app.get(API_ROUTES.smokeWatchRecords.path, async (context) => {
     const targetId = `__argus_doctor:${context.req.param("id")}`;
     const state = await repository.getDiagnosticWatch(targetId);
     if (!state) return context.json({ error: "diagnostic watch not found" }, 404);
@@ -162,7 +176,7 @@ export const createApp = ({ config, repository, diagnosticResolver }: CreateAppI
     });
   });
 
-  app.delete("/v1/diagnostics/smoke-watches/:id", async (context) => {
+  app.delete(API_ROUTES.deleteSmokeWatch.path, async (context) => {
     const id = context.req.param("id");
     const targetId = `__argus_doctor:${id}`;
     const state = await repository.getDiagnosticWatch(targetId);
@@ -172,7 +186,7 @@ export const createApp = ({ config, repository, diagnosticResolver }: CreateAppI
     return context.body(null, 204);
   });
 
-  app.post("/v1/management/config/plan", async (context) => {
+  app.post(API_ROUTES.planManagementConfig.path, async (context) => {
     if (
       !config.api.token ||
       context.req.header("authorization") !== `Bearer ${config.api.token}`
@@ -203,7 +217,7 @@ export const createApp = ({ config, repository, diagnosticResolver }: CreateAppI
     }
   });
 
-  app.post("/v1/management/config/apply", async (context) => {
+  app.post(API_ROUTES.applyManagementConfig.path, async (context) => {
     if (
       !config.api.token ||
       context.req.header("authorization") !== `Bearer ${config.api.token}`
@@ -241,7 +255,7 @@ export const createApp = ({ config, repository, diagnosticResolver }: CreateAppI
     }
   });
 
-  app.post("/v1/management/config/verify", async (context) => {
+  app.post(API_ROUTES.verifyManagementConfig.path, async (context) => {
     if (
       !config.api.token ||
       context.req.header("authorization") !== `Bearer ${config.api.token}`
@@ -271,7 +285,7 @@ export const createApp = ({ config, repository, diagnosticResolver }: CreateAppI
     }
   });
 
-  app.post("/v1/summaries", async (context) => {
+  app.post(API_ROUTES.createSummary.path, async (context) => {
     if (!config.intelligence.enabled || !config.intelligence.apiKey) {
       return context.json({ error: "intelligence is disabled" }, 409);
     }

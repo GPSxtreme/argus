@@ -14,7 +14,7 @@ argus config apply /opt/argus/argus.yaml
 
 ### Single VPS with SQLite
 
-This is the smallest deployment: all runtime responsibilities share one SQLite database and the API is loopback-only.
+This is the smallest managed Compose deployment: all runtime responsibilities share one SQLite database.
 
 ```yaml config
 version: 1
@@ -34,8 +34,9 @@ watches:
       web:
         urls: [https://argus.gpsxtre.me/]
 api:
-  host: 127.0.0.1
+  host: 0.0.0.0
   port: 8788
+  token: ${ARGUS_API_TOKEN}
 ```
 
 ### All sources with managed search and FxEmbed
