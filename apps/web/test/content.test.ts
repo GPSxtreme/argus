@@ -5,6 +5,11 @@ import { source } from "../lib/source";
 
 const docsRoot = path.join(process.cwd(), "apps/web/content/docs");
 
+const positiveLoopbackRecommendationPatterns = [
+  /(?<!do not )\b(?:use|bind|set|configure|prefer|recommend)\b(?:(?!\bdo not\b|[.!?\n]).){0,100}(?:(?<!non-)\bloopback\b|\blocalhost\b|\b127\.0\.0\.1\b)/iu,
+  /\bapi\.host\s*:\s*(?:127\.0\.0\.1|localhost)\b/iu,
+] as const;
+
 const requiredRoutes = [
   "/docs",
   "/docs/quick-start",
@@ -42,6 +47,25 @@ async function markdownFiles(directory: string): Promise<string[]> {
 }
 
 describe("Argus documentation", () => {
+  it("recognizes positive loopback API recommendations without rejecting warnings", () => {
+    for (const unsafe of [
+      "Use localhost for the API.",
+      "Bind the API to 127.0.0.1.",
+      "Set api.host: 127.0.0.1.",
+      "Configure a loopback API host.",
+      "Prefer a loopback host.",
+      "Recommend localhost for API access.",
+    ]) {
+      expect(positiveLoopbackRecommendationPatterns.some((pattern) => pattern.test(unsafe))).toBe(true);
+    }
+    for (const safe of [
+      "Do not bind the managed Compose API to 127.0.0.1.",
+      "Do not rely on a loopback API host for a managed Compose instance.",
+    ]) {
+      expect(positiveLoopbackRecommendationPatterns.some((pattern) => pattern.test(safe))).toBe(false);
+    }
+  });
+
   it("publishes the complete operator and contributor handbook", () => {
     expect(new Set(source.getPages().map((page) => page.url))).toEqual(
       expect.objectContaining({ size: requiredRoutes.length }),
@@ -168,23 +192,26 @@ describe("Argus documentation", () => {
     expect(exposureCorpus).toMatch(
       /(?:Internet-facing|publicly reachable)[\s\S]{0,300}(?:host )?firewall[\s\S]{0,160}reverse proxy[\s\S]{0,160}private network policy/iu,
     );
-    for (const recommendation of [
-      /\bprefer\s+(?:a\s+)?loopback\b/iu,
-      /\brecommend\s+(?:a\s+)?loopback\b/iu,
-      /\b(?:set|configure)\s+(?:the\s+)?api\.host\s*(?:to|:|=)\s*(?:127\.0\.0\.1|localhost|::1)/iu,
-      /\b(?:set|configure)\s+(?:the\s+)?bind(?:\s+host)?\s*(?:to|:|=)\s*127\.0\.0\.1/iu,
-      /\b(?:set|configure)\s+(?:a\s+)?loopback\s+(?:API\s+)?(?:host|bind)/iu,
-    ]) {
+    for (const recommendation of positiveLoopbackRecommendationPatterns) {
       expect(exposureCorpus).not.toMatch(recommendation);
     }
-    expect(operations).toMatch(/state:\s*"running"\s*\|\s*"degraded"/u);
+    expect(operations).toMatch(
+      /\{\s*state:\s*"running"\s*\|\s*"degraded",\s*services:\s*\{\s*\.\.\.\s*\}\s*\}/u,
+    );
     expect(operations).toMatch(/Docker health when present, otherwise Docker state/iu);
     expect(operations).not.toMatch(/healthy:\s*boolean/iu);
     expect(troubleshooting).toMatch(
       /dry-run[\s\S]{0,120}does not validate[\s\S]{0,100}persisted backup/iu,
     );
     expect(troubleshooting).not.toMatch(/dry-run returns a valid rollback plan/iu);
-    for (const requirement of ["Ubuntu 22.04", "Ubuntu 24.04", "Debian 12", "Debian 13"]) {
+    for (const requirement of [
+      "Ubuntu 22.04",
+      "Ubuntu 24.04",
+      "Ubuntu 25.10",
+      "Ubuntu 26.04",
+      "Debian 12",
+      "Debian 13",
+    ]) {
       expect(deployment).toContain(requirement);
     }
   });
