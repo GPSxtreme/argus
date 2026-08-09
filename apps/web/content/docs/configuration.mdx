@@ -138,7 +138,7 @@ Type: one of `all`, `api`, `scheduler`, `worker`, or `processor`; default: `all`
 `storage.adapter` is required and is either `sqlite` or `postgres`.
 
 - `storage.url` for SQLite is a non-empty string, such as `./data/argus.db`. SQLite always runs with `runtime.role: all`.
-- `storage.url` for PostgreSQL must be a canonical `postgres://` or `postgresql://` URL with a non-empty valid TCP host, valid percent encoding, no fragment, and any query `host`/`port` valid. Example: `postgresql://argus:password@db.example.com:5432/argus?sslmode=require`.
+- `storage.url` for PostgreSQL must be a canonical `postgres://` or `postgresql://` URL with a non-empty valid TCP host, valid percent encoding, no fragment, and any query `host`/`port` valid. Example: `postgresql://argus@db.example.com:5432/argus?sslmode=require`.
 
 Use a PostgreSQL URL for multi-role deployments. URL credentials are treated as secret material and redacted from configuration output.
 
@@ -180,8 +180,8 @@ Use a PostgreSQL URL for multi-role deployments. URL credentials are treated as 
     - `urls`: array of absolute URLs, default `[]`; each value becomes a direct `url` target. Example: `urls: [https://example.com/news]`.
     - `feeds`: array of absolute URLs, default `[]`; each value becomes a `feed` target. Example: `feeds: [https://example.com/feed.xml]`.
     - `queries`: array of non-empty strings, default `[]`; each value becomes a Web `query` target and needs the Web source’s `searchEndpoint` at collection time. Example: `queries: ["critical infrastructure"]`.
-- `classify`: strict object, default `{ keywords: [] }`. Its values become metadata on every record collected by this watch; they do not filter, discard, or change source data. Example: `classify: { keywords: [release, security] }`.
-  - `keywords`: array of non-empty strings, default `[]`; each matching term is recorded as classification metadata. Example: `keywords: [release, security]`.
+- `classify`: strict object, default `{ keywords: [] }`. During ingestion Argus searches each record’s title and text case-insensitively, then stores only matching configured values in `metadata.matchedKeywords` (an array that may be empty). Classification does not filter, discard, or change source data. Example: `classify: { keywords: [release, security] }`.
+  - `keywords`: array of non-empty strings, default `[]`; each value is a candidate classification term, and only matches appear in `metadata.matchedKeywords`. Example: `keywords: [release, security]`.
 
 ## `intelligence`
 

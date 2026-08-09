@@ -56,7 +56,7 @@ curl -X POST -H "Authorization: Bearer $ARGUS_API_TOKEN" \
 
 ## `POST /v1/summaries`
 
-Authentication: bearer token when configured. Request: a JSON object with optional `query` string, `watchIds` string array, `limit` integer 1–100 (default 50), and `prompt` string. Success: `201` with `{ "id": "...", "content": "...", "model": "...", "generationId": "...", "sources": [{ "index": 1, "recordId": "...", "url": "..." }] }`; `generationId` may be omitted.
+Authentication: bearer token when configured. Request: a JSON object. Its optional `query`, `watchIds`, and `prompt` values are consumed directly: truthy `query` and `watchIds` are passed to the stored-record query, and `prompt` is passed to OpenRouter. This endpoint does not type-validate those values. `limit` defaults to 50 and is the only field with deterministic validation: it must be an integer from 1 through 100. Success: `201` with `{ "id": "...", "content": "...", "model": "...", "generationId": "...", "sources": [{ "index": 1, "recordId": "...", "url": "..." }] }`; `generationId` may be omitted.
 
 The generated summary is also persisted as a `summary` artifact. Deterministic errors: `409 {"error":"intelligence is disabled"}`, `400 {"error":"invalid summary request"}`, `400 {"error":"limit must be an integer from 1 to 100"}`, and `401` authentication failure.
 
