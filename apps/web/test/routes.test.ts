@@ -8,6 +8,10 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
 
+function titleHeadingPattern(title: string): RegExp {
+  return new RegExp(`(?<!#)# ${escapeRegExp(title)}`, "gu");
+}
+
 function bodyMarker(markdown: string): string {
   const marker = markdown
     .split("\n")
@@ -57,8 +61,14 @@ describe("LLM documentation routes", () => {
   it("renders every documentation heading once in the full guide", async () => {
     const text = await (await getFull()).text();
     for (const page of source.getPages()) {
-      expect(text.match(new RegExp(`(?<!#)# ${page.data.title}`, "gu"))).toHaveLength(1);
+      expect(text.match(titleHeadingPattern(page.data.title))).toHaveLength(1);
     }
+  });
+
+  it("matches special-character page titles literally in a full guide", () => {
+    const text = "# C++ (v2)\n\nbody";
+
+    expect(text.match(titleHeadingPattern("C++ (v2)"))).toHaveLength(1);
   });
 
   it("serves processed Markdown with an explicit media type", async () => {
