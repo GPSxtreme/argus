@@ -205,6 +205,9 @@ describe("Argus documentation", () => {
     expect(troubleshooting).toMatch(
       /dry-run[\s\S]{0,120}does not validate[\s\S]{0,100}persisted backup/iu,
     );
+    expect(troubleshooting).toMatch(
+      /argus onboard --from \/path\/to\/answers\.yaml --dry-run --json[\s\S]{0,160}review[\s\S]{0,160}argus onboard --from \/path\/to\/answers\.yaml --yes --json/iu,
+    );
     expect(troubleshooting).not.toMatch(/dry-run returns a valid rollback plan/iu);
     expect(troubleshooting).toMatch(
       /UPDATE_ROLLBACK_UNAVAILABLE[\s\S]{0,300}persisted update state[\s\S]{0,80}(?:missing|unreadable)/iu,

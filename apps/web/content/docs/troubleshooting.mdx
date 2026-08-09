@@ -21,7 +21,7 @@ Each recovery starts with a non-mutating inspection. Run a `--dry-run` plan befo
 
 **Meaning:** `DOCKER_UNAVAILABLE` means the management container cannot reach Docker. During onboarding, `DOCKER_NOT_INSTALLED`, `DOCKER_COMPOSE_UNAVAILABLE`, or `DOCKER_DAEMON_UNREACHABLE` identifies the prerequisite.
 
-**Recover:** Start Docker, install the Compose plugin, or grant the operating user daemon access as the reported prerequisite requires. Then rerun `argus onboard --dry-run --json` before an onboarding mutation, or rerun `argus doctor --json` for an existing instance.
+**Recover:** Start Docker, install the Compose plugin, or grant the operating user daemon access as the reported prerequisite requires. For a pending onboarding, keep non-secret answers in a safely permissioned file, run `argus onboard --from /path/to/answers.yaml --dry-run --json`, review its plan, then run `argus onboard --from /path/to/answers.yaml --yes --json` from a TTY to enter any required secrets through hidden prompts. For an existing instance, rerun `argus doctor --json`.
 
 ### Service is unhealthy or degraded
 
