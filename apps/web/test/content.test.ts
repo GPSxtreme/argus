@@ -34,6 +34,14 @@ const requiredRoutes = [
   "/docs/contributing/documentation",
 ] as const;
 
+function explicitH1TitlePattern(title: string): RegExp {
+  return new RegExp(`^# ${escapeRegExp(title)}$`, "mu");
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
 async function markdownFiles(directory: string): Promise<string[]> {
   const entries = await readdir(directory, { withFileTypes: true });
   const files = await Promise.all(
@@ -137,8 +145,16 @@ describe("Argus documentation", () => {
         readFile(path.join(docsRoot, relativePath, "index.mdx"), "utf8"),
       );
 
-      expect(content).not.toMatch(new RegExp(`^# ${page.data.title}$`, "mu"));
+      expect(content).not.toMatch(explicitH1TitlePattern(page.data.title));
     }
+  });
+
+  it("matches explicit H1 titles containing regular-expression characters literally", () => {
+    const title = "C++ (v2)";
+    const pattern = explicitH1TitlePattern(title);
+
+    expect(pattern.test(`# ${title}`)).toBe(true);
+    expect(pattern.test("# C")).toBe(false);
   });
 
   it("gives procedural foundation pages prerequisites, verification, and next steps", async () => {

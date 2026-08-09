@@ -2,18 +2,17 @@ import { describe, expect, it } from "vitest";
 import { GET as getMarkdown } from "../app/llms.mdx/docs/[[...slug]]/route";
 import { GET as getIndex } from "../app/llms.txt/route";
 import { GET as getFull } from "../app/llms-full.txt/route";
-import { getLLMText } from "../lib/get-llm-text";
 import { source } from "../lib/source";
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
 
-function bodyMarker(markdown: string, title: string): string {
+function bodyMarker(markdown: string): string {
   const marker = markdown
     .split("\n")
     .map((line) => line.trim())
-    .find((line) => line !== "" && line !== `# ${title}`);
+    .find((line) => line !== "");
   if (marker === undefined) throw new Error("Documentation page has no processed body marker");
   return marker;
 }
@@ -32,7 +31,7 @@ describe("LLM documentation routes", () => {
     const full = await (await getFull()).text();
 
     for (const page of source.getPages()) {
-      const processed = await getLLMText(page);
+      const processedBody = await page.data.getText("processed");
       const pageMarkdown = await (
         await getMarkdown(new Request(`https://argus.gpsxtre.me${page.url}.md`), {
           params: Promise.resolve({ slug: page.slugs }),
@@ -41,7 +40,7 @@ describe("LLM documentation routes", () => {
 
       for (const output of [pageMarkdown, full]) {
         expect(output).toContain(`# ${page.data.title}`);
-        expect(output).toContain(bodyMarker(processed, page.data.title));
+        expect(output).toContain(bodyMarker(processedBody));
       }
     }
   });
