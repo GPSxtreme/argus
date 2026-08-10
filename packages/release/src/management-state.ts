@@ -118,6 +118,11 @@ interface FileIdentity {
   ino: number;
 }
 
+interface PathEntry {
+  identity: FileIdentity;
+  isSymbolicLink: boolean;
+}
+
 interface HeldManagementStateLock {
   handle: ManagementStateFileHandle;
   identity: FileIdentity;
@@ -144,20 +149,31 @@ const identityOf = (metadata: { dev: number; ino: number }): FileIdentity => ({
 const sameIdentity = (left: FileIdentity, right: FileIdentity): boolean =>
   left.dev === right.dev && left.ino === right.ino;
 
-const inspectPath = async (
+const inspectEntry = async (
   path: string,
   fileSystem: ManagementStateFileSystem,
-): Promise<FileIdentity | undefined> => {
+): Promise<PathEntry | undefined> => {
   try {
     const metadata = await fileSystem.lstat(path);
-    if (metadata.isSymbolicLink()) {
-      throw new TypeError(`Management state ownership check failed: refusing symlink ${path}`);
-    }
-    return identityOf(metadata);
+    return {
+      identity: identityOf(metadata),
+      isSymbolicLink: metadata.isSymbolicLink(),
+    };
   } catch (error) {
     if (isMissing(error)) return undefined;
     throw error;
   }
+};
+
+const inspectPath = async (
+  path: string,
+  fileSystem: ManagementStateFileSystem,
+): Promise<FileIdentity | undefined> => {
+  const entry = await inspectEntry(path, fileSystem);
+  if (entry?.isSymbolicLink) {
+    throw new TypeError(`Management state ownership check failed: refusing symlink ${path}`);
+  }
+  return entry?.identity;
 };
 
 const requireIdentity = async (
@@ -178,6 +194,29 @@ const requireAbsent = async (
   if ((await inspectPath(path, fileSystem)) !== undefined) {
     throw new Error(`Management state ownership check failed: ${path} appeared unexpectedly.`);
   }
+};
+
+const quarantineSelectedEntry = async (
+  path: string,
+  quarantinePath: string,
+  expected: FileIdentity,
+  fileSystem: ManagementStateFileSystem,
+): Promise<{ exists: boolean; owned: boolean }> => {
+  const observed = await inspectEntry(path, fileSystem);
+  if (observed === undefined) return { exists: false, owned: false };
+  const owned = !observed.isSymbolicLink && sameIdentity(observed.identity, expected);
+  await fileSystem.rename(path, quarantinePath);
+  const quarantined = await inspectEntry(quarantinePath, fileSystem);
+  if (
+    quarantined === undefined ||
+    quarantined.isSymbolicLink !== observed.isSymbolicLink ||
+    !sameIdentity(quarantined.identity, observed.identity)
+  ) {
+    throw new Error(
+      `Management state ownership check failed while quarantining ${path} at ${quarantinePath}.`,
+    );
+  }
+  return { exists: true, owned };
 };
 
 const syncDirectory = async (
@@ -271,6 +310,7 @@ const acquireManagementStateLock = async (
     await handle.sync();
     await requireIdentity(path, identity, fileSystem);
     await syncDirectory(directory, fileSystem);
+    await requireIdentity(path, identity, fileSystem);
     return lock;
   } catch (failure) {
     try {
@@ -317,6 +357,7 @@ const writeManagementStateWhileLocked = async (
   let priorAtBackup = false;
   let candidateAtPath = false;
   let failedCandidateExists = false;
+  let failedCandidateOwned = false;
   let stateDurablyPromoted = false;
 
   await inspectPath(path, fileSystem);
@@ -336,6 +377,8 @@ const writeManagementStateWhileLocked = async (
       priorAtBackup = true;
       await requireIdentity(backupPath, priorIdentity, fileSystem);
       await syncDirectory(directory, fileSystem);
+      await requireIdentity(backupPath, priorIdentity, fileSystem);
+      await requireAbsent(path, fileSystem);
     }
 
     await requireIdentity(temporaryPath, candidateIdentity, fileSystem);
@@ -346,6 +389,7 @@ const writeManagementStateWhileLocked = async (
     await requireIdentity(path, candidateIdentity, fileSystem);
 
     await syncDirectory(directory, fileSystem);
+    await requireIdentity(path, candidateIdentity, fileSystem);
     stateDurablyPromoted = true;
 
     if (priorAtBackup && priorIdentity !== undefined) {
@@ -354,6 +398,8 @@ const writeManagementStateWhileLocked = async (
       await fileSystem.unlink(backupPath);
       priorAtBackup = false;
       await syncDirectory(directory, fileSystem);
+      await requireIdentity(path, candidateIdentity, fileSystem);
+      await requireAbsent(backupPath, fileSystem);
     }
   } catch (failure) {
     if (stateDurablyPromoted) {
@@ -379,15 +425,22 @@ const writeManagementStateWhileLocked = async (
       temporaryFile = undefined;
     }
     try {
+      let unexpectedEntryRetained = false;
       if (priorAtBackup && priorIdentity !== undefined) {
         if (candidateAtPath) {
           try {
             if (candidateIdentity === undefined) {
               throw new Error("candidate identity is unavailable");
             }
-            await requireIdentity(path, candidateIdentity, fileSystem);
-            await fileSystem.rename(path, failedCandidatePath);
-            await requireIdentity(failedCandidatePath, candidateIdentity, fileSystem);
+            const quarantined = await quarantineSelectedEntry(
+              path,
+              failedCandidatePath,
+              candidateIdentity,
+              fileSystem,
+            );
+            failedCandidateExists = quarantined.exists;
+            failedCandidateOwned = quarantined.owned;
+            unexpectedEntryRetained = quarantined.exists && !quarantined.owned;
           } catch (candidateRecoveryFailure) {
             throw retainedPriorStateError(
               backupPath,
@@ -397,7 +450,6 @@ const writeManagementStateWhileLocked = async (
             );
           }
           candidateAtPath = false;
-          failedCandidateExists = true;
         }
         await requireIdentity(backupPath, priorIdentity, fileSystem);
         try {
@@ -412,6 +464,7 @@ const writeManagementStateWhileLocked = async (
           try {
             await fileSystem.rename(path, backupPath);
             await syncDirectory(directory, fileSystem);
+            await requireAbsent(path, fileSystem);
           } catch (quarantineFailure) {
             throw recoveryError(ownershipFailure, quarantineFailure);
           }
@@ -422,6 +475,7 @@ const writeManagementStateWhileLocked = async (
         }
         try {
           await syncDirectory(directory, fileSystem);
+          await requireIdentity(path, priorIdentity, fileSystem);
         } catch (restoreFailure) {
           await requireIdentity(path, priorIdentity, fileSystem);
           await fileSystem.rename(path, backupPath);
@@ -429,17 +483,25 @@ const writeManagementStateWhileLocked = async (
           priorAtBackup = true;
           throw retainedPriorStateError(backupPath, path, directory, restoreFailure);
         }
-        if (failedCandidateExists && candidateIdentity !== undefined) {
+        if (failedCandidateExists && failedCandidateOwned && candidateIdentity !== undefined) {
           await requireIdentity(failedCandidatePath, candidateIdentity, fileSystem);
           await fileSystem.unlink(failedCandidatePath);
           failedCandidateExists = false;
           await syncDirectory(directory, fileSystem);
+          await requireIdentity(path, priorIdentity, fileSystem);
+          await requireAbsent(failedCandidatePath, fileSystem);
         }
       } else if (candidateAtPath && candidateIdentity !== undefined) {
         try {
-          await requireIdentity(path, candidateIdentity, fileSystem);
-          await fileSystem.rename(path, failedCandidatePath);
-          await requireIdentity(failedCandidatePath, candidateIdentity, fileSystem);
+          const quarantined = await quarantineSelectedEntry(
+            path,
+            failedCandidatePath,
+            candidateIdentity,
+            fileSystem,
+          );
+          failedCandidateExists = quarantined.exists;
+          failedCandidateOwned = quarantined.owned;
+          unexpectedEntryRetained = quarantined.exists && !quarantined.owned;
         } catch (candidateRecoveryFailure) {
           throw new Error(
             `Promoted management state at ${path} is not owned by this writer; inspect it and sync ${directory} before retrying: ${errorMessage(candidateRecoveryFailure)}`,
@@ -447,12 +509,16 @@ const writeManagementStateWhileLocked = async (
           );
         }
         candidateAtPath = false;
-        failedCandidateExists = true;
         await syncDirectory(directory, fileSystem);
-        await requireIdentity(failedCandidatePath, candidateIdentity, fileSystem);
-        await fileSystem.unlink(failedCandidatePath);
-        failedCandidateExists = false;
-        await syncDirectory(directory, fileSystem);
+        await requireAbsent(path, fileSystem);
+        if (failedCandidateExists && failedCandidateOwned) {
+          await requireIdentity(failedCandidatePath, candidateIdentity, fileSystem);
+          await fileSystem.unlink(failedCandidatePath);
+          failedCandidateExists = false;
+          await syncDirectory(directory, fileSystem);
+          await requireAbsent(path, fileSystem);
+          await requireAbsent(failedCandidatePath, fileSystem);
+        }
       }
       if (temporaryCreated) {
         const temporaryIdentity = await inspectPath(temporaryPath, fileSystem);
@@ -462,12 +528,22 @@ const writeManagementStateWhileLocked = async (
               `Management state ownership check failed for temporary state ${temporaryPath}.`,
             );
           }
-        } else if (temporaryIdentity === undefined) {
+        } else {
+          if (temporaryIdentity !== undefined) {
+            throw new Error(
+              `Temporary management state ownership is unknown; the entry was retained for inspection at ${temporaryPath}.`,
+            );
+          }
           throw new Error(`Temporary management state disappeared from ${temporaryPath}.`);
         }
         await fileSystem.unlink(temporaryPath);
         temporaryCreated = false;
         await syncDirectory(directory, fileSystem);
+      }
+      if (unexpectedEntryRetained) {
+        throw new Error(
+          `Unexpected live management state was retained for inspection at ${failedCandidatePath}.`,
+        );
       }
       if (closeFailure !== undefined) throw closeFailure;
     } catch (recovery) {

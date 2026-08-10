@@ -146,6 +146,7 @@ describe("writeManagementStateAtomic", () => {
       "open:/opt/argus:r",
       "sync:directory",
       "close:directory",
+      "lstat:/opt/argus/.management.state.lock",
       "lstat:/opt/argus/management.state",
       expect.stringMatching(/^open:\/opt\/argus\/\.management\.state\.[^.]+\.tmp:wx:644$/u),
       `write:${valid}`,
@@ -161,6 +162,8 @@ describe("writeManagementStateAtomic", () => {
       "open:/opt/argus:r",
       "sync:directory",
       "close:directory",
+      expect.stringMatching(/^lstat:\/opt\/argus\/\.management\.state\.backup-[^.]+$/u),
+      "lstat:/opt/argus/management.state",
       expect.stringMatching(/^lstat:\/opt\/argus\/\.management\.state\.[^.]+\.tmp$/u),
       "lstat:/opt/argus/management.state",
       expect.stringMatching(
@@ -171,11 +174,14 @@ describe("writeManagementStateAtomic", () => {
       "sync:directory",
       "close:directory",
       "lstat:/opt/argus/management.state",
+      "lstat:/opt/argus/management.state",
       expect.stringMatching(/^lstat:\/opt\/argus\/\.management\.state\.backup-[^.]+$/u),
       expect.stringMatching(/^unlink:\/opt\/argus\/\.management\.state\.backup-[^.]+$/u),
       "open:/opt/argus:r",
       "sync:directory",
       "close:directory",
+      "lstat:/opt/argus/management.state",
+      expect.stringMatching(/^lstat:\/opt\/argus\/\.management\.state\.backup-[^.]+$/u),
       "lstat:/opt/argus/.management.state.lock",
       "unlink:/opt/argus/.management.state.lock",
       "open:/opt/argus:r",
@@ -225,6 +231,58 @@ describe("writeManagementStateAtomic", () => {
     ).rejects.toThrow("injected parent sync failure");
 
     expect(filesystem.targetContents).toBeUndefined();
+  });
+
+  it("restores prior absence when a symlink replaces the candidate during parent sync", async () => {
+    const events: string[] = [];
+    const filesystem = recordingFileSystem(events, {
+      targetContents: undefined,
+      replaceTargetOnCandidateSync: 1,
+      replacementIsSymlink: true,
+    });
+
+    await expect(
+      writeManagementStateAtomic("/opt/argus/management.state", state, filesystem),
+    ).rejects.toThrow("ownership");
+
+    expect(filesystem.targetContents).toBeUndefined();
+    expect(filesystem.failedCandidateIsSymlink).toBe(true);
+  });
+
+  it("restores the prior state when a foreign file replaces the candidate during parent sync", async () => {
+    const events: string[] = [];
+    const filesystem = recordingFileSystem(events, { replaceTargetOnCandidateSync: 1 });
+
+    await expect(
+      writeManagementStateAtomic("/opt/argus/management.state", state, filesystem),
+    ).rejects.toThrow("ownership");
+
+    expect(filesystem.targetContents).toBe("previous state\n");
+    expect(filesystem.failedCandidateContents).toBe("foreign state\n");
+  });
+
+  it("detects a foreign live state after the final backup-removal sync", async () => {
+    const events: string[] = [];
+    const filesystem = recordingFileSystem(events, { replaceTargetOnCandidateSync: 2 });
+
+    await expect(
+      writeManagementStateAtomic("/opt/argus/management.state", state, filesystem),
+    ).rejects.toThrow("ownership");
+
+    expect(filesystem.targetContents).toBe("foreign state\n");
+    expect(filesystem.backupContents).toBeUndefined();
+  });
+
+  it("retains an unknown temporary entry when candidate stat fails", async () => {
+    const events: string[] = [];
+    const filesystem = recordingFileSystem(events, { failCandidateStat: true });
+
+    await expect(
+      writeManagementStateAtomic("/opt/argus/management.state", state, filesystem),
+    ).rejects.toThrow("ownership is unknown");
+
+    expect(filesystem.targetContents).toBe("previous state\n");
+    expect(filesystem.temporaryContents).toBe(valid);
   });
 
   it("retains the prior state at an actionable recovery path when restoration sync fails", async () => {
@@ -400,11 +458,14 @@ const recordingFileSystem = (
   events: string[],
   options: {
     failFileSync?: boolean;
+    failCandidateStat?: boolean;
     failDirectorySyncWithTargetContents?: string | string[];
     failBackupUnlink?: boolean;
     failRestoreRename?: boolean;
     backupUnlinkIsAmbiguouslyMissing?: boolean;
     replaceLockBeforeRelease?: boolean;
+    replaceTargetOnCandidateSync?: number;
+    replacementIsSymlink?: boolean;
     swapBackupToSymlinkDuringRestore?: boolean;
     targetContents?: string | undefined;
     targetIsSymlink?: boolean;
@@ -415,10 +476,14 @@ const recordingFileSystem = (
   targetIsSymlink: boolean;
   backupContents: string | undefined;
   backupIsSymlink: boolean;
+  failedCandidateContents: string | undefined;
+  failedCandidateIsSymlink: boolean;
+  temporaryContents: string | undefined;
 } => {
   const target = "/opt/argus/management.state";
   let targetLstatCount = 0;
   let lockLstatCount = 0;
+  let candidateDirectorySyncCount = 0;
   const contentsByPath = new Map<string, string>();
   const identitiesByPath = new Map<string, number>();
   let nextIdentity = 2;
@@ -453,6 +518,9 @@ const recordingFileSystem = (
     },
     stat: async () => {
       events.push(`stat:${path}`);
+      if (options.failCandidateStat && path.endsWith(".tmp")) {
+        throw new Error("injected candidate stat failure");
+      }
       const ino = identitiesByPath.get(path);
       if (ino === undefined) throw missing(path);
       return { dev: 1, ino };
@@ -470,6 +538,15 @@ const recordingFileSystem = (
     },
     sync: async (): Promise<void> => {
       events.push("sync:directory");
+      if (contentsByPath.get(target) === valid) {
+        candidateDirectorySyncCount += 1;
+        if (options.replaceTargetOnCandidateSync === candidateDirectorySyncCount) {
+          contentsByPath.set(target, "foreign state\n");
+          identitiesByPath.set(target, nextIdentity);
+          nextIdentity += 1;
+          if (options.replacementIsSymlink) symlinks.add(target);
+        }
+      }
       if (
         directorySyncFailures.length > 0 &&
         directorySyncFailures[0] === contentsByPath.get(target)
@@ -499,12 +576,23 @@ const recordingFileSystem = (
     get backupIsSymlink(): boolean {
       return [...symlinks].some((path) => path.includes(".management.state.backup-"));
     },
+    get failedCandidateContents(): string | undefined {
+      return [...contentsByPath.entries()].find(([path]) =>
+        path.includes(".management.state.failed-"),
+      )?.[1];
+    },
+    get failedCandidateIsSymlink(): boolean {
+      return [...symlinks].some((path) => path.includes(".management.state.failed-"));
+    },
+    get temporaryContents(): string | undefined {
+      return [...contentsByPath.entries()].find(([path]) => path.endsWith(".tmp"))?.[1];
+    },
     lstat: async (path: string) => {
       events.push(`lstat:${path}`);
       if (path === target) targetLstatCount += 1;
       if (path === "/opt/argus/.management.state.lock") {
         lockLstatCount += 1;
-        if (options.replaceLockBeforeRelease && lockLstatCount === 2) {
+        if (options.replaceLockBeforeRelease && lockLstatCount === 3) {
           identitiesByPath.set(path, nextIdentity);
           nextIdentity += 1;
         }
