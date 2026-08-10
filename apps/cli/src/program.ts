@@ -1332,15 +1332,14 @@ const createDeploymentAdapter = (
       }
       const plan = inspection as UpdatePlan;
       if (!plan.noop) {
-        await updateIntegration.stageRollbackRelease(plan.rollbackRelease);
+        await updateIntegration.stageCurrentRelease(plan.release);
       }
-      await updateIntegration.stageCurrentRelease(plan.release);
       const applied = await applyUpdate({
         root,
         plan,
         executor,
-        onBackupPersisted: () =>
-          updateIntegration.promoteStagedRollbackRelease(plan.rollbackRelease),
+        getRollbackContext: () =>
+          updateIntegration.getRollbackContext(plan.rollbackRelease),
       });
       if (!applied.health.healthy) {
         throw new DeploymentError(
@@ -1349,8 +1348,12 @@ const createDeploymentAdapter = (
           { recovery: "Run 'argus doctor --json' before retrying the update." },
         );
       }
-      await updateIntegration.promoteCurrentRelease(plan.release);
-      await updateIntegration.promoteManagementRelease(plan.release);
+      if (!plan.noop) {
+        await updateIntegration.promoteCurrentRelease(plan.release);
+      }
+      await updateIntegration.promoteManagementRelease(
+        plan.noop ? plan.rollbackRelease : plan.release,
+      );
       return applied;
     },
     async verifyUpdate(applied) {

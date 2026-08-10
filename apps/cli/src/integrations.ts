@@ -20,6 +20,7 @@ import {
   getDeploymentStatus,
   inspectDeployment,
   loadDeploymentState,
+  loadRollbackReleaseContext,
   type OnboardingAnswersV1,
   planDeployment,
   reconcileFxEmbed,
@@ -223,8 +224,6 @@ const maximumSignatureBytes = 64;
 const maximumFxEmbedBytes = 8 * 1024 * 1024;
 const releaseContextFile = "release-context.json";
 const pendingReleaseContextFile = "release-context.pending.json";
-const rollbackReleaseContextFile = "rollback-release-context.json";
-const pendingRollbackReleaseContextFile = "rollback-release-context.pending.json";
 export const stableUpdateManifestUrl = "https://argus.gpsxtre.me/releases/stable/manifest.json";
 
 interface ReleasePlan {
@@ -278,9 +277,8 @@ export interface ProductionUpdateIntegration {
   fetchUpdateRelease(): Promise<VerifiedReleaseManifest>;
   fetchCurrentRelease(): Promise<VerifiedReleaseManifest>;
   fetchRollbackRelease(): Promise<VerifiedReleaseManifest>;
-  stageRollbackRelease(release: VerifiedReleaseManifest): Promise<void>;
+  getRollbackContext(release: VerifiedReleaseManifest): Promise<Uint8Array>;
   stageCurrentRelease(release: VerifiedReleaseManifest): Promise<void>;
-  promoteStagedRollbackRelease(release: VerifiedReleaseManifest): Promise<void>;
   promoteCurrentRelease(release: VerifiedReleaseManifest): Promise<void>;
   promoteRollbackRelease(release: VerifiedReleaseManifest): Promise<void>;
   promoteManagementRelease(release: VerifiedReleaseManifest): Promise<void>;
@@ -700,16 +698,11 @@ export const createProductionUpdateIntegration = ({
     return release;
   };
 
-  const loadSignedContext = async (
-    path: string,
-  ): Promise<LoadedSignedContext> => {
-    let bytes: Uint8Array;
+  const verifySignedContext = (bytes: Uint8Array): LoadedSignedContext => {
     let parsed: PersistedReleaseContext;
     try {
-      bytes = await readFile(path);
       parsed = JSON.parse(Buffer.from(bytes).toString("utf8")) as PersistedReleaseContext;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") throw error;
+    } catch {
       throw new DeploymentError("UPDATE_ROLLBACK_UNAVAILABLE", "Persisted signed rollback release is invalid.");
     }
     if (
@@ -734,6 +727,21 @@ export const createProductionUpdateIntegration = ({
     }
     return { release, bytes };
   };
+
+  const loadSignedContext = async (
+    path: string,
+  ): Promise<LoadedSignedContext> => {
+    try {
+      return verifySignedContext(await readFile(path));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") throw error;
+      if (error instanceof DeploymentError) throw error;
+      throw new DeploymentError("UPDATE_ROLLBACK_UNAVAILABLE", "Persisted signed rollback release is invalid.");
+    }
+  };
+
+  const loadPersistedRollbackContext = async (): Promise<LoadedSignedContext> =>
+    verifySignedContext(await loadRollbackReleaseContext(root));
 
   const stageCurrentRelease = async (release: VerifiedReleaseManifest): Promise<void> => {
     await atomicBytes(
@@ -770,9 +778,9 @@ export const createProductionUpdateIntegration = ({
     }
   };
 
-  const stageRollbackRelease = async (
+  const getRollbackContext = async (
     release: VerifiedReleaseManifest,
-  ): Promise<void> => {
+  ): Promise<Uint8Array> => {
     let current: LoadedSignedContext;
     try {
       current = await loadSignedContext(join(root, releaseContextFile));
@@ -788,35 +796,7 @@ export const createProductionUpdateIntegration = ({
         "The current signed Argus release does not match the verified rollback release.",
       );
     }
-    await atomicBytes(join(root, pendingRollbackReleaseContextFile), current.bytes, 0o644);
-  };
-
-  const promoteStagedRollbackRelease = async (
-    release: VerifiedReleaseManifest,
-  ): Promise<void> => {
-    const stagedPath = join(root, pendingRollbackReleaseContextFile);
-    let staged: VerifiedReleaseManifest;
-    try {
-      staged = (await loadSignedContext(stagedPath)).release;
-    } catch {
-      throw new DeploymentError(
-        "UPDATE_RELEASE_UNVERIFIED",
-        "Argus requires a staged exact verified rollback release before it can commit rollback context.",
-      );
-    }
-    if (!sameRelease(staged, release)) {
-      throw new DeploymentError(
-        "UPDATE_RELEASE_UNVERIFIED",
-        "The staged Argus rollback release does not match the verified prior release.",
-      );
-    }
-    await rename(stagedPath, join(root, rollbackReleaseContextFile));
-    const directory = await open(root, "r");
-    try {
-      await directory.sync();
-    } finally {
-      await directory.close();
-    }
+    return current.bytes;
   };
 
   const promoteRollbackRelease = async (
@@ -824,7 +804,7 @@ export const createProductionUpdateIntegration = ({
   ): Promise<void> => {
     let rollback: LoadedSignedContext;
     try {
-      rollback = await loadSignedContext(join(root, rollbackReleaseContextFile));
+      rollback = await loadPersistedRollbackContext();
     } catch {
       throw new DeploymentError(
         "UPDATE_ROLLBACK_UNAVAILABLE",
@@ -846,7 +826,10 @@ export const createProductionUpdateIntegration = ({
     let verified = fetchedReleases.get(release.manifestSha256)?.release;
     if (verified === undefined || !sameRelease(verified, release)) {
       try {
-        verified = (await loadSignedContext(join(root, rollbackReleaseContextFile))).release;
+        const current = await loadSignedContext(join(root, releaseContextFile));
+        verified = sameRelease(current.release, release)
+          ? current.release
+          : (await loadPersistedRollbackContext()).release;
       } catch {
         throw new DeploymentError(
           "UPDATE_RELEASE_UNVERIFIED",
@@ -879,19 +862,15 @@ export const createProductionUpdateIntegration = ({
         release.manifest.images.searxng.reference === state.compose.images.searxng;
       if (matchesDeployment(staged.release)) {
         const current = await loadSignedContext(join(root, releaseContextFile));
-        if (!matchesDeployment(current.release)) {
-          let rollbackCommitted = false;
-          try {
-            rollbackCommitted = sameRelease(
-              (await loadSignedContext(join(root, rollbackReleaseContextFile))).release,
-              current.release,
-            );
-          } catch {
-            // A matching pending context can repair a missing or invalid committed slot.
-          }
-          if (!rollbackCommitted) {
-            await promoteStagedRollbackRelease(current.release);
-          }
+        if (matchesDeployment(current.release)) {
+          await unlink(stagedPath);
+          return current.release;
+        }
+        if (!sameRelease((await loadPersistedRollbackContext()).release, current.release)) {
+          throw new DeploymentError(
+            "UPDATE_ROLLBACK_UNAVAILABLE",
+            "The authoritative rollback release does not match the prior signed release context.",
+          );
         }
         await rename(stagedPath, join(root, releaseContextFile));
         const directory = await open(root, "r");
@@ -914,7 +893,7 @@ export const createProductionUpdateIntegration = ({
 
   const fetchRollback = async (): Promise<VerifiedReleaseManifest> => {
     try {
-      return (await loadSignedContext(join(root, rollbackReleaseContextFile))).release;
+      return (await loadPersistedRollbackContext()).release;
     } catch {
       throw new DeploymentError("UPDATE_ROLLBACK_UNAVAILABLE", "No persisted signed rollback release is available.");
     }
@@ -924,9 +903,8 @@ export const createProductionUpdateIntegration = ({
     fetchUpdateRelease: fetchVerified,
     fetchCurrentRelease: fetchCurrent,
     fetchRollbackRelease: fetchRollback,
-    stageRollbackRelease,
+    getRollbackContext,
     stageCurrentRelease,
-    promoteStagedRollbackRelease,
     promoteCurrentRelease,
     promoteRollbackRelease,
     promoteManagementRelease,

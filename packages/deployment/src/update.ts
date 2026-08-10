@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { copyFile, mkdir, open, readFile, rename, stat } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import type { VerifiedReleaseManifest } from "@argus/release";
@@ -12,7 +13,6 @@ import { loadDeploymentState, saveDeploymentState } from "./files.js";
 import { parseComposeStatus } from "./reconciler.js";
 
 export type UpdatePhase =
-  | "planned"
   | "backed_up"
   | "pulled"
   | "migrated"
@@ -46,6 +46,10 @@ export interface InstanceBackup {
   path: string;
   state: DeploymentStateV1;
   sqliteFiles: Array<{ relativePath: string }>;
+  signedContext: {
+    relativePath: string;
+    sha256: string;
+  };
 }
 
 interface PersistedUpdate {
@@ -54,7 +58,7 @@ interface PersistedUpdate {
   previousState: DeploymentStateV1;
   release: VerifiedReleaseManifest;
   rollbackRelease: VerifiedReleaseManifest;
-  backup?: InstanceBackup;
+  backup: InstanceBackup;
 }
 
 export interface PlanUpdateInput {
@@ -68,12 +72,13 @@ export interface ApplyUpdateInput {
   root: string;
   plan: UpdatePlan;
   executor: CommandExecutor;
-  onBackupPersisted?: () => Promise<void>;
+  getRollbackContext?: () => Promise<Uint8Array>;
 }
 
 export interface BackupInstanceInput {
   root: string;
   plan: UpdatePlan;
+  getRollbackContext?: () => Promise<Uint8Array>;
 }
 
 export interface RollbackUpdateInput {
@@ -132,7 +137,6 @@ const confinedRelativePathSchema = z
 const persistedUpdateSchema = z
   .object({
     phase: z.enum([
-      "planned",
       "backed_up",
       "pulled",
       "migrated",
@@ -156,24 +160,36 @@ const persistedUpdateSchema = z
         sqliteFiles: z.array(
           z.object({ relativePath: confinedRelativePathSchema }).passthrough(),
         ),
+        signedContext: z
+          .object({
+            relativePath: confinedRelativePathSchema,
+            sha256: z.string().regex(/^[a-f0-9]{64}$/u),
+          })
+          .passthrough(),
       })
-      .passthrough()
-      .optional(),
+      .passthrough(),
   })
   .passthrough();
 
-const atomicWrite = async (path: string, source: string): Promise<void> => {
+const atomicWrite = async (path: string, source: string | Uint8Array): Promise<void> => {
   await mkdir(dirname(path), { recursive: true });
   const temporary = `${path}.${process.pid}.${crypto.randomUUID()}.tmp`;
   const handle = await open(temporary, "w", 0o600);
   try {
-    await handle.writeFile(source, "utf8");
+    if (typeof source === "string") await handle.writeFile(source, "utf8");
+    else await handle.writeFile(source);
     await handle.chmod(0o644);
     await handle.sync();
   } finally {
     await handle.close();
   }
   await rename(temporary, path);
+  const directory = await open(dirname(path), "r");
+  try {
+    await directory.sync();
+  } finally {
+    await directory.close();
+  }
 };
 
 const persist = async (root: string, state: PersistedUpdate): Promise<void> =>
@@ -192,6 +208,9 @@ const loadPersisted = async (root: string): Promise<PersistedUpdate> => {
     );
   }
 };
+
+const sha256 = (source: Uint8Array): string =>
+  createHash("sha256").update(source).digest("hex");
 
 const confinedPath = (root: string, candidate: string): string => {
   const resolved = resolve(root, candidate);
@@ -394,8 +413,16 @@ export const planUpdate = async ({ root, release, rollbackRelease }: PlanUpdateI
   };
 };
 
-export const backupInstance = async ({ root, plan }: BackupInstanceInput): Promise<InstanceBackup> => {
-  const path = join(root, "backups", `${plan.currentVersion}-${Date.now()}`);
+export const backupInstance = async ({
+  root,
+  plan,
+  getRollbackContext,
+}: BackupInstanceInput): Promise<InstanceBackup> => {
+  const path = join(
+    root,
+    "backups",
+    `${plan.currentVersion}-${Date.now()}-${crypto.randomUUID()}`,
+  );
   await mkdir(path, { recursive: true });
   await atomicWrite(join(path, "state.json"), `${JSON.stringify(plan.previousState, null, 2)}\n`);
   const files = await sqliteFiles(root);
@@ -405,7 +432,24 @@ export const backupInstance = async ({ root, plan }: BackupInstanceInput): Promi
     await mkdir(dirname(destination), { recursive: true });
     await copyFile(join(root, file.relativePath), destination);
   }
-  const backup = { path, state: plan.previousState, sqliteFiles: sqliteBackupFiles };
+  if (getRollbackContext === undefined) {
+    throw new DeploymentError(
+      "UPDATE_ROLLBACK_CONTEXT_REQUIRED",
+      "Argus update requires the exact verified signed context for rollback.",
+    );
+  }
+  const signedContextBytes = await getRollbackContext();
+  const signedContextPath = join(path, "release-context.json");
+  await atomicWrite(signedContextPath, signedContextBytes);
+  const backup = {
+    path,
+    state: plan.previousState,
+    sqliteFiles: sqliteBackupFiles,
+    signedContext: {
+      relativePath: relative(root, signedContextPath),
+      sha256: sha256(signedContextBytes),
+    },
+  };
   await persist(root, {
     phase: "backed_up",
     plan: { currentVersion: plan.currentVersion, targetVersion: plan.targetVersion },
@@ -417,7 +461,24 @@ export const backupInstance = async ({ root, plan }: BackupInstanceInput): Promi
   return backup;
 };
 
-export const applyUpdate = async ({ root, plan, executor, onBackupPersisted }: ApplyUpdateInput): Promise<UpdateResult> => {
+export const loadRollbackReleaseContext = async (root: string): Promise<Uint8Array> => {
+  const persisted = await loadPersisted(root);
+  const reference = persisted.backup.signedContext;
+  try {
+    const bytes = await readFile(confinedPath(root, reference.relativePath));
+    if (sha256(bytes) !== reference.sha256) throw new Error("Signed context hash mismatch");
+    return bytes;
+  } catch (error) {
+    if (error instanceof DeploymentError) throw error;
+    throw new DeploymentError(
+      "UPDATE_ROLLBACK_UNAVAILABLE",
+      "The persisted signed rollback release is missing or invalid.",
+      { recovery: "Preserve the instance backup and inspect update-state.json before retrying." },
+    );
+  }
+};
+
+export const applyUpdate = async ({ root, plan, executor, getRollbackContext }: ApplyUpdateInput): Promise<UpdateResult> => {
   assertVerifiedRelease(plan.release);
   assertVerifiedRelease(plan.rollbackRelease);
   assertCompatible(plan.previousState, plan.release);
@@ -431,17 +492,19 @@ export const applyUpdate = async ({ root, plan, executor, onBackupPersisted }: A
     }
     return { version: plan.currentVersion, phase: "verified", health: report };
   }
+  const backup = await backupInstance({
+    root,
+    plan,
+    ...(getRollbackContext === undefined ? {} : { getRollbackContext }),
+  });
   let persisted: PersistedUpdate = {
-    phase: "planned",
+    phase: "backed_up",
     plan: { currentVersion: plan.currentVersion, targetVersion: plan.targetVersion },
     previousState: plan.previousState,
     release: plan.release,
     rollbackRelease: plan.rollbackRelease,
+    backup,
   };
-  await persist(root, persisted);
-  const backup = await backupInstance({ root, plan });
-  persisted = { ...persisted, phase: "backed_up", backup };
-  await onBackupPersisted?.();
   const environment = environmentFor(plan.previousState, plan.release);
   await command(root, executor, ["pull"], environment, "Argus image pull failed.");
   persisted = { ...persisted, phase: "pulled" };

@@ -596,9 +596,8 @@ describe("production onboarding integration", () => {
         fetchUpdateRelease: expect.any(Function),
         fetchCurrentRelease: expect.any(Function),
         fetchRollbackRelease: expect.any(Function),
-        stageRollbackRelease: expect.any(Function),
+        getRollbackContext: expect.any(Function),
         stageCurrentRelease: expect.any(Function),
-        promoteStagedRollbackRelease: expect.any(Function),
         promoteCurrentRelease: expect.any(Function),
         promoteRollbackRelease: expect.any(Function),
         promoteManagementRelease: expect.any(Function),
@@ -666,7 +665,7 @@ describe("production onboarding integration", () => {
     })).toThrow(expect.objectContaining({ code: "RELEASE_COMPOSITION_INVALID" }));
   });
 
-  it("preserves the verified prior context before promoting the target so rollback selects the prior release", async () => {
+  it("returns the exact verified prior context bytes before promoting a target release", async () => {
     const root = await mkdtemp(join(tmpdir(), "argus-update-context-"));
     const releaseA = releaseFixture({ version: "1.0.0", appMarker: "a" });
     const releaseB = releaseFixture({ version: "2.0.0", appMarker: "b" });
@@ -702,16 +701,17 @@ describe("production onboarding integration", () => {
 
     const verifiedA = await integration.fetchCurrentRelease();
     const verifiedB = await integration.fetchUpdateRelease();
-    await integration.stageRollbackRelease(verifiedA);
+    const rollbackContext = await integration.getRollbackContext(verifiedA);
     await integration.stageCurrentRelease(verifiedB);
-    await integration.promoteStagedRollbackRelease(verifiedA);
     await integration.promoteCurrentRelease(verifiedB);
+    expect(Buffer.from(rollbackContext).toString("utf8")).toContain(
+      Buffer.from(releaseA.manifestBytes).toString("base64"),
+    );
     target = releaseC;
     await expect(integration.fetchUpdateRelease()).resolves.toMatchObject({ manifest: { version: "3.0.0" } });
-    await expect(integration.fetchRollbackRelease()).resolves.toMatchObject({ manifest: { version: "1.0.0" } });
   });
 
-  it("recovers an interrupted context promotion when the staged release matches deployment state", async () => {
+  it("fails closed on interrupted context promotion without authoritative rollback state", async () => {
     const root = await mkdtemp(join(tmpdir(), "argus-update-recovery-"));
     const releaseA = releaseFixture({ version: "1.0.0", appMarker: "a" });
     const releaseB = releaseFixture({ version: "2.0.0", appMarker: "b" });
@@ -723,7 +723,6 @@ describe("production onboarding integration", () => {
     });
     await writeFile(join(root, "release-context.json"), contextFor(releaseA));
     await writeFile(join(root, "release-context.pending.json"), contextFor(releaseB));
-    await writeFile(join(root, "rollback-release-context.pending.json"), contextFor(releaseA));
     await saveManagedState(root, releaseB);
     const integration = createProductionUpdateIntegration({
       root,
@@ -732,8 +731,8 @@ describe("production onboarding integration", () => {
       fetcher: async () => new Response(null, { status: 404 }),
     });
 
-    await expect(integration.fetchCurrentRelease()).resolves.toMatchObject({ manifest: { version: "2.0.0" } });
-    expect(await readFile(join(root, "release-context.json"), "utf8")).toBe(contextFor(releaseB));
+    await expect(integration.fetchCurrentRelease()).rejects.toMatchObject({ code: "UPDATE_ROLLBACK_UNAVAILABLE" });
+    expect(await readFile(join(root, "release-context.json"), "utf8")).toBe(contextFor(releaseA));
   });
 
   it("returns the runtime, signed context, and management state to the prior release after an update, no-op retry, and successful CLI rollback", async () => {
@@ -788,6 +787,7 @@ describe("production onboarding integration", () => {
 
     await createProgram(dependencies).parseAsync(["node", "argus", "update", "--yes"]);
     await createProgram(dependencies).parseAsync(["node", "argus", "update", "--yes"]);
+    await expect(readFile(join(root, "rollback-release-context.json"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     await createProgram(dependencies).parseAsync([
       "node",
       "argus",
@@ -881,7 +881,6 @@ describe("production onboarding integration", () => {
     ).rejects.toMatchObject({ exitCode: 1 });
 
     expect(await readFile(join(root, "update-state.json"), "utf8")).toBe(durableUpdateState);
-    expect(await readFile(join(root, "rollback-release-context.json"), "utf8")).toBe(releaseAContext);
     await expect(signed.fetchRollbackRelease()).resolves.toMatchObject({
       manifest: { version: releaseA.version },
     });
@@ -971,7 +970,9 @@ describe("production onboarding integration", () => {
       version: target.version,
       cliImage: `ghcr.io/gpsxtreme/argus-cli@sha256:${digest("f")}`,
     });
-    expect(await readFile(join(root, "rollback-release-context.json"), "utf8")).toBe(currentContext);
+    await expect(updateIntegration.fetchRollbackRelease()).resolves.toMatchObject({
+      manifest: { version: current.version },
+    });
   });
 
   it("orders signed-context and management-state promotion after durable healthy update state", async () => {
@@ -1033,9 +1034,11 @@ describe("production onboarding integration", () => {
         async fetchUpdateRelease() { return targetRelease; },
         async fetchCurrentRelease() { return currentRelease; },
         async fetchRollbackRelease() { return currentRelease; },
-        async stageRollbackRelease() { events.push("stage-rollback-context"); },
+        async getRollbackContext() {
+          events.push("get-rollback-context");
+          return Buffer.from(context);
+        },
         async stageCurrentRelease() { events.push("stage-release-context"); },
-        async promoteStagedRollbackRelease() { events.push("commit-rollback-context"); },
         async promoteCurrentRelease() { events.push("promote-release-context"); },
         async promoteRollbackRelease() { events.push("promote-rollback-context"); },
         async promoteManagementRelease() { events.push("promote-management-state"); },
@@ -1051,10 +1054,9 @@ describe("production onboarding integration", () => {
       updateEventCapture.events = undefined;
     }
     expect(events).toEqual([
-      "stage-rollback-context",
       "stage-release-context",
       "backup",
-      "commit-rollback-context",
+      "get-rollback-context",
       "pull",
       "migrate",
       "reconcile",
@@ -1145,9 +1147,8 @@ describe("production onboarding integration", () => {
       fetchUpdateRelease: () => signed.fetchUpdateRelease(),
       fetchCurrentRelease: () => signed.fetchCurrentRelease(),
       fetchRollbackRelease: () => signed.fetchRollbackRelease(),
-      stageRollbackRelease: (release: Awaited<ReturnType<typeof signed.fetchCurrentRelease>>) => signed.stageRollbackRelease(release),
+      getRollbackContext: (release: Awaited<ReturnType<typeof signed.fetchCurrentRelease>>) => signed.getRollbackContext(release),
       stageCurrentRelease: (release: Awaited<ReturnType<typeof signed.fetchUpdateRelease>>) => signed.stageCurrentRelease(release),
-      promoteStagedRollbackRelease: (release: Awaited<ReturnType<typeof signed.fetchCurrentRelease>>) => signed.promoteStagedRollbackRelease(release),
       async promoteCurrentRelease(release: Awaited<ReturnType<typeof signed.fetchUpdateRelease>>) {
         await signed.promoteCurrentRelease(release);
         throw new DeploymentError(
@@ -1384,7 +1385,12 @@ describe("production onboarding integration", () => {
   it("rejects an unhealthy no-op without promoting a different signed target context", async () => {
     const root = await mkdtemp(join(tmpdir(), "argus-update-noop-"));
     const current = releaseFixture({ version: "1.0.0", appMarker: "a" });
-    const target = releaseFixture({ version: "1.0.0", appMarker: "a", fxembedMarker: "target" });
+    const target = releaseFixture({
+      version: "1.0.0",
+      appMarker: "a",
+      cliMarker: "e",
+      fxembedMarker: "target",
+    });
     const context = JSON.stringify({
       schemaVersion: 1,
       manifest: Buffer.from(current.manifestBytes).toString("base64"),
@@ -1441,6 +1447,15 @@ describe("production onboarding integration", () => {
     });
     expect(await readFile(join(root, "release-context.json"), "utf8")).toBe(context);
     expect(await readFile(join(root, "management.state"), "utf8")).toBe(priorManagementState);
+    await expect(readFile(join(root, "release-context.pending.json"), "utf8")).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    await expect(updateIntegration.fetchCurrentRelease()).resolves.toMatchObject({
+      manifest: {
+        images: { cli: { reference: `ghcr.io/gpsxtreme/argus-cli@sha256:${digest("b")}` } },
+        version: current.version,
+      },
+    });
   });
 
   it("verifies assets, applies one exact plan, and reverifies persisted signed context", async () => {

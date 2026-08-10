@@ -7,6 +7,7 @@ import { type CommandExecutor, saveDeploymentState } from "../src/index.js";
 import {
   applyUpdate,
   backupInstance,
+  loadRollbackReleaseContext,
   planUpdate,
   rollbackUpdate,
 } from "../src/update.js";
@@ -52,6 +53,8 @@ const executor = (fail?: "migration" | "health"): CommandExecutor => ({
     return { exitCode: 0, stdout: "", stderr: "" };
   },
 });
+const rollbackContext = async (): Promise<Uint8Array> =>
+  Buffer.from("verified signed release context");
 
 const rootWithState = async ({ searxng = false }: { searxng?: boolean } = {}) => {
   const root = await mkdtemp(join(tmpdir(), "argus-update-"));
@@ -86,7 +89,7 @@ describe("safe update state machine", () => {
     const targetRelease = release();
     const plan = await planUpdate({ root, release: targetRelease, rollbackRelease, executor: executor() });
 
-    await applyUpdate({ root, plan, executor: executor() });
+    await applyUpdate({ root, plan, executor: executor(), getRollbackContext: rollbackContext });
     const updated = JSON.parse(await readFile(join(root, "state.json"), "utf8"));
     expect(updated.compose.images).toEqual({
       argus: image("a").reference,
@@ -121,19 +124,19 @@ describe("safe update state machine", () => {
     await writeFile(join(root, "argus.db-wal"), "wal");
     await writeFile(join(root, "argus.db-shm"), "shm");
     const plan = await planUpdate({ root, release: release(), rollbackRelease: release("1.0.0", 1, "f"), executor: executor() });
-    const backup = await backupInstance({ root, plan });
+    const backup = await backupInstance({ root, plan, getRollbackContext: rollbackContext });
 
     expect(await readFile(join(backup.path, "argus.db"), "utf8")).toBe("db");
     expect(await readFile(join(backup.path, "argus.db-wal"), "utf8")).toBe("wal");
     expect(await readFile(join(backup.path, "argus.db-shm"), "utf8")).toBe("shm");
-    await expect(applyUpdate({ root, plan, executor: executor() })).resolves.toMatchObject({
+    await expect(applyUpdate({ root, plan, executor: executor(), getRollbackContext: rollbackContext })).resolves.toMatchObject({
       version: "2.0.0",
       health: { healthy: true },
       phase: "verified",
     });
   });
 
-  it("signals rollback readiness after the durable backup and before image pulls", async () => {
+  it("commits the signed rollback context with the durable backup before image pulls", async () => {
     const root = await rootWithState();
     const plan = await planUpdate({ root, release: release(), rollbackRelease: release("1.0.0", 1, "f"), executor: executor() });
     const events: string[] = [];
@@ -148,19 +151,42 @@ describe("safe update state machine", () => {
       root,
       plan,
       executor: recordingExecutor,
-      async onBackupPersisted() {
-        const state = JSON.parse(await readFile(join(root, "update-state.json"), "utf8")) as {
-          phase: string;
-          backup?: unknown;
-        };
-        events.push(`rollback-ready:${state.phase}:${state.backup === undefined ? "missing" : "present"}`);
+      async getRollbackContext() {
+        events.push("rollback-context");
+        return rollbackContext();
       },
     });
 
-    expect(events.slice(0, 2)).toEqual(["rollback-ready:backed_up:present", "pull"]);
+    expect(events.slice(0, 2)).toEqual(["rollback-context", "pull"]);
+    const state = JSON.parse(await readFile(join(root, "update-state.json"), "utf8")) as {
+      backup: { signedContext: { relativePath: string; sha256: string } };
+    };
+    expect(await readFile(join(root, state.backup.signedContext.relativePath), "utf8")).toBe(
+      "verified signed release context",
+    );
+    expect(state.backup.signedContext.sha256).toMatch(/^[a-f0-9]{64}$/u);
   });
 
-  it("stops before image pulls when rollback readiness cannot be committed", async () => {
+  it("fails closed when authoritative signed rollback bytes do not match their recorded hash", async () => {
+    const root = await rootWithState();
+    const plan = await planUpdate({
+      root,
+      release: release(),
+      rollbackRelease: release("1.0.0", 1, "f"),
+      executor: executor(),
+    });
+    const backup = await backupInstance({ root, plan, getRollbackContext: rollbackContext });
+    await expect(loadRollbackReleaseContext(root)).resolves.toEqual(
+      Buffer.from("verified signed release context"),
+    );
+
+    await writeFile(join(root, backup.signedContext.relativePath), "tampered context");
+    await expect(loadRollbackReleaseContext(root)).rejects.toMatchObject({
+      code: "UPDATE_ROLLBACK_UNAVAILABLE",
+    });
+  });
+
+  it("stops before image pulls and state persistence when rollback context cannot be constructed", async () => {
     const root = await rootWithState();
     const plan = await planUpdate({ root, release: release(), rollbackRelease: release("1.0.0", 1, "f"), executor: executor() });
     let pullCalled = false;
@@ -176,16 +202,46 @@ describe("safe update state machine", () => {
         root,
         plan,
         executor: recordingExecutor,
-        async onBackupPersisted() {
+        async getRollbackContext() {
           throw new Error("rollback context unavailable");
         },
       }),
     ).rejects.toThrow("rollback context unavailable");
     expect(pullCalled).toBe(false);
-    await expect(readFile(join(root, "update-state.json"), "utf8")).resolves.toContain('"phase": "backed_up"');
+    await expect(readFile(join(root, "update-state.json"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("does not signal rollback readiness for a no-op update", async () => {
+  it("preserves the prior authoritative rollback record when backup context construction fails", async () => {
+    const root = await rootWithState();
+    const first = await planUpdate({
+      root,
+      release: release(),
+      rollbackRelease: release("1.0.0", 1, "f"),
+      executor: executor(),
+    });
+    await applyUpdate({ root, plan: first, executor: executor(), getRollbackContext: rollbackContext });
+    const priorUpdateState = await readFile(join(root, "update-state.json"), "utf8");
+    const second = await planUpdate({
+      root,
+      release: release("3.0.0", 1, "9"),
+      rollbackRelease: release("2.0.0", 1, "a"),
+      executor: executor(),
+    });
+
+    await expect(
+      applyUpdate({
+        root,
+        plan: second,
+        executor: executor(),
+        async getRollbackContext() {
+          throw new Error("signed context construction failed");
+        },
+      }),
+    ).rejects.toThrow("signed context construction failed");
+    expect(await readFile(join(root, "update-state.json"), "utf8")).toBe(priorUpdateState);
+  });
+
+  it("does not request rollback context for a no-op update", async () => {
     const root = await rootWithState();
     const currentRelease = release("1.0.0", 1, "f");
     const plan = await planUpdate({ root, release: currentRelease, rollbackRelease: currentRelease, executor: executor() });
@@ -195,8 +251,9 @@ describe("safe update state machine", () => {
       root,
       plan,
       executor: executor(),
-      async onBackupPersisted() {
+      async getRollbackContext() {
         called = true;
+        return rollbackContext();
       },
     });
 
@@ -223,7 +280,7 @@ describe("safe update state machine", () => {
       },
     };
 
-    await expect(applyUpdate({ root, plan, executor: composeV239Executor })).resolves.toMatchObject({
+    await expect(applyUpdate({ root, plan, executor: composeV239Executor, getRollbackContext: rollbackContext })).resolves.toMatchObject({
       version: "2.0.0",
       phase: "verified",
       health: {
@@ -240,7 +297,7 @@ describe("safe update state machine", () => {
     const root = await rootWithState();
     const plan = await planUpdate({ root, release: release(), rollbackRelease: release("1.0.0", 1, "f"), executor: executor() });
 
-    await expect(applyUpdate({ root, plan, executor: executor("migration") })).rejects.toThrow(/migration/u);
+    await expect(applyUpdate({ root, plan, executor: executor("migration"), getRollbackContext: rollbackContext })).rejects.toThrow(/migration/u);
     await expect(readFile(join(root, "update-state.json"), "utf8")).resolves.toContain('"phase": "pulled"');
   });
 
@@ -248,7 +305,7 @@ describe("safe update state machine", () => {
     const root = await rootWithState();
     const plan = await planUpdate({ root, release: release(), rollbackRelease: release("1.0.0", 1, "f"), executor: executor() });
 
-    await expect(applyUpdate({ root, plan, executor: executor("health") })).rejects.toThrow(/health/u);
+    await expect(applyUpdate({ root, plan, executor: executor("health"), getRollbackContext: rollbackContext })).rejects.toThrow(/health/u);
     await expect(rollbackUpdate({ root, executor: executor(), release: release("1.0.0", 1, "f") })).resolves.toMatchObject({
       version: "1.0.0",
       phase: "rolled_back",
@@ -271,7 +328,7 @@ describe("safe update state machine", () => {
       },
     };
 
-    await expect(applyUpdate({ root, plan, executor: unhealthyExecutor })).rejects.toMatchObject({
+    await expect(applyUpdate({ root, plan, executor: unhealthyExecutor, getRollbackContext: rollbackContext })).rejects.toMatchObject({
       code: "UPDATE_HEALTHCHECK_FAILED",
     });
   });
@@ -279,7 +336,7 @@ describe("safe update state machine", () => {
   it("fails closed when rollback state is incompatible", async () => {
     const root = await rootWithState();
     const plan = await planUpdate({ root, release: release(), rollbackRelease: release("1.0.0", 1, "f"), executor: executor() });
-    await backupInstance({ root, plan });
+    await backupInstance({ root, plan, getRollbackContext: rollbackContext });
 
     await expect(rollbackUpdate({ root, executor: executor(), release: release("1.0.0", 2, "f") })).rejects.toThrow(/incompatible/u);
   });
@@ -291,7 +348,7 @@ describe("safe update state machine", () => {
     await mkdir(join(root, "data"));
     await writeFile(databasePath, "backup database");
     const plan = await planUpdate({ root, release: release(), rollbackRelease, executor: executor() });
-    await backupInstance({ root, plan });
+    await backupInstance({ root, plan, getRollbackContext: rollbackContext });
     const originalState = await readFile(join(root, "state.json"), "utf8");
     await writeFile(databasePath, "live database");
     const persisted = JSON.parse(await readFile(join(root, "update-state.json"), "utf8")) as {
@@ -325,7 +382,7 @@ describe("safe update state machine", () => {
   it("rejects a persisted rollback with a path that escapes the instance root", async () => {
     const root = await rootWithState();
     const plan = await planUpdate({ root, release: release(), rollbackRelease: release("1.0.0", 1, "f"), executor: executor() });
-    await backupInstance({ root, plan });
+    await backupInstance({ root, plan, getRollbackContext: rollbackContext });
     const state = JSON.parse(await readFile(join(root, "update-state.json"), "utf8")) as {
       backup: { sqliteFiles: Array<{ relativePath: string }> };
     };
@@ -341,7 +398,7 @@ describe("safe update state machine", () => {
   it("rejects a persisted rollback with an absolute path", async () => {
     const root = await rootWithState();
     const plan = await planUpdate({ root, release: release(), rollbackRelease: release("1.0.0", 1, "f"), executor: executor() });
-    await backupInstance({ root, plan });
+    await backupInstance({ root, plan, getRollbackContext: rollbackContext });
     const state = JSON.parse(await readFile(join(root, "update-state.json"), "utf8")) as {
       backup: { path: string; sqliteFiles: Array<{ relativePath: string }> };
     };
@@ -417,7 +474,7 @@ describe("safe update state machine", () => {
     };
     const rollbackRelease = release("1.0.0", 1, "f");
     const plan = await planUpdate({ root, release: release(), rollbackRelease, executor: recordingExecutor });
-    await backupInstance({ root, plan });
+    await backupInstance({ root, plan, getRollbackContext: rollbackContext });
     await rm(join(root, "data", "argus.db"));
     await rollbackUpdate({ root, executor: recordingExecutor, release: rollbackRelease });
 
