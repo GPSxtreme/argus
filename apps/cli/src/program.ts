@@ -1319,7 +1319,7 @@ const createDeploymentAdapter = (
       }
       const [release, rollbackRelease] = await Promise.all([
         updateIntegration.fetchUpdateRelease(),
-        updateIntegration.fetchRollbackRelease(),
+        updateIntegration.fetchCurrentRelease(),
       ]);
       return planUpdate({ root, release, rollbackRelease, executor });
     },
@@ -1331,6 +1331,7 @@ const createDeploymentAdapter = (
         );
       }
       const plan = inspection as UpdatePlan;
+      await updateIntegration.stageRollbackRelease(plan.rollbackRelease);
       await updateIntegration.stageCurrentRelease(plan.release);
       const applied = await applyUpdate({ root, plan, executor });
       if (!applied.health.healthy) {
@@ -1362,11 +1363,25 @@ const createDeploymentAdapter = (
       return { release: await updateIntegration.fetchRollbackRelease() };
     },
     async applyRollbackUpdate(inspection) {
+      if (updateIntegration === undefined) {
+        throw new DeploymentError("RELEASE_MANIFEST_REQUIRED", "A verified signed rollback release is required.");
+      }
       const rollback = inspection as { release?: unknown };
       if (!rollback.release) {
         throw new DeploymentError("UPDATE_ROLLBACK_UNAVAILABLE", "No verified rollback release was selected.");
       }
-      return rollbackUpdate({ root, executor, release: rollback.release as VerifiedReleaseManifest });
+      const release = rollback.release as VerifiedReleaseManifest;
+      const applied = await rollbackUpdate({ root, executor, release });
+      if (!applied.health.healthy) {
+        throw new DeploymentError(
+          "UPDATE_ROLLBACK_VERIFY_FAILED",
+          "Argus rollback health verification failed.",
+          { recovery: "Run 'argus doctor --json' and preserve the existing backup for recovery." },
+        );
+      }
+      await updateIntegration.promoteRollbackRelease(release);
+      await updateIntegration.promoteManagementRelease(release);
+      return applied;
     },
     async inspectOnboarding(answers, secrets) {
       const state = await loadDeploymentState(root);
