@@ -741,6 +741,13 @@ argus_identity() {
   [ -n "$argus_identity_sha" ] || return 1
   printf '%s:%s\\n' "$argus_identity_metadata" "$argus_identity_sha"
 }
+argus_preservation_identity() {
+  argus_preservation_metadata=$(stat -c '%s:%a:%u:%g:%Y' "$1" 2>/dev/null ||
+    stat -f '%z:%Lp:%u:%g:%m' "$1" 2>/dev/null) || return 1
+  argus_preservation_sha=$(sha256sum "$1" | awk 'NR == 1 { print $1 }') || return 1
+  [ -n "$argus_preservation_sha" ] || return 1
+  printf '%s:%s\\n' "$argus_preservation_metadata" "$argus_preservation_sha"
+}
 argus_backup_as_owner() {
   if [ -w "$(dirname "$2")" ]; then
     cp -pP "$1" "$2"
@@ -748,14 +755,38 @@ argus_backup_as_owner() {
     argus_as_root cp -pP "$1" "$2"
   fi
 }
+argus_capture_regular() {
+  argus_capture_source=$1
+  argus_capture_destination=$2
+  cp -P "$argus_capture_source" "$argus_capture_destination" &&
+    [ ! -L "$argus_capture_destination" ] && [ -f "$argus_capture_destination" ]
+}
+argus_verify_regular_path() {
+  argus_verify_path=$1
+  argus_verify_expected=$2
+  [ ! -L "$argus_verify_path" ] || return 1
+  argus_verify_tmp=$(mktemp "$argus_tmp/.argus.verify.XXXXXX") || return 1
+  if ! argus_capture_regular "$argus_verify_path" "$argus_verify_tmp" ||
+    [ -L "$argus_verify_path" ] ||
+    ! cmp -s "$argus_verify_expected" "$argus_verify_tmp"
+  then
+    rm -f -- "$argus_verify_tmp"
+    return 1
+  fi
+  rm -f -- "$argus_verify_tmp"
+}
 argus_restore_from_backup() {
   argus_restore_backup=$1
   argus_restore_destination=$2
   argus_restore_pattern=$3
-  [ ! -L "$argus_restore_backup" ] || return 1
+  argus_restore_identity=$4
+  [ ! -L "$argus_restore_backup" ] &&
+    [ "$(argus_preservation_identity "$argus_restore_backup" 2>/dev/null || true)" = "$argus_restore_identity" ] || return 1
   argus_restore_tmp=$(argus_make_temp_as_owner "$(dirname "$argus_restore_destination")" "$argus_restore_pattern") ||
     return 1
   if ! argus_backup_as_owner "$argus_restore_backup" "$argus_restore_tmp" ||
+    [ -L "$argus_restore_tmp" ] ||
+    [ "$(argus_preservation_identity "$argus_restore_tmp" 2>/dev/null || true)" != "$argus_restore_identity" ] ||
     ! sync -f "$argus_restore_tmp" ||
     ! argus_move_as_owner "$argus_restore_tmp" "$argus_restore_destination"
   then
@@ -863,7 +894,7 @@ argus_wrapper_test_tmp=
 if [ -e "$argus_state_path" ] &&
   [ ! -L "$argus_state_path" ] &&
   [ "$(stat -c '%a' "$argus_state_path" 2>/dev/null || stat -f '%Lp' "$argus_state_path" 2>/dev/null || true)" = 644 ] &&
-  cmp -s "$argus_tmp/management.state" "$argus_state_path"; then
+  argus_verify_regular_path "$argus_state_path" "$argus_tmp/management.state"; then
   argus_state_existing_exact=1
   argus_remove_as_owner "$argus_state_tmp"
   argus_state_tmp=
@@ -875,12 +906,14 @@ if [ "$argus_existing_exact" -eq 0 ] && [ "$argus_target_identity" != absent ]; 
   [ ! -L "$argus_target" ] &&
     [ "$(argus_identity "$argus_target" 2>/dev/null || true)" = "$argus_target_identity" ] ||
     argus_die "installation target changed before preservation"
+  argus_target_preservation_identity=$(argus_preservation_identity "$argus_target") ||
+    argus_die "could not inspect existing installation target for preservation"
   argus_backup_tmp=$(argus_make_temp_as_owner "$argus_target_dir" '.argus.backup.XXXXXX') ||
     argus_die "could not preserve the existing Argus wrapper"
   argus_backup_as_owner "$argus_target" "$argus_backup_tmp" ||
     argus_die "could not preserve the existing Argus wrapper"
-  [ ! -L "$argus_target" ] && [ ! -L "$argus_backup_tmp" ] &&
-    [ "$(argus_identity "$argus_target" 2>/dev/null || true)" = "$argus_target_identity" ] ||
+  [ ! -L "$argus_backup_tmp" ] &&
+    [ "$(argus_preservation_identity "$argus_backup_tmp" 2>/dev/null || true)" = "$argus_target_preservation_identity" ] ||
     argus_die "installation target changed during preservation"
   sync -f "$argus_backup_tmp" || argus_die "could not durably preserve the existing Argus wrapper"
 fi
@@ -888,18 +921,41 @@ if [ "$argus_state_existing_exact" -eq 0 ] && [ "$argus_state_identity" != absen
   [ ! -L "$argus_state_path" ] &&
     [ "$(argus_identity "$argus_state_path" 2>/dev/null || true)" = "$argus_state_identity" ] ||
     argus_die "management state changed before preservation"
+  argus_state_preservation_identity=$(argus_preservation_identity "$argus_state_path") ||
+    argus_die "could not inspect existing management state for preservation"
   argus_state_backup_tmp=$(argus_make_temp_as_owner "$argus_install_root" '.management.state.backup.XXXXXX') ||
     argus_die "could not preserve the existing management state"
   argus_backup_as_owner "$argus_state_path" "$argus_state_backup_tmp" ||
     argus_die "could not preserve the existing management state"
-  [ ! -L "$argus_state_path" ] && [ ! -L "$argus_state_backup_tmp" ] &&
-    [ "$(argus_identity "$argus_state_path" 2>/dev/null || true)" = "$argus_state_identity" ] ||
+  [ ! -L "$argus_state_backup_tmp" ] &&
+    [ "$(argus_preservation_identity "$argus_state_backup_tmp" 2>/dev/null || true)" = "$argus_state_preservation_identity" ] ||
     argus_die "management state changed during preservation"
   sync -f "$argus_state_backup_tmp" || argus_die "could not durably preserve the existing management state"
 fi
 
 argus_state_promoted=0
 argus_target_promoted=0
+argus_recovery_quarantines=
+argus_quarantine_owned_candidate() {
+  argus_quarantine_destination=$1
+  argus_quarantine_expected=$2
+  argus_quarantine_pattern=$3
+  argus_quarantine_tmp=$(argus_make_temp_as_owner "$(dirname "$argus_quarantine_destination")" "$argus_quarantine_pattern") ||
+    return 1
+  argus_remove_as_owner "$argus_quarantine_tmp" || return 1
+  if ! argus_move_as_owner "$argus_quarantine_destination" "$argus_quarantine_tmp"; then
+    argus_remove_as_owner "$argus_quarantine_tmp" 2>/dev/null || true
+    return 1
+  fi
+  if ! argus_verify_regular_path "$argus_quarantine_tmp" "$argus_quarantine_expected"; then
+    argus_recovery_quarantines="$argus_recovery_quarantines $argus_quarantine_tmp"
+    return 1
+  fi
+  if ! argus_remove_as_owner "$argus_quarantine_tmp"; then
+    argus_recovery_quarantines="$argus_recovery_quarantines $argus_quarantine_tmp"
+    return 1
+  fi
+}
 argus_restore_pair() {
   argus_restore_failed=0
   [ ! -L "$argus_install_root" ] || return 1
@@ -916,18 +972,17 @@ argus_restore_pair() {
     then
       argus_restore_failed=1
     elif [ "$argus_state_promoted" -eq 1 ] &&
-      { [ -L "$argus_state_path" ] || ! cmp -s "$argus_tmp/management.state" "$argus_state_path"; }
+      ! argus_verify_regular_path "$argus_state_path" "$argus_tmp/management.state"
     then
       argus_restore_failed=1
     elif [ "$argus_state_promoted" -eq 1 ] &&
-      ! argus_restore_from_backup "$argus_state_backup_tmp" "$argus_state_path" '.management.state.restore.XXXXXX'
+      ! argus_restore_from_backup "$argus_state_backup_tmp" "$argus_state_path" '.management.state.restore.XXXXXX' "$argus_state_preservation_identity"
     then
       argus_restore_failed=1
     fi
   elif [ "$argus_state_promoted" -eq 1 ]; then
-    [ ! -L "$argus_state_path" ] &&
-      cmp -s "$argus_tmp/management.state" "$argus_state_path" &&
-      argus_remove_as_owner "$argus_state_path" || argus_restore_failed=1
+    argus_quarantine_owned_candidate "$argus_state_path" "$argus_tmp/management.state" '.management.state.quarantine.XXXXXX' ||
+      argus_restore_failed=1
   fi
   if [ -n "$argus_target_tmp" ]; then
     if argus_remove_as_owner "$argus_target_tmp"; then
@@ -942,18 +997,17 @@ argus_restore_pair() {
     then
       argus_restore_failed=1
     elif [ "$argus_target_promoted" -eq 1 ] &&
-      { [ -L "$argus_target" ] || ! cmp -s "$argus_tmp/argus" "$argus_target"; }
+      ! argus_verify_regular_path "$argus_target" "$argus_tmp/argus"
     then
       argus_restore_failed=1
     elif [ "$argus_target_promoted" -eq 1 ] &&
-      ! argus_restore_from_backup "$argus_backup_tmp" "$argus_target" '.argus.restore.XXXXXX'
+      ! argus_restore_from_backup "$argus_backup_tmp" "$argus_target" '.argus.restore.XXXXXX' "$argus_target_preservation_identity"
     then
       argus_restore_failed=1
     fi
   elif [ "$argus_target_promoted" -eq 1 ]; then
-    [ ! -L "$argus_target" ] &&
-      cmp -s "$argus_tmp/argus" "$argus_target" &&
-      argus_remove_as_owner "$argus_target" || argus_restore_failed=1
+    argus_quarantine_owned_candidate "$argus_target" "$argus_tmp/argus" '.argus.quarantine.XXXXXX' ||
+      argus_restore_failed=1
   fi
   sync -f "$argus_install_root" || argus_restore_failed=1
   sync -f "$argus_target_dir" || argus_restore_failed=1
@@ -962,8 +1016,9 @@ argus_restore_pair() {
 argus_promote_pair() {
   argus_promoted_pair_is_safe() {
     [ ! -L "$argus_install_root" ] && [ ! -L "$argus_state_path" ] && [ ! -L "$argus_target" ] &&
-      cmp -s "$argus_tmp/management.state" "$argus_state_path" &&
-      cmp -s "$argus_tmp/argus" "$argus_target"
+      argus_verify_regular_path "$argus_state_path" "$argus_tmp/management.state" &&
+      argus_verify_regular_path "$argus_target" "$argus_tmp/argus" &&
+      [ ! -L "$argus_install_root" ] && [ ! -L "$argus_state_path" ] && [ ! -L "$argus_target" ]
   }
   [ ! -L "$argus_install_root" ] &&
     argus_snapshot_matches "$argus_state_path" "$argus_state_identity" &&
@@ -975,8 +1030,8 @@ argus_promote_pair() {
     argus_move_as_owner "$argus_state_tmp" "$argus_state_path" || return 1
     argus_state_tmp=
     argus_state_promoted=1
-    [ ! -L "$argus_install_root" ] && [ ! -L "$argus_state_path" ] &&
-      cmp -s "$argus_tmp/management.state" "$argus_state_path" || return 1
+    [ ! -L "$argus_install_root" ] &&
+      argus_verify_regular_path "$argus_state_path" "$argus_tmp/management.state" || return 1
     sync -f "$argus_state_path" || return 1
     sync -f "$argus_install_root" || return 1
   fi
@@ -991,12 +1046,6 @@ argus_promote_pair() {
     sync -f "$argus_target_dir" || return 1
   fi
   argus_promoted_pair_is_safe || return 1
-  argus_installed_version=$(argus_run_wrapper_version "$argus_target") || return 1
-  [ "$argus_installed_version" = "$argus_version" ] || return 1
-  argus_promoted_pair_is_safe || return 1
-  argus_installed_wrapper_sha=$(sha256sum "$argus_target" | awk '{print $1}') || return 1
-  [ "$argus_installed_wrapper_sha" = "$argus_wrapper_sha" ] || return 1
-  argus_promoted_pair_is_safe || return 1
   sync -f "$argus_install_root" || return 1
   sync -f "$argus_target_dir" || return 1
   argus_promoted_pair_is_safe || return 1
@@ -1005,7 +1054,7 @@ if ! argus_promote_pair; then
   if argus_restore_pair; then
     argus_die "could not promote the Argus launcher and management state; previous state was restored"
   fi
-  argus_recovery_backups="$argus_state_backup_tmp $argus_backup_tmp"
+  argus_recovery_backups="$argus_state_backup_tmp $argus_backup_tmp$argus_recovery_quarantines"
   argus_state_backup_tmp=
   argus_backup_tmp=
   argus_die "could not restore the previous Argus launcher and management state; recovery backups were preserved at$argus_recovery_backups"
