@@ -11,10 +11,15 @@ const unescapeEntities = (value: string): string =>
     .replaceAll("&gt;", ">")
     .replaceAll("&quot;", '"')
     .replaceAll("&apos;", "'");
-const text = (value: unknown): string =>
-  typeof value === "string" || typeof value === "number"
-    ? unescapeEntities(String(value))
-    : "";
+const text = (value: unknown): string => {
+  if (typeof value === "string" || typeof value === "number") {
+    return unescapeEntities(String(value));
+  }
+  if (typeof value === "object" && value !== null) {
+    return text((value as Record<string, unknown>)["#text"]);
+  }
+  return "";
+};
 const stripHtml = (value: string): string =>
   unescapeEntities(value.replace(/<[^>]+>/gu, " ").replace(/\s+/gu, " ").trim());
 
