@@ -28,7 +28,7 @@ argus onboard
 
 The installer verifies the release manifest signature and wrapper hash before
 installation. See the [quick start](https://argus.gpsxtre.me/docs/quick-start)
-and the current [v0.1.9 release](https://github.com/GPSxtreme/argus/releases/tag/v0.1.9).
+and the current [v0.1.11 release](https://github.com/GPSxtreme/argus/releases/tag/v0.1.11).
 
 ## Development
 

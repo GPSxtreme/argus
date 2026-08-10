@@ -1,27 +1,27 @@
 import { createHash, verify } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { describe, expect, it } from "vitest";
 import { renderInstaller } from "@argus/release";
-import nextConfig from "../next.config";
+import { describe, expect, it } from "vitest";
 import { canonicalManifestUrl, installerOptions } from "../lib/distribution";
 import { releasePublicKey } from "../lib/release-public-key";
+import nextConfig from "../next.config";
 
 const stableAsset = (name: "manifest.json" | "manifest.sig") =>
   resolve(process.cwd(), "apps/web/public/releases/stable", name);
 
 describe("stable release artifacts", () => {
-  it("preserves the v0.1.9 signed release bytes exactly", async () => {
+  it("preserves the v0.1.11 signed release bytes exactly", async () => {
     const [manifest, signature] = await Promise.all([
       readFile(stableAsset("manifest.json")),
       readFile(stableAsset("manifest.sig")),
     ]);
 
     expect(createHash("sha256").update(manifest).digest("hex")).toBe(
-      "d385ac3cf77763b30c4192b28dc0f1d25bddd35df04fbd9071f63980da7a5fb3",
+      "ebd16c63050e0a7daefd4590fe08a39e412a9e58f2a928f92489630fb15aa532",
     );
     expect(signature).toEqual(
-      Buffer.from("CgGjY7fVtbmDEw576BcYMsfIMBtl7uD1EEgzsRPNu2w4IdAQDCEmCsLZSaV8gdUqaY4gyMJVDL0BjZ9+0by0Dw==", "base64"),
+      Buffer.from("xy5SBP5iD/jp1ihvBpfBTxmGgZ/qn6FtJkPWqswtkZ+wKHEG8k+DflbQTP4GkPdZ+tGLE63S83zoVtcrO1KwDw==", "base64"),
     );
     expect(signature).toHaveLength(64);
     expect(verify(null, manifest, releasePublicKey, signature)).toBe(true);
