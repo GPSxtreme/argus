@@ -66,10 +66,7 @@ const fixtureArguments = async (): Promise<Arguments> => {
   const wrapperPath = join(directory, "argus");
   const fxembedLicensePath = join(directory, "FXEMBED-LICENSE.md");
   const fxembedProvenancePath = join(directory, "fxembed-provenance.json");
-  const wrapper = renderArgusWrapper({
-    version: "0.0.0-fixture",
-    cliImageDigest: `ghcr.io/gpsxtreme/argus-cli@sha256:${fixtureDigest("b")}`,
-  });
+  const wrapper = renderArgusWrapper();
   await atomicWrite(
     fxembedPath,
     Buffer.from("export default { async fetch() { return new Response('ok'); } };\n"),

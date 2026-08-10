@@ -177,8 +177,6 @@ jobs:
       - name: Render digest-pinned host wrapper
         run: |
           pnpm tsx scripts/release/export-wrapper.ts \
-            --version "${{ steps.release.outputs.version }}" \
-            --cli-image "${CLI_IMAGE}@${{ steps.cli.outputs.digest }}" \
             --output dist/release/argus
 
       - name: Build and verify signed assets
