@@ -132,7 +132,7 @@ export const loadPersistedComposeEnvironment = async (
   context: DeploymentContext,
 ): Promise<Record<string, string>> => composeEnvironment(await loadDesired(context));
 
-const parseStatus = (stdout: string): DeploymentStatus["services"] => {
+export const parseComposeStatus = (stdout: string): DeploymentStatus["services"] => {
   if (!stdout.trim()) return [];
   try {
     let entries: unknown[];
@@ -170,7 +170,7 @@ const parseStatus = (stdout: string): DeploymentStatus["services"] => {
 export const getDeploymentStatus = async (context: DeploymentContext): Promise<DeploymentStatus> => {
   const environment = composeEnvironment(await loadDesired(context));
   const result = await runCompose(context, ["ps", "--format", "json"], "status inspection", environment);
-  const services = parseStatus(result.stdout);
+  const services = parseComposeStatus(result.stdout);
   return {
     services,
     healthy:

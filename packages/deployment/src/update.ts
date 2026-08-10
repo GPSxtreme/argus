@@ -1,14 +1,15 @@
 import { copyFile, mkdir, open, readFile, rename, stat } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
-import { z } from "zod";
 import type { VerifiedReleaseManifest } from "@argus/release";
-import { DeploymentError } from "./errors.js";
+import { z } from "zod";
 import {
-  deploymentStateSchema,
   type DeploymentStateV1,
+  deploymentStateSchema,
 } from "./contracts.js";
+import { DeploymentError } from "./errors.js";
 import type { CommandExecutor } from "./executor.js";
 import { loadDeploymentState, saveDeploymentState } from "./files.js";
+import { parseComposeStatus } from "./reconciler.js";
 
 export type UpdatePhase =
   | "planned"
@@ -291,24 +292,11 @@ const health = async (
   release: VerifiedReleaseManifest,
 ): Promise<UpdateHealthReport> => {
   const result = await command(root, executor, ["ps", "--format", "json"], environmentFor(state, release), "Argus health inspection failed.");
-  let records: unknown;
-  try {
-    records = JSON.parse(result.stdout);
-  } catch {
-    records = [];
-  }
-  const services = Array.isArray(records)
-    ? records.flatMap((record) => {
-        if (!record || typeof record !== "object") return [];
-        const value = record as Record<string, unknown>;
-        const name = typeof value.Service === "string" ? value.Service : value.service;
-        const stateValue = typeof value.State === "string" ? value.State : value.state;
-        const healthValue = typeof value.Health === "string" ? value.Health : value.health;
-        return typeof name === "string" && typeof stateValue === "string"
-          ? [{ name, state: stateValue, ...(typeof healthValue === "string" ? { health: healthValue } : {}) }]
-          : [];
-      })
-    : [];
+  const services = parseComposeStatus(result.stdout).map(({ name, state: serviceState, health: serviceHealth }) => ({
+    name,
+    state: serviceState,
+    ...(serviceHealth === undefined ? {} : { health: serviceHealth }),
+  }));
   const required = ["argus", ...(state.compose?.storage === "postgres" ? ["postgres"] : []), ...(state.compose?.searxng ? ["searxng"] : [])];
   const healthy = required.every((name) =>
     services.some((service) => service.name === name && service.state === "running" && service.health !== "unhealthy"),
