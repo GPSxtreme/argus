@@ -28,19 +28,30 @@ jobs:
       installer_url: ${{ steps.release.outputs.installer_url }}
       manifest_url: ${{ steps.release.outputs.manifest_url }}
       manifest_asset_url: ${{ steps.release.outputs.manifest_asset_url }}
+      installer_sha256: ${{ steps.release.outputs.installer_sha256 }}
       version: ${{ steps.release.outputs.version }}
       update_manifest_asset_url: ${{ steps.release.outputs.update_manifest_asset_url }}
       update_manifest_sha256: ${{ steps.release.outputs.update_manifest_sha256 }}
       update_version: ${{ steps.release.outputs.update_version }}
       acceptance_mode: ${{ steps.release.outputs.acceptance_mode }}
     steps:
-      - name: Check out trusted acceptance policy
+      - name: Check out trusted acceptance tooling
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           ref: ${{ github.workflow_sha }}
-          sparse-checkout: scripts/e2e/release-acceptance-policy.mjs
-          sparse-checkout-cone-mode: false
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@ff378ebe6b225b0680b81c1ad4498ae0d1d3a5e3 # v6.0.10
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install trusted verification dependencies
+        run: pnpm install --frozen-lockfile
 
       - name: Resolve immutable signed release assets
         id: release
@@ -61,18 +72,26 @@ jobs:
             test "$(jq --arg name "$name" '[.assets[] | select(.name == $name and .state == "uploaded")] | length' "$release")" -eq 1
             jq -er --arg name "$name" '.assets[] | select(.name == $name and .state == "uploaded") | .url' "$release"
           }
+          download_release_directory() {
+            local release=$1 directory=$2 name
+            mkdir -p "$directory"
+            for name in manifest.json manifest.sig release-public.pem install.sh argus; do
+              gh api --header 'Accept: application/octet-stream' \
+                "$(asset_url "$release" "$name")" > "$directory/$name"
+            done
+          }
           target_manifest_asset_url=$(asset_url release.json manifest.json)
-          target_wrapper_asset_url=$(asset_url release.json argus)
-          gh api --header 'Accept: application/octet-stream' "$target_manifest_asset_url" > target-manifest.json
-          gh api --header 'Accept: application/octet-stream' "$target_wrapper_asset_url" > target-wrapper
-          test "$(jq -er '.version' target-manifest.json)" = "${RELEASE_TAG#v}"
-          test "$(node scripts/e2e/release-acceptance-policy.mjs verify-durable-launcher target-manifest.json target-wrapper | jq -er '.durable')" = true
-          target_manifest_sha256=$(sha256sum target-manifest.json | awk 'NR == 1 { print $1 }')
+          download_release_directory release.json target-release
+          pnpm tsx scripts/e2e/release-acceptance-policy.ts \
+            verify-release target-release > target-release/acceptance.json
+          test "$(jq -er '.version' target-release/acceptance.json)" = "${RELEASE_TAG#v}"
+          test "$(jq -er '.durable' target-release/acceptance.json)" = true
+          target_manifest_sha256=$(sha256sum target-release/manifest.json | awk 'NR == 1 { print $1 }')
           [[ "$target_manifest_sha256" =~ ^[a-f0-9]{64}$ ]]
           curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
             'https://argus.gpsxtre.me/releases/stable/manifest.json' \
             --output stable-manifest.json
-          cmp -s target-manifest.json stable-manifest.json
+          cmp -s target-release/manifest.json stable-manifest.json
           jq -r --argjson target "$target_version" '
             [ .[] | .[]
               | select(.draft == false and .prerelease == false)
@@ -87,17 +106,19 @@ jobs:
           : > durable-release-tags.txt
           while IFS= read -r baseline_tag; do
             gh api "repos/${REPOSITORY}/releases/tags/${baseline_tag}" > baseline-release.json
-            baseline_manifest_asset_url=$(asset_url baseline-release.json manifest.json)
-            baseline_wrapper_asset_url=$(asset_url baseline-release.json argus)
-            gh api --header 'Accept: application/octet-stream' "$baseline_manifest_asset_url" > baseline-manifest.json
-            gh api --header 'Accept: application/octet-stream' "$baseline_wrapper_asset_url" > baseline-wrapper
-            test "$(jq -er '.version' baseline-manifest.json)" = "${baseline_tag#v}"
-            if test "$(node scripts/e2e/release-acceptance-policy.mjs verify-durable-launcher baseline-manifest.json baseline-wrapper | jq -er '.durable')" = true; then
+            baseline_directory="baseline-${baseline_tag#v}"
+            if download_release_directory baseline-release.json "$baseline_directory" && \
+              pnpm tsx scripts/e2e/release-acceptance-policy.ts \
+                verify-release "$baseline_directory" > "$baseline_directory/acceptance.json" && \
+              test "$(jq -er '.version' "$baseline_directory/acceptance.json")" = "${baseline_tag#v}" && \
+              test "$(jq -er '.durable' "$baseline_directory/acceptance.json")" = true
+            then
               printf '%s\n' "$baseline_tag" >> durable-release-tags.txt
+              break
             fi
           done < earlier-release-tags.txt
           jq -Rsc 'split("\n") | map(select(length > 0))' durable-release-tags.txt > durable-release-tags.json
-          acceptance_plan=$(node scripts/e2e/release-acceptance-policy.mjs select-baseline --target "$RELEASE_TAG" --durable-tags durable-release-tags.json)
+          acceptance_plan=$(pnpm tsx scripts/e2e/release-acceptance-policy.ts select-baseline --target "$RELEASE_TAG" --durable-tags durable-release-tags.json)
           acceptance_mode=$(printf '%s' "$acceptance_plan" | jq -er '.mode')
           update_manifest_asset_url=
           update_manifest_sha256=
@@ -107,6 +128,7 @@ jobs:
             gh api "repos/${REPOSITORY}/releases/tags/${baseline_tag}" > baseline-release.json
             installer_release=baseline-release.json
             installer_tag=$baseline_tag
+            installer_acceptance="baseline-${baseline_tag#v}/acceptance.json"
             update_manifest_asset_url=$target_manifest_asset_url
             update_manifest_sha256=$target_manifest_sha256
             update_version=${RELEASE_TAG#v}
@@ -114,11 +136,13 @@ jobs:
             test "$acceptance_mode" = bootstrap
             installer_release=release.json
             installer_tag=$RELEASE_TAG
+            installer_acceptance=target-release/acceptance.json
           fi
-          printf 'installer_url=%s\nmanifest_url=%s\nmanifest_asset_url=%s\nversion=%s\nupdate_manifest_asset_url=%s\nupdate_manifest_sha256=%s\nupdate_version=%s\nacceptance_mode=%s\n' \
+          printf 'installer_url=%s\nmanifest_url=%s\nmanifest_asset_url=%s\ninstaller_sha256=%s\nversion=%s\nupdate_manifest_asset_url=%s\nupdate_manifest_sha256=%s\nupdate_version=%s\nacceptance_mode=%s\n' \
             "$(asset_url "$installer_release" install.sh)" \
             "https://github.com/${REPOSITORY}/releases/download/${installer_tag}/manifest.json" \
             "$(asset_url "$installer_release" manifest.json)" \
+            "$(jq -er '.installerSha256' "$installer_acceptance")" \
             "${installer_tag#v}" \
             "$update_manifest_asset_url" \
             "$update_manifest_sha256" \
@@ -147,6 +171,7 @@ jobs:
           ARGUS_INSTALLER_URL: ${{ needs.candidate.outputs.installer_url }}
           ARGUS_MANIFEST_URL: ${{ needs.candidate.outputs.manifest_url }}
           ARGUS_MANIFEST_ASSET_URL: ${{ needs.candidate.outputs.manifest_asset_url }}
+          ARGUS_EXPECTED_INSTALLER_SHA256: ${{ needs.candidate.outputs.installer_sha256 }}
           ARGUS_EXPECTED_VERSION: ${{ needs.candidate.outputs.version }}
           ARGUS_VPS_SMOKE_MODE: ${{ needs.candidate.outputs.acceptance_mode }}
           ARGUS_UPDATE_MANIFEST_ASSET_URL: ${{ needs.candidate.outputs.update_manifest_asset_url }}

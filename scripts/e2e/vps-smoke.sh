@@ -22,6 +22,7 @@ if [ "${1:-}" != "--inner" ]; then
   esac
   for argus_vps_name in \
     ARGUS_INSTALLER_URL \
+    ARGUS_EXPECTED_INSTALLER_SHA256 \
     ARGUS_MANIFEST_URL \
     ARGUS_MANIFEST_ASSET_URL \
     ARGUS_EXPECTED_VERSION \
@@ -112,6 +113,7 @@ ARGUS_VPS_DOCKERFILE
     --volume "$argus_vps_repo:/workspace:ro" \
     --env ARGUS_VPS_E2E=1 \
     --env ARGUS_INSTALLER_URL \
+    --env ARGUS_EXPECTED_INSTALLER_SHA256 \
     --env ARGUS_MANIFEST_URL \
     --env ARGUS_MANIFEST_ASSET_URL \
     --env ARGUS_EXPECTED_VERSION \
@@ -130,6 +132,7 @@ fi
 [ "$(id -u)" -eq 0 ] || argus_vps_die "the inner clean-host test must run as root"
 for argus_vps_name in \
   ARGUS_INSTALLER_URL \
+  ARGUS_EXPECTED_INSTALLER_SHA256 \
   ARGUS_MANIFEST_URL \
   ARGUS_MANIFEST_ASSET_URL \
   ARGUS_EXPECTED_VERSION \
@@ -215,6 +218,8 @@ if [ "$ARGUS_VPS_SMOKE_MODE" = update ]; then
 fi
 sh -n "$argus_vps_installer"
 chmod 700 "$argus_vps_installer"
+/workspace/scripts/e2e/verify-sha256.sh \
+  "$argus_vps_installer" "$ARGUS_EXPECTED_INSTALLER_SHA256"
 ARGUS_MANIFEST_URL="$ARGUS_MANIFEST_URL" \
 ARGUS_VERSION="$ARGUS_EXPECTED_VERSION" \
 ARGUS_GITHUB_TOKEN="${ARGUS_GITHUB_TOKEN:-}" \
