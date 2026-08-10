@@ -213,6 +213,24 @@ describe("safe update state machine", () => {
     await expect(rollbackUpdate({ root, executor: executor(), release: release("1.0.0", 2, "f") })).rejects.toThrow(/incompatible/u);
   });
 
+  it("rejects a compose-less persisted rollback backup before writing deployment state", async () => {
+    const root = await rootWithState();
+    const rollbackRelease = release("1.0.0", 1, "f");
+    const plan = await planUpdate({ root, release: release(), rollbackRelease, executor: executor() });
+    await backupInstance({ root, plan });
+    const originalState = await readFile(join(root, "state.json"), "utf8");
+    const persisted = JSON.parse(await readFile(join(root, "update-state.json"), "utf8")) as {
+      backup: { state: { compose?: unknown } };
+    };
+    delete persisted.backup.state.compose;
+    await writeFile(join(root, "update-state.json"), JSON.stringify(persisted));
+
+    await expect(rollbackUpdate({ root, executor: executor(), release: rollbackRelease })).rejects.toMatchObject({
+      code: "UPDATE_STATE_UNAVAILABLE",
+    });
+    await expect(readFile(join(root, "state.json"), "utf8")).resolves.toBe(originalState);
+  });
+
   it("rejects a persisted rollback with a path that escapes the instance root", async () => {
     const root = await rootWithState();
     const plan = await planUpdate({ root, release: release(), rollbackRelease: release("1.0.0", 1, "f"), executor: executor() });

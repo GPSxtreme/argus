@@ -231,6 +231,17 @@ const assertCompatible = (state: DeploymentStateV1, release: VerifiedReleaseMani
   }
 };
 
+const requireComposeState = (state: DeploymentStateV1): NonNullable<DeploymentStateV1["compose"]> => {
+  if (!state.compose) {
+    throw new DeploymentError(
+      "UPDATE_STATE_UNAVAILABLE",
+      "Argus update requires persisted verified deployment state.",
+      { recovery: "Run 'argus onboard' to establish managed deployment state first." },
+    );
+  }
+  return state.compose;
+};
+
 const releaseMatchesCurrent = (
   state: DeploymentStateV1,
   release: VerifiedReleaseManifest,
@@ -272,6 +283,7 @@ const releaseServiceImages = (release: VerifiedReleaseManifest) => ({
 });
 
 const stateForRelease = (state: DeploymentStateV1, release: VerifiedReleaseManifest): DeploymentStateV1 => {
+  const compose = requireComposeState(state);
   const images = releaseServiceImages(release);
   return {
     ...state,
@@ -282,15 +294,11 @@ const stateForRelease = (state: DeploymentStateV1, release: VerifiedReleaseManif
         return [name, image === undefined ? service : { ...service, image, healthy: true }];
       }),
     ),
-    ...(state.compose === undefined
-      ? {}
-      : {
-          compose: {
-            ...state.compose,
-            version: release.manifest.version,
-            images,
-          },
-        }),
+    compose: {
+      ...compose,
+      version: release.manifest.version,
+      images,
+    },
   };
 };
 
@@ -351,20 +359,21 @@ export const planUpdate = async ({ root, release, rollbackRelease }: PlanUpdateI
   assertVerifiedRelease(release);
   assertVerifiedRelease(rollbackRelease);
   const state = await loadDeploymentState(root);
-  if (!state?.compose) {
+  if (!state) {
     throw new DeploymentError(
       "UPDATE_STATE_UNAVAILABLE",
       "Argus update requires persisted verified deployment state.",
       { recovery: "Run 'argus onboard' to establish managed deployment state first." },
     );
   }
+  const compose = requireComposeState(state);
   assertCompatible(state, release);
   assertCompatible(state, rollbackRelease);
   assertRollbackMatchesCurrent(state, rollbackRelease);
   const noop = releaseMatchesCurrent(state, release);
   const services: Array<"argus" | "postgres" | "searxng"> = ["argus"];
-  if (state.compose.storage === "postgres") services.push("postgres");
-  if (state.compose.searxng) services.push("searxng");
+  if (compose.storage === "postgres") services.push("postgres");
+  if (compose.searxng) services.push("searxng");
   const changes = noop
     ? []
     : services.map((component) => ({

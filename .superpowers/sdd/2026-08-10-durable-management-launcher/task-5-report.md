@@ -16,3 +16,10 @@
 
 - `fnm exec --using 24.19.0 -- sh -c 'pnpm vitest run packages/deployment/test/update.test.ts && pnpm typecheck'`
 - `git diff --check`
+
+## Fix round 1
+
+- `stateForRelease` now requires Compose state and always writes exact managed Compose image metadata; it no longer has a compose-less compatibility branch.
+- Added a rollback regression that removes `backup.state.compose` from persisted update state, requires `UPDATE_STATE_UNAVAILABLE`, and verifies the deployment state file is not written.
+- RED: `fnm exec --using 24.19.0 -- pnpm vitest run packages/deployment/test/update.test.ts` resolved rollback successfully before the fix.
+- GREEN: the same command passed all 15 update-state tests after the Compose-state invariant was enforced.
