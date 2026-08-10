@@ -88,6 +88,7 @@ exec pnpm tsx ${shellQuote(join(repositoryRoot, "apps/cli/src/main.ts"))} onboar
         PATH: `${bin}:${process.env.PATH ?? ""}`,
         ARGUS_INSTALL_ROOT: directory,
         ARGUS_VPS_OUTPUT: output,
+        ARGUS_VPS_JSON: `${output}.json`,
         ARGUS_VPS_TOKEN: "argus-vps-test-token",
         ARGUS_VPS_TEST_NO_PROMPT: noPrompt ? "1" : "0",
       },
@@ -152,6 +153,57 @@ argus_vps_onboard ${shellQuote(output)}
       },
     );
     return { result, token };
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+};
+
+const runAnsiPrefixedSuccessfulVpsOnboard = () => {
+  const harness = readFileSync(
+    repositoryFile("scripts/e2e/vps-smoke.sh"),
+    "utf8",
+  );
+  const onboardFunctions = harness.match(
+    /(argus_vps_redact_json\(\) \{[\s\S]*?\n\}\n\nargus_vps_onboard\(\) \{[\s\S]*?\n\})\n\nargus_vps_onboard/u,
+  )?.[1];
+  expect(onboardFunctions).toBeDefined();
+
+  const directory = mkdtempSync(join(tmpdir(), "argus-vps-success-"));
+  try {
+    const bin = join(directory, "bin");
+    const output = join(directory, "onboard.log");
+    mkdirSync(bin);
+    writeFileSync(
+      join(bin, "argus"),
+      `#!/bin/sh
+stty -echo
+printf 'Argus API token'
+IFS= read -r ignored
+stty echo
+printf '\\r\\n\\033[?25h%s\\n' '{"contractVersion":1,"ok":true,"data":{"plan":{"deployment":{"changes":[]}}}}'
+`,
+      { mode: 0o755 },
+    );
+
+    return spawnSync(
+      "sh",
+      [
+        "-c",
+        `set -eu
+${onboardFunctions}
+argus_vps_token=argus_vps_test_secret
+argus_vps_onboard ${shellQuote(output)}
+`,
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH ?? ""}`,
+        },
+        timeout: 5_000,
+      },
+    );
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -383,6 +435,16 @@ describe("GitHub workflow toolchain", () => {
       expect(result.stderr).toContain('"code": "INSUFFICIENT_DISK"');
       expect(result.stderr).toContain("[REDACTED]");
       expect(result.stderr).not.toContain(token);
+    },
+  );
+
+  it.skipIf(!expectAvailable)(
+    "extracts successful JSON prefixed by terminal cursor state",
+    () => {
+      const result = runAnsiPrefixedSuccessfulVpsOnboard();
+
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(0);
     },
   );
 });

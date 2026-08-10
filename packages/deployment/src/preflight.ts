@@ -15,6 +15,7 @@ export interface PreflightReport {
 
 export interface InspectHostOptions {
   apiPort?: number;
+  managedComposeProject?: string;
   searxngEnabled?: boolean;
   hostArchitecture?: string;
   hostPaths?: {
@@ -88,6 +89,33 @@ export const parseListeningPorts = (stdout: string): ReadonlySet<number> | undef
 
 const succeeded = (result: CommandResult): boolean => result.exitCode === 0;
 
+const hasPublishedHostPort = (stdout: string, apiPort: number): boolean => {
+  try {
+    return stdout
+      .split("\n")
+      .filter((line) => line.trim().length > 0)
+      .some((line) => {
+        const ports = JSON.parse(line) as unknown;
+        if (ports === null || typeof ports !== "object" || Array.isArray(ports)) {
+          return false;
+        }
+        return Object.values(ports).some(
+          (bindings) =>
+            Array.isArray(bindings) &&
+            bindings.some(
+              (binding) =>
+                binding !== null &&
+                typeof binding === "object" &&
+                "HostPort" in binding &&
+                binding.HostPort === String(apiPort),
+            ),
+        );
+      });
+  } catch {
+    return false;
+  }
+};
+
 const failure = (code: string, message: string, recovery: string) => ({ code, message, recovery });
 
 export const inspectHost = async (
@@ -129,7 +157,32 @@ export const inspectHost = async (
   const diskFreeBytes = succeeded(disk) ? parseDiskFreeBytes(disk.stdout) : undefined;
   const minimumMemoryBytes = (options.searxngEnabled ? 2 : 1) * gibibyte;
   const usedPorts = succeeded(sockets) ? parseListeningPorts(sockets.stdout) : undefined;
-  const portAvailable = usedPorts === undefined ? "unknown" : !usedPorts.has(apiPort);
+  let managedPortOwner = false;
+  if (usedPorts?.has(apiPort) && options.managedComposeProject !== undefined) {
+    const containers = await executor.run("docker", [
+      "ps",
+      "--quiet",
+      "--filter",
+      `label=com.docker.compose.project=${options.managedComposeProject}`,
+      "--filter",
+      "label=com.docker.compose.service=argus",
+    ]);
+    const containerIds = containers.stdout.trim().split(/\s+/).filter(Boolean);
+    if (succeeded(containers) && containerIds.length > 0) {
+      const bindings = await executor.run("docker", [
+        "inspect",
+        "--format",
+        "{{json .NetworkSettings.Ports}}",
+        ...containerIds,
+      ]);
+      managedPortOwner =
+        succeeded(bindings) && hasPublishedHostPort(bindings.stdout, apiPort);
+    }
+  }
+  const portAvailable =
+    usedPorts === undefined
+      ? "unknown"
+      : !usedPorts.has(apiPort) || managedPortOwner;
   const failures: PreflightReport["failures"] = [];
 
   if (!supportedOs) {

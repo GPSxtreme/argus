@@ -216,14 +216,24 @@ argus_vps_redact_json() {
 
 argus_vps_onboard() {
   argus_vps_output=$1
-  if ARGUS_VPS_TOKEN=$argus_vps_token ARGUS_VPS_OUTPUT=$argus_vps_output expect <<'ARGUS_VPS_EXPECT'
+  if ARGUS_VPS_TOKEN=$argus_vps_token \
+    ARGUS_VPS_OUTPUT=$argus_vps_output \
+    ARGUS_VPS_JSON=$argus_vps_output.json \
+    expect <<'ARGUS_VPS_EXPECT'
 log_user 0
 log_file -a -noappend $env(ARGUS_VPS_OUTPUT)
+match_max 1000000
 set timeout 900
 spawn sh -c {stty rows 24 columns 80; exec argus onboard --from /opt/argus/.vps-smoke-onboard.yaml --yes --json}
 expect {
   -re {Argus API token} { send -- "$env(ARGUS_VPS_TOKEN)\r"; exp_continue }
-  eof {}
+  eof {
+    if {[regexp -- {(?s)(\{.*\})} $expect_out(buffer) _ json]} {
+      set json_file [open $env(ARGUS_VPS_JSON) w]
+      puts -nonewline $json_file $json
+      close $json_file
+    }
+  }
   timeout { exit 124 }
 }
 set result [wait]
@@ -234,9 +244,7 @@ ARGUS_VPS_EXPECT
   else
     argus_vps_onboard_status=$?
   fi
-  tr -d '\r' < "$argus_vps_output" |
-    sed -n '/^{.*}$/p' |
-    tail -n 1 > "$argus_vps_output.json"
+  [ -f "$argus_vps_output.json" ] || : > "$argus_vps_output.json"
   if [ "$argus_vps_onboard_status" -ne 0 ]; then
     printf '%s\n' \
       "argus VPS smoke: onboard failed with exit code $argus_vps_onboard_status" >&2
@@ -246,12 +254,9 @@ ARGUS_VPS_EXPECT
       printf '%s\n' \
         "argus VPS smoke: no structured onboarding failure was captured" >&2
     fi
-    if argus doctor --json > "$argus_vps_output.doctor.raw" 2>/dev/null; then
+    if argus doctor --json > "$argus_vps_output.doctor.json" 2>/dev/null; then
       :
     fi
-    tr -d '\r' < "$argus_vps_output.doctor.raw" |
-      sed -n '/^{.*}$/p' |
-      tail -n 1 > "$argus_vps_output.doctor.json"
     if jq -e . "$argus_vps_output.doctor.json" >/dev/null 2>&1; then
       printf '%s\n' "argus VPS smoke: onboard failure diagnostics" >&2
       argus_vps_redact_json "$argus_vps_output.doctor.json" >&2
