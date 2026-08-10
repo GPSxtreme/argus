@@ -62,7 +62,9 @@ interface FixtureRelease {
   publicKeyPem: string;
 }
 
-const createFixtureRelease = async (): Promise<FixtureRelease> => {
+const createFixtureRelease = async (
+  privateKeyPem = fixturePrivateKey,
+): Promise<FixtureRelease> => {
   const root = await mkdtemp(join(tmpdir(), "argus-promote-stable-"));
   temporaryDirectories.push(root);
   const release = join(root, "release");
@@ -107,7 +109,7 @@ const createFixtureRelease = async (): Promise<FixtureRelease> => {
       bytes: fxembedProvenance,
       url: "https://github.com/gpsxtreme/argus/releases/download/v1.2.3/fxembed-provenance.json",
     },
-    privateKeyPem: fixturePrivateKey,
+    privateKeyPem,
   });
   await Promise.all([
     writeFile(join(release, "manifest.json"), built.manifestBytes),
@@ -181,11 +183,30 @@ afterEach(async () => {
 });
 
 describe("promoteStableBundle", () => {
+  it("rejects a self-signed substitute before changing the trusted stable bundle", async () => {
+    const trusted = await createFixtureRelease();
+    const attackerPrivateKey = generateKeyPairSync("ed25519").privateKey
+      .export({ type: "pkcs8", format: "pem" })
+      .toString();
+    const attacker = await createFixtureRelease(attackerPrivateKey);
+    const prior = await stableBytes(trusted.stable);
+
+    await expect(
+      promoteStableBundle(attacker.release, trusted.stable),
+    ).rejects.toThrow("Release manifest signature is invalid");
+
+    await expect(stableBytes(trusted.stable)).resolves.toEqual(prior);
+  });
+
   it("promotes a fully verified release as one stable installer, manifest, and signature bundle", async () => {
     const fixture = await createFixtureRelease();
     const prior = await stableBytes(fixture.stable);
 
-    await expect(promoteStableBundle(fixture.release, fixture.stable)).resolves.toEqual({
+    await expect(
+      promoteStableBundle(fixture.release, fixture.stable, {
+        trustedPublicKeyPem: fixture.publicKeyPem,
+      }),
+    ).resolves.toEqual({
       version: "1.2.3",
       manifestSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
       installerSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
@@ -288,7 +309,11 @@ describe("promoteStableBundle", () => {
     const prior = await stableBytes(fixture.stable);
     await corrupt(fixture);
 
-    await expect(promoteStableBundle(fixture.release, fixture.stable)).rejects.toThrow();
+    await expect(
+      promoteStableBundle(fixture.release, fixture.stable, {
+        trustedPublicKeyPem: fixture.publicKeyPem,
+      }),
+    ).rejects.toThrow();
 
     await expect(stableBytes(fixture.stable)).resolves.toEqual(prior);
   });
@@ -307,7 +332,10 @@ describe("promoteStableBundle", () => {
     });
 
     await expect(
-      promoteStableBundle(fixture.release, fixture.stable, failingIO),
+      promoteStableBundle(fixture.release, fixture.stable, {
+        io: failingIO,
+        trustedPublicKeyPem: fixture.publicKeyPem,
+      }),
     ).rejects.toThrow("injected staging promotion failure");
 
     await expect(stableBytes(fixture.stable)).resolves.toEqual(prior);
@@ -327,7 +355,10 @@ describe("promoteStableBundle", () => {
     });
 
     await expect(
-      promoteStableBundle(fixture.release, fixture.stable, failingIO),
+      promoteStableBundle(fixture.release, fixture.stable, {
+        io: failingIO,
+        trustedPublicKeyPem: fixture.publicKeyPem,
+      }),
     ).rejects.toThrow("injected parent sync failure");
 
     const recovery = (await readdir(fixture.root)).find((entry) =>
@@ -353,7 +384,10 @@ describe("promoteStableBundle", () => {
     });
 
     await expect(
-      promoteStableBundle(fixture.release, fixture.stable, failingIO),
+      promoteStableBundle(fixture.release, fixture.stable, {
+        io: failingIO,
+        trustedPublicKeyPem: fixture.publicKeyPem,
+      }),
     ).rejects.toThrow("injected partial backup cleanup failure");
 
     const stable = await stableBytes(fixture.stable);
@@ -381,7 +415,10 @@ describe("promoteStableBundle", () => {
     });
 
     await expect(
-      promoteStableBundle(fixture.release, fixture.stable, failingIO),
+      promoteStableBundle(fixture.release, fixture.stable, {
+        io: failingIO,
+        trustedPublicKeyPem: fixture.publicKeyPem,
+      }),
     ).rejects.toThrow("injected final parent sync failure");
 
     const stable = await stableBytes(fixture.stable);

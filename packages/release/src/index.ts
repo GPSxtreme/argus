@@ -6,3 +6,4 @@ export * from "./skill.js";
 export * from "./management-state.js";
 export * from "./verify-release-directory.js";
 export * from "./stable-bundle.js";
+export * from "./stable-trust-root.js";

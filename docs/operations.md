@@ -196,22 +196,21 @@ files:
 
 After the signed release workflow has published its immutable release, download
 its `stable-promotion-input` artifact so those eight verified release files are
-in `dist/release`. Verify that directory and render the new stable bundle only
-with the release tooling:
+in `dist/release`. Render the new stable bundle only with the release tooling:
 
 ```sh
-pnpm tsx scripts/release/verify-manifest.ts dist/release/manifest.json dist/release/manifest.sig dist/release/release-public.pem
 pnpm tsx scripts/release/promote-stable.ts dist/release apps/web/public/releases/stable
 git diff -- apps/web/public/releases/stable
 ```
 
 For a new release, the diff must contain changes to exactly `install.sh`,
 `manifest.json`, and `manifest.sig` in that directory. The promotion command
-first verifies the signed manifest, its signing identity, and every signed
-candidate asset; it then writes those three stable members as one staged
-directory swap. Do not use an immutable GitHub release `install.sh` at the
-stable URL: it is bound to that release's immutable manifest URL, not the
-stable manifest URL.
+first verifies the manifest signature against Argus's canonical stable
+Ed25519 trust root. Only then does it accept the hash-bound candidate
+`release-public.pem` as the release identity and verify every signed candidate
+asset; it then writes those three stable members as one staged directory swap.
+Do not use an immutable GitHub release `install.sh` at the stable URL: it is
+bound to that release's immutable manifest URL, not the stable manifest URL.
 
 Before committing, run the release verification and the clean-host installer
 smoke described below against the verified candidate. Commit the three changed

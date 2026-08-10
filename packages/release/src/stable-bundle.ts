@@ -3,7 +3,8 @@ import { lstat, mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { renderInstaller } from "./installer.js";
 import { verifyReleaseManifestWithIdentity } from "./manifest.js";
-import { verifyReleaseDirectory } from "./verify-release-directory.js";
+import { stableReleasePublicKey } from "./stable-trust-root.js";
+import { verifyReleaseDirectoryWithPublicKey } from "./verify-release-directory.js";
 
 const stableManifestUrl =
   "https://argus.gpsxtre.me/releases/stable/manifest.json";
@@ -12,6 +13,13 @@ export interface StableBundlePromotion {
   version: string;
   manifestSha256: string;
   installerSha256: string;
+}
+
+export interface StableBundlePromotionOptions {
+  /** Injectable filesystem boundary for promotion failure recovery tests. */
+  io?: StableBundleIO;
+  /** Explicit root for controlled key rotation or isolated verification tests. */
+  trustedPublicKeyPem?: string;
 }
 
 /** Injectable filesystem boundary for exercising promotion failure recovery. */
@@ -95,12 +103,19 @@ interface PreparedBundle {
   promotion: StableBundlePromotion;
 }
 
-const prepareBundle = async (releaseDirectory: string): Promise<PreparedBundle> => {
-  const verified = await verifyReleaseDirectory(releaseDirectory);
+const prepareBundle = async (
+  releaseDirectory: string,
+  trustedPublicKeyPem: string,
+): Promise<PreparedBundle> => {
   const [manifest, signature] = await Promise.all([
     readFile(join(releaseDirectory, "manifest.json")),
     readFile(join(releaseDirectory, "manifest.sig")),
   ]);
+  verifyReleaseManifestWithIdentity(manifest, signature, trustedPublicKeyPem);
+  const verified = await verifyReleaseDirectoryWithPublicKey(
+    releaseDirectory,
+    trustedPublicKeyPem,
+  );
   if (checksum(manifest) !== verified.release.manifestSha256) {
     throw new TypeError("Release manifest changed while it was being verified.");
   }
@@ -133,8 +148,9 @@ const discardDirectory = async (
 export const promoteStableBundle = async (
   releaseDirectory: string,
   stableDirectory: string,
-  io: StableBundleIO = createStableBundleIO(),
+  options: StableBundlePromotionOptions = {},
 ): Promise<StableBundlePromotion> => {
+  const io = options.io ?? createStableBundleIO();
   const release = resolve(releaseDirectory);
   const stable = resolve(stableDirectory);
   const parent = dirname(stable);
@@ -142,7 +158,10 @@ export const promoteStableBundle = async (
   if (stableName.length === 0 || stable === parent) {
     throw new TypeError("Stable bundle path must name a directory below its parent.");
   }
-  const prepared = await prepareBundle(release);
+  const prepared = await prepareBundle(
+    release,
+    options.trustedPublicKeyPem ?? stableReleasePublicKey,
+  );
   if (!(await io.directoryExists(parent))) {
     throw new TypeError(`Stable bundle parent directory does not exist: ${parent}`);
   }

@@ -28,6 +28,7 @@ export interface VerifyReleaseFilesOptions {
   manifestPath: string;
   signaturePath: string;
   verificationPublicKeyPath?: string;
+  verificationPublicKeyPem?: string;
 }
 
 const nodeReleaseVerificationIO: ReleaseVerificationIO = {
@@ -42,6 +43,14 @@ export const verifyReleaseFiles = async (
 ): Promise<VerifiedReleaseDirectory> => {
   const releaseDirectory = resolve(options.releaseDirectory);
   const candidatePublicKeyPath = join(releaseDirectory, "release-public.pem");
+  if (
+    options.verificationPublicKeyPath !== undefined &&
+    options.verificationPublicKeyPem !== undefined
+  ) {
+    throw new TypeError(
+      "Specify either a release verification public-key path or PEM, not both.",
+    );
+  }
   const verificationPublicKeyPath = resolve(
     options.verificationPublicKeyPath ?? candidatePublicKeyPath,
   );
@@ -52,9 +61,10 @@ export const verifyReleaseFiles = async (
   ]);
   const publicKeyPem = candidatePublicKeyBytes.toString("utf8");
   const verificationPublicKeyPem =
-    verificationPublicKeyPath === candidatePublicKeyPath
+    options.verificationPublicKeyPem ??
+    (verificationPublicKeyPath === candidatePublicKeyPath
       ? publicKeyPem
-      : (await io.readFile(verificationPublicKeyPath)).toString("utf8");
+      : (await io.readFile(verificationPublicKeyPath)).toString("utf8"));
   const release = verifyReleaseManifestWithIdentity(
     manifestBytes,
     signature,
@@ -99,6 +109,24 @@ export const verifyReleaseDirectory = async (
       ...(publicKeyPath === undefined
         ? {}
         : { verificationPublicKeyPath: publicKeyPath }),
+    },
+    io,
+  );
+};
+
+/** Verifies a release directory with an explicit, already-trusted public key. */
+export const verifyReleaseDirectoryWithPublicKey = async (
+  directory: string,
+  verificationPublicKeyPem: string,
+  io: ReleaseVerificationIO = nodeReleaseVerificationIO,
+): Promise<VerifiedReleaseDirectory> => {
+  const releaseDirectory = resolve(directory);
+  return verifyReleaseFiles(
+    {
+      releaseDirectory,
+      manifestPath: join(releaseDirectory, "manifest.json"),
+      signaturePath: join(releaseDirectory, "manifest.sig"),
+      verificationPublicKeyPem,
     },
     io,
   );
