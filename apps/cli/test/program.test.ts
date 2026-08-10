@@ -228,31 +228,6 @@ describe("CLI JSON contract", () => {
     });
   });
 
-  it.each([
-    "before management-state promotion",
-    "during management-state promotion",
-  ])("does not report final verification when update fails %s", async (point) => {
-    let verified = false;
-    const harness = createHarness();
-    Object.assign(harness.dependencies.deployment as object, {
-      async inspectUpdate() {
-        return { targetVersion: "2.0.0", changes: [{ component: "argus", action: "update" }] };
-      },
-      async applyUpdate() {
-        throw new DeploymentError("UPDATE_PROMOTION_FAILED", `failed ${point}`);
-      },
-      async verifyUpdate() {
-        verified = true;
-        return { healthy: true };
-      },
-    });
-
-    await expect(
-      createProgram(harness.dependencies).parseAsync(["node", "argus", "update", "--json", "--yes"]),
-    ).rejects.toMatchObject({ exitCode: 1 });
-    expect(verified).toBe(false);
-  });
-
   it("requires --yes before exposing a verified rollback through JSON", async () => {
     let applied = false;
     const harness = createHarness();

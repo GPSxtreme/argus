@@ -16,3 +16,9 @@
 - `fnm exec --using 24.19.0 pnpm vitest run apps/cli/test/integrations.test.ts apps/cli/test/program.test.ts`
 - `fnm exec --using 24.19.0 pnpm typecheck`
 - `fnm exec --using 24.19.0 pnpm exec biome check apps/cli/src/integrations.ts apps/cli/src/program.ts apps/cli/test/integrations.test.ts apps/cli/test/program.test.ts`
+
+## Fix round 1 evidence
+
+- RED: `fnm exec --using 24.19.0 pnpm vitest run apps/cli/test/integrations.test.ts apps/cli/test/program.test.ts` reported two failures: a cloned release with the original manifest hash and a swapped valid CLI digest reached management-state validation, and the atomic-writer failure case resolved because no writer seam existed.
+- GREEN: after full canonical manifest identity comparison, deriving management state from the stored fetched release, and adding the injected atomic writer seam, the same command passed 47 tests across 2 files.
+- Final checks: `fnm exec --using 24.19.0 pnpm typecheck`, `fnm exec --using 24.19.0 pnpm lint`, and `git diff --check` completed successfully.

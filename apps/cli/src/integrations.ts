@@ -33,6 +33,7 @@ import {
   MAX_RELEASE_MANIFEST_BYTES,
   managementStateForRelease,
   type ReleaseManifestV1,
+  serializeReleaseManifestCanonical,
   type VerifiedReleaseManifest,
   verifyReleaseManifestWithIdentity,
   writeManagementStateAtomic,
@@ -588,6 +589,10 @@ export interface ProductionUpdateIntegrationOptions {
   publicKeyPem: string;
   fetcher?: typeof fetch;
   timeoutMs?: number;
+  writeManagementState?: (
+    path: string,
+    state: ReturnType<typeof managementStateForRelease>,
+  ) => Promise<void>;
 }
 
 interface FetchedUpdateRelease {
@@ -603,18 +608,23 @@ export const createProductionUpdateIntegration = ({
   publicKeyPem,
   fetcher = fetch,
   timeoutMs = defaultTimeoutMs,
+  writeManagementState = writeManagementStateAtomic,
 }: ProductionUpdateIntegrationOptions): ProductionUpdateIntegration => {
   const releaseFetcher = createReleaseFetcher(root, fetcher);
   const fetchedReleases = new Map<string, FetchedUpdateRelease>();
   const sameRelease = (
     left: VerifiedReleaseManifest,
     right: VerifiedReleaseManifest,
-  ): boolean =>
-    left.manifestSha256 === right.manifestSha256 &&
-    left.manifest.version === right.manifest.version &&
-    left.manifest.images.app.reference === right.manifest.images.app.reference &&
-    left.manifest.images.postgres.reference === right.manifest.images.postgres.reference &&
-    left.manifest.images.searxng.reference === right.manifest.images.searxng.reference;
+  ): boolean => {
+    if (left.manifestSha256 !== right.manifestSha256) return false;
+    try {
+      return Buffer.from(serializeReleaseManifestCanonical(left.manifest)).equals(
+        Buffer.from(serializeReleaseManifestCanonical(right.manifest)),
+      );
+    } catch {
+      return false;
+    }
+  };
   const contextFor = (fetched: FetchedUpdateRelease): PersistedReleaseContext => ({
     schemaVersion: 1,
     manifest: Buffer.from(fetched.manifestBytes).toString("base64"),
@@ -750,10 +760,10 @@ export const createProductionUpdateIntegration = ({
   const promoteManagementRelease = async (
     release: VerifiedReleaseManifest,
   ): Promise<void> => {
-    fetchedFor(release);
-    await writeManagementStateAtomic(
+    const fetched = fetchedFor(release);
+    await writeManagementState(
       join(root, basename(MANAGEMENT_WRAPPER_REQUIREMENTS.stateFile)),
-      managementStateForRelease(release),
+      managementStateForRelease(fetched.release),
     );
   };
 
