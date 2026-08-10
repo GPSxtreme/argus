@@ -56,6 +56,72 @@ describe("inspectHost", () => {
     expect(report.failures).toEqual([]);
   });
 
+  it("allows the API port owned by the persisted managed deployment", async () => {
+    const report = await inspectHost(
+      new FixtureExecutor(
+        hostFixtures({
+          "ss -ltn": result(
+            "State Recv-Q Send-Q Local Address:Port Peer Address:Port\nLISTEN 0 4096 0.0.0.0:8788 0.0.0.0:*\n",
+          ),
+          "docker ps --quiet --filter label=com.docker.compose.project=argus --filter label=com.docker.compose.service=argus":
+            result("managed-container-id\n"),
+          "docker inspect --format {{json .NetworkSettings.Ports}} managed-container-id":
+            result(
+              '{"8788/tcp":[{"HostIp":"0.0.0.0","HostPort":"8788"}]}\n',
+            ),
+        }),
+      ),
+      { apiPort: 8788, managedComposeProject: "argus" },
+    );
+
+    expect(report.ports).toEqual([{ port: 8788, available: true }]);
+    expect(report.failures).toEqual([]);
+  });
+
+  it("rejects an unrelated listener when persisted managed state is stale", async () => {
+    const report = await inspectHost(
+      new FixtureExecutor(
+        hostFixtures({
+          "ss -ltn": result(
+            "State Recv-Q Send-Q Local Address:Port Peer Address:Port\nLISTEN 0 4096 0.0.0.0:8788 0.0.0.0:*\n",
+          ),
+          "docker ps --quiet --filter label=com.docker.compose.project=argus --filter label=com.docker.compose.service=argus":
+            result(""),
+        }),
+      ),
+      { apiPort: 8788, managedComposeProject: "argus" },
+    );
+
+    expect(report.ports).toEqual([{ port: 8788, available: false }]);
+    expect(report.failures).toContainEqual(
+      expect.objectContaining({ code: "PORT_IN_USE" }),
+    );
+  });
+
+  it("rejects a managed container whose port is published on a different host port", async () => {
+    const report = await inspectHost(
+      new FixtureExecutor(
+        hostFixtures({
+          "ss -ltn": result(
+            "State Recv-Q Send-Q Local Address:Port Peer Address:Port\nLISTEN 0 4096 0.0.0.0:8788 0.0.0.0:*\n",
+          ),
+          "docker ps --quiet --filter label=com.docker.compose.project=argus --filter label=com.docker.compose.service=argus":
+            result("managed-container-id\n"),
+          "docker inspect --format {{json .NetworkSettings.Ports}} managed-container-id":
+            result(
+              '{"8788/tcp":[{"HostIp":"0.0.0.0","HostPort":"9999"}]}\n',
+            ),
+        }),
+      ),
+      { apiPort: 8788, managedComposeProject: "argus" },
+    );
+
+    expect(report.ports).toEqual([{ port: 8788, available: false }]);
+    expect(report.failures).toContainEqual(
+      expect.objectContaining({ code: "PORT_IN_USE" }),
+    );
+  });
+
   it("reports unsupported Linux distributions", async () => {
     const report = await inspectHost(
       new FixtureExecutor(

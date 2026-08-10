@@ -1368,8 +1368,12 @@ const createDeploymentAdapter = (
       return rollbackUpdate({ root, executor, release: rollback.release as VerifiedReleaseManifest });
     },
     async inspectOnboarding(answers, secrets) {
+      const state = await loadDeploymentState(root);
       const preflight = await inspectHost(executor, {
         apiPort: answers.deployment.apiPort,
+        ...(state?.compose?.apiPort === answers.deployment.apiPort
+          ? { managedComposeProject: state.composeProject }
+          : {}),
         searxngEnabled: answers.managed.searxng === "managed",
         ...(process.env.ARGUS_HOST_ARCH === undefined
           ? {}
