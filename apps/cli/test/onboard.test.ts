@@ -1,6 +1,7 @@
 import {
   chmod,
   access,
+  mkdir,
   mkdtemp,
   readFile,
   readdir,
@@ -839,6 +840,93 @@ watches: []
     (await import("@argus/deployment")).onboardingAnswersSchema.parse(
       parse(onboardingFixture),
     ) as OnboardingAnswersV1;
+
+  it("re-onboards when the persisted managed deployment owns the API port", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "argus-cli-reonboard-"));
+    temporaryDirectories.push(directory);
+    const installRoot = join(directory, "instance");
+    const setup = join(directory, "setup.yaml");
+    await mkdir(installRoot);
+    await writeFile(setup, onboardingFixture, { mode: 0o600 });
+    await writeFile(
+      join(installRoot, "state.json"),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        argusVersion: verifiedRelease.version,
+        composeProject: "argus",
+        configHash: "persisted-config",
+        services: {},
+        compose: {
+          version: verifiedRelease.version,
+          apiPort: 8788,
+          storage: "sqlite",
+          searxng: true,
+          images: verifiedRelease.images,
+        },
+        updatedAt: "2026-08-10T00:00:00.000Z",
+      })}\n`,
+      { mode: 0o644 },
+    );
+    const results: Record<string, string> = {
+      "cat /host/etc/os-release": 'ID=ubuntu\nVERSION_ID="24.04"\n',
+      "docker info --format {{.Architecture}}": "x86_64\n",
+      "docker --version": "Docker version 29\n",
+      "docker compose version": "Docker Compose version v2\n",
+      "docker info": "Server: Docker\n",
+      "cat /host/proc/meminfo": "MemTotal:       4194304 kB\n",
+      "df -B1 /opt/argus":
+        "Filesystem 1B-blocks Used Available Use% Mounted on\n/dev/vda 10000000000 1 9000000000 1% /\n",
+      "ss -ltn":
+        "State Recv-Q Send-Q Local Address:Port Peer Address:Port\nLISTEN 0 4096 0.0.0.0:8788 0.0.0.0:*\n",
+      "docker ps --quiet --filter label=com.docker.compose.project=argus --filter label=com.docker.compose.service=argus":
+        "managed-container-id\n",
+      "docker inspect --format {{json .NetworkSettings.Ports}} managed-container-id":
+        '{"8788/tcp":[{"HostIp":"0.0.0.0","HostPort":"8788"}]}\n',
+    };
+    let inspected = false;
+    let stdout = "";
+    const dependencies = createNodeCliDependencies({
+      root: installRoot,
+      executor: {
+        async run(command, args) {
+          const key = [command, ...args].join(" ");
+          return {
+            exitCode: key in results ? 0 : 1,
+            stdout: results[key] ?? "",
+            stderr: "",
+          };
+        },
+      },
+      prompt: noPrompt,
+      io: { stdout: (value) => (stdout += value), stderr: () => undefined },
+      onboardingIntegration: {
+        async inspect() {
+          inspected = true;
+          return releaseInspection;
+        },
+        async apply() {
+          return releaseApplication;
+        },
+        async verify() {
+          return { healthy: true, release: verifiedRelease, status: "running" };
+        },
+      },
+    });
+    dependencies.interactive = true;
+
+    await createProgram(dependencies).parseAsync([
+      "node",
+      "argus",
+      "onboard",
+      "--from",
+      setup,
+      "--yes",
+      "--json",
+    ]);
+
+    expect(inspected).toBe(true);
+    expect(JSON.parse(stdout).ok).toBe(true);
+  });
 
   it("applies and verifies the exact inspected release object identity", async () => {
     const answers = await parsedReleaseAnswers();
