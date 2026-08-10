@@ -28,7 +28,8 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+      - run: sudo apt-get install -y expect
       - run: pnpm install --frozen-lockfile
-      - run: pnpm test
+      - run: ARGUS_REQUIRE_EXPECT_TESTS=1 pnpm test
       - run: pnpm typecheck
       - run: pnpm build
