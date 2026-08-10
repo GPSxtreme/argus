@@ -139,8 +139,20 @@ describe("writeManagementStateAtomic", () => {
       "close:file",
       "lstat:/opt/argus/management.state",
       expect.stringMatching(
+        /^rename:\/opt\/argus\/management\.state:\/opt\/argus\/\.management\.state\.backup-[^.]+$/u,
+      ),
+      "open:/opt/argus:r",
+      "sync:directory",
+      "close:directory",
+      expect.stringMatching(/^lstat:\/opt\/argus\/\.management\.state\.[^.]+\.tmp$/u),
+      "lstat:/opt/argus/management.state",
+      expect.stringMatching(
         /^rename:\/opt\/argus\/\.management\.state\.[^.]+\.tmp:\/opt\/argus\/management\.state$/u,
       ),
+      "open:/opt/argus:r",
+      "sync:directory",
+      "close:directory",
+      expect.stringMatching(/^unlink:\/opt\/argus\/\.management\.state\.backup-[^.]+$/u),
       "open:/opt/argus:r",
       "sync:directory",
       "close:directory",
@@ -160,6 +172,73 @@ describe("writeManagementStateAtomic", () => {
     );
     expect(events.some((event) => event.startsWith("rename:"))).toBe(false);
     expect(filesystem.targetContents).toBe("previous state\n");
+  });
+
+  it("restores the prior state when the parent sync fails after promotion rename", async () => {
+    const events: string[] = [];
+    const filesystem = recordingFileSystem(events, {
+      failDirectorySyncWithTargetContents: valid,
+    });
+
+    await expect(
+      writeManagementStateAtomic("/opt/argus/management.state", state, filesystem),
+    ).rejects.toThrow("injected parent sync failure");
+
+    expect(filesystem.targetContents).toBe("previous state\n");
+  });
+
+  it("restores prior absence when the parent sync fails after the first promotion", async () => {
+    const events: string[] = [];
+    const filesystem = recordingFileSystem(events, {
+      targetContents: undefined,
+      failDirectorySyncWithTargetContents: valid,
+    });
+
+    await expect(
+      writeManagementStateAtomic("/opt/argus/management.state", state, filesystem),
+    ).rejects.toThrow("injected parent sync failure");
+
+    expect(filesystem.targetContents).toBeUndefined();
+  });
+
+  it("retains the prior state at an actionable recovery path when restoration sync fails", async () => {
+    const events: string[] = [];
+    const filesystem = recordingFileSystem(events, {
+      failDirectorySyncWithTargetContents: [valid, "previous state\n"],
+    });
+
+    await expect(
+      writeManagementStateAtomic("/opt/argus/management.state", state, filesystem),
+    ).rejects.toThrow("Prior management state is retained for recovery at");
+
+    expect(filesystem.targetContents).toBeUndefined();
+    expect(filesystem.backupContents).toBe("previous state\n");
+  });
+
+  it("retains the prior state at an actionable recovery path when restoration rename fails", async () => {
+    const events: string[] = [];
+    const filesystem = recordingFileSystem(events, {
+      failDirectorySyncWithTargetContents: valid,
+      failRestoreRename: true,
+    });
+
+    await expect(
+      writeManagementStateAtomic("/opt/argus/management.state", state, filesystem),
+    ).rejects.toThrow("Prior management state is retained for recovery at");
+
+    expect(filesystem.backupContents).toBe("previous state\n");
+  });
+
+  it("fails visibly when cleanup cannot remove the prior-state recovery material", async () => {
+    const events: string[] = [];
+    const filesystem = recordingFileSystem(events, { failBackupUnlink: true });
+
+    await expect(
+      writeManagementStateAtomic("/opt/argus/management.state", state, filesystem),
+    ).rejects.toThrow("Management state was durably promoted");
+
+    expect(filesystem.targetContents).toBe(valid);
+    expect(filesystem.backupContents).toBe("previous state\n");
   });
 
   it("rejects a symlink target before opening a temporary replacement", async () => {
@@ -206,18 +285,41 @@ const recordingFileSystem = (
   events: string[],
   options: {
     failFileSync?: boolean;
+    failDirectorySyncWithTargetContents?: string | string[];
+    failBackupUnlink?: boolean;
+    failRestoreRename?: boolean;
+    targetContents?: string | undefined;
     targetIsSymlink?: boolean;
     targetBecomesSymlink?: boolean;
   } = {},
-): ManagementStateFileSystem & { targetContents: string } => {
+): ManagementStateFileSystem & {
+  targetContents: string | undefined;
+  backupContents: string | undefined;
+} => {
   const target = "/opt/argus/management.state";
   let targetLstatCount = 0;
-  let targetContents = "previous state\n";
-  let temporaryContents = "";
+  const contentsByPath = new Map<string, string>();
+  if (options.targetContents !== undefined || !("targetContents" in options)) {
+    contentsByPath.set(target, options.targetContents ?? "previous state\n");
+  }
+  const directorySyncFailures =
+    options.failDirectorySyncWithTargetContents === undefined
+      ? []
+      : Array.isArray(options.failDirectorySyncWithTargetContents)
+        ? [...options.failDirectorySyncWithTargetContents]
+        : [options.failDirectorySyncWithTargetContents];
+  const missing = (path: string): NodeJS.ErrnoException =>
+    Object.assign(new Error(`ENOENT: no such file or directory, lstat '${path}'`), {
+      code: "ENOENT",
+    });
   const file = {
-    writeFile: async (contents: string): Promise<void> => {
-      events.push(`write:${contents}`);
-      temporaryContents = contents;
+    writeFile: async (written: string): Promise<void> => {
+      events.push(`write:${written}`);
+      const temporary = [...contentsByPath.keys()].find((path) =>
+        path.includes(".management.state."),
+      );
+      if (temporary === undefined) throw new Error("temporary management state is missing");
+      contentsByPath.set(temporary, written);
     },
     chmod: async (mode: number): Promise<void> => {
       events.push(`chmod:${mode.toString(8)}`);
@@ -239,6 +341,13 @@ const recordingFileSystem = (
     },
     sync: async (): Promise<void> => {
       events.push("sync:directory");
+      if (
+        directorySyncFailures.length > 0 &&
+        directorySyncFailures[0] === contentsByPath.get(target)
+      ) {
+        directorySyncFailures.shift();
+        throw new Error("injected parent sync failure");
+      }
     },
     close: async (): Promise<void> => {
       events.push("close:directory");
@@ -246,8 +355,13 @@ const recordingFileSystem = (
   };
 
   return {
-    get targetContents(): string {
-      return targetContents;
+    get targetContents(): string | undefined {
+      return contentsByPath.get(target);
+    },
+    get backupContents(): string | undefined {
+      return [...contentsByPath.entries()].find(([path]) =>
+        path.includes(".management.state.backup-"),
+      )?.[1];
     },
     lstat: async (path: string) => {
       events.push(`lstat:${path}`);
@@ -258,19 +372,30 @@ const recordingFileSystem = (
       if (path === target && options.targetBecomesSymlink && targetLstatCount === 2) {
         return { isSymbolicLink: () => true };
       }
+      if (!contentsByPath.has(path)) throw missing(path);
       return { isSymbolicLink: () => false };
     },
     open: async (path: string, flags: string, mode?: number) => {
       events.push(`open:${path}:${flags}${mode === undefined ? "" : `:${mode.toString(8)}`}`);
+      if (path !== "/opt/argus" && flags === "wx") contentsByPath.set(path, "");
       return path === "/opt/argus" ? directory : file;
     },
     rename: async (from: string, to: string): Promise<void> => {
       events.push(`rename:${from}:${to}`);
-      if (to === target) targetContents = temporaryContents;
+      if (options.failRestoreRename && from.includes(".management.state.backup-")) {
+        throw new Error("injected restore rename failure");
+      }
+      const source = contentsByPath.get(from);
+      if (source === undefined) throw missing(from);
+      contentsByPath.delete(from);
+      contentsByPath.set(to, source);
     },
     unlink: async (path: string): Promise<void> => {
       events.push(`unlink:${path}`);
-      temporaryContents = "";
+      if (options.failBackupUnlink && path.includes(".management.state.backup-")) {
+        throw new Error("injected backup cleanup failure");
+      }
+      contentsByPath.delete(path);
     },
   };
 };

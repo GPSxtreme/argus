@@ -111,15 +111,49 @@ export const parseManagementState = (source: string): ManagementStateV1 => {
 const assertNotSymlink = async (
   path: string,
   fileSystem: ManagementStateFileSystem,
-): Promise<void> => {
+): Promise<boolean> => {
   try {
     if ((await fileSystem.lstat(path)).isSymbolicLink()) {
       throw new TypeError(`Refusing symlink management state target: ${path}`);
     }
+    return true;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
   }
 };
+
+const syncDirectory = async (
+  directory: string,
+  fileSystem: ManagementStateFileSystem,
+): Promise<void> => {
+  const directoryHandle = await fileSystem.open(directory, "r");
+  try {
+    await directoryHandle.sync();
+  } finally {
+    await directoryHandle.close();
+  }
+};
+
+const errorMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
+
+const recoveryError = (failure: unknown, recovery: unknown): Error =>
+  new Error(
+    `${errorMessage(failure)}; management state recovery requires attention: ${errorMessage(recovery)}`,
+    { cause: failure },
+  );
+
+const retainedPriorStateError = (
+  backupPath: string,
+  path: string,
+  directory: string,
+  failure: unknown,
+): Error =>
+  new Error(
+    `Prior management state is retained for recovery at ${backupPath}; restore it to ${path} and sync ${directory}: ${errorMessage(failure)}`,
+    { cause: failure },
+  );
 
 export const writeManagementStateAtomic = async (
   path: string,
@@ -129,8 +163,14 @@ export const writeManagementStateAtomic = async (
   const contents = serializeManagementState(state);
   const directory = dirname(path);
   const temporaryPath = join(directory, `.${basename(path)}.${randomUUID()}.tmp`);
+  const backupPath = join(directory, `.${basename(path)}.backup-${randomUUID()}`);
+  const failedCandidatePath = join(directory, `.${basename(path)}.failed-${randomUUID()}`);
   let temporaryCreated = false;
   let temporaryFile: ManagementStateFileHandle | undefined;
+  let priorAtBackup = false;
+  let candidateAtPath = false;
+  let failedCandidateExists = false;
+  let stateDurablyPromoted = false;
 
   await assertNotSymlink(path, fileSystem);
   try {
@@ -142,23 +182,107 @@ export const writeManagementStateAtomic = async (
     await temporaryFile.close();
     temporaryFile = undefined;
 
+    const hadPreviousState = await assertNotSymlink(path, fileSystem);
+    if (hadPreviousState) {
+      await fileSystem.rename(path, backupPath);
+      priorAtBackup = true;
+      await syncDirectory(directory, fileSystem);
+    }
+
+    await assertNotSymlink(temporaryPath, fileSystem);
     await assertNotSymlink(path, fileSystem);
     await fileSystem.rename(temporaryPath, path);
     temporaryCreated = false;
+    candidateAtPath = true;
 
-    const directoryHandle = await fileSystem.open(directory, "r");
-    try {
-      await directoryHandle.sync();
-    } finally {
-      await directoryHandle.close();
+    await syncDirectory(directory, fileSystem);
+    stateDurablyPromoted = true;
+
+    if (priorAtBackup) {
+      await fileSystem.unlink(backupPath);
+      priorAtBackup = false;
+      await syncDirectory(directory, fileSystem);
     }
-  } catch (error) {
+  } catch (failure) {
+    if (stateDurablyPromoted) {
+      const cleanup = priorAtBackup
+        ? `prior state remains at ${backupPath}`
+        : `directory cleanup durability could not be confirmed in ${directory}`;
+      throw new Error(
+        `Management state was durably promoted at ${path}, but ${cleanup}; inspect the directory before retrying: ${errorMessage(failure)}`,
+        { cause: failure },
+      );
+    }
+
+    let closeFailure: unknown;
     if (temporaryFile !== undefined) {
-      await temporaryFile.close().catch(() => undefined);
+      try {
+        await temporaryFile.close();
+      } catch (error) {
+        closeFailure = error;
+      }
+      temporaryFile = undefined;
     }
-    if (temporaryCreated) {
-      await fileSystem.unlink(temporaryPath).catch(() => undefined);
+    try {
+      if (priorAtBackup) {
+        if (candidateAtPath) {
+          try {
+            await fileSystem.rename(path, failedCandidatePath);
+          } catch (candidateRecoveryFailure) {
+            throw retainedPriorStateError(
+              backupPath,
+              path,
+              directory,
+              candidateRecoveryFailure,
+            );
+          }
+          candidateAtPath = false;
+          failedCandidateExists = true;
+        }
+        await assertNotSymlink(backupPath, fileSystem);
+        try {
+          await fileSystem.rename(backupPath, path);
+        } catch (restoreRenameFailure) {
+          throw retainedPriorStateError(backupPath, path, directory, restoreRenameFailure);
+        }
+        priorAtBackup = false;
+        try {
+          await syncDirectory(directory, fileSystem);
+        } catch (restoreFailure) {
+          await fileSystem.rename(path, backupPath);
+          priorAtBackup = true;
+          throw retainedPriorStateError(backupPath, path, directory, restoreFailure);
+        }
+        if (failedCandidateExists) {
+          await fileSystem.unlink(failedCandidatePath);
+          failedCandidateExists = false;
+          await syncDirectory(directory, fileSystem);
+        }
+      } else if (candidateAtPath) {
+        try {
+          await fileSystem.rename(path, failedCandidatePath);
+        } catch (candidateRecoveryFailure) {
+          throw new Error(
+            `Promoted management state remains at ${path}; remove it and sync ${directory} to restore the prior absence: ${errorMessage(candidateRecoveryFailure)}`,
+            { cause: candidateRecoveryFailure },
+          );
+        }
+        candidateAtPath = false;
+        failedCandidateExists = true;
+        await syncDirectory(directory, fileSystem);
+        await fileSystem.unlink(failedCandidatePath);
+        failedCandidateExists = false;
+        await syncDirectory(directory, fileSystem);
+      }
+      if (temporaryCreated) {
+        await fileSystem.unlink(temporaryPath);
+        temporaryCreated = false;
+        await syncDirectory(directory, fileSystem);
+      }
+      if (closeFailure !== undefined) throw closeFailure;
+    } catch (recovery) {
+      throw recoveryError(failure, recovery);
     }
-    throw error;
+    throw failure;
   }
 };
