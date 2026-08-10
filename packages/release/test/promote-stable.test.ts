@@ -3,6 +3,7 @@ import {
   createPrivateKey,
   generateKeyPairSync,
   sign,
+  verify,
 } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import {
@@ -181,6 +182,17 @@ const stableBytes = async (stable: string): Promise<StableBundleBytes> => ({
   "manifest.sig": await readFile(join(stable, "manifest.sig")),
 });
 
+const installerTrustRoot = (installer: Buffer): string => {
+  const marker = "<<'ARGUS_RELEASE_PUBLIC_KEY'\n";
+  const contents = installer.toString("utf8");
+  const start = contents.indexOf(marker);
+  const end = contents.indexOf("\nARGUS_RELEASE_PUBLIC_KEY\n", start + marker.length);
+  if (start === -1 || end === -1) {
+    throw new TypeError("Promoted installer is missing its trust-root heredoc.");
+  }
+  return contents.slice(start + marker.length, end);
+};
+
 afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((path) => rm(path, { recursive: true })));
 });
@@ -236,7 +248,7 @@ describe("promoteStableBundle", () => {
     ]);
   });
 
-  it("promotes a root-signed release with a distinct hash-bound candidate identity", async () => {
+  it("promotes a bundle whose installer verifies with the root instead of its distinct candidate asset", async () => {
     const fixture = await createCrossSignedFixture();
 
     await expect(
@@ -251,11 +263,28 @@ describe("promoteStableBundle", () => {
     const promoted = await stableBytes(fixture.stable);
     expect(promoted["manifest.json"]).toEqual(fixture.manifest);
     expect(promoted["manifest.sig"]).toEqual(fixture.signature);
-    expect(promoted["install.sh"].toString("utf8")).toContain(
-      fixture.publicKeyPem,
-    );
-    expect(promoted["install.sh"].toString("utf8")).not.toContain(
-      fixture.verificationPublicKeyPem,
+    const trustRoot = installerTrustRoot(promoted["install.sh"]);
+    expect(trustRoot).toBe(fixture.verificationPublicKeyPem.trim());
+    expect(trustRoot).not.toBe(fixture.publicKeyPem.trim());
+    expect(
+      verify(
+        null,
+        promoted["manifest.json"],
+        trustRoot,
+        promoted["manifest.sig"],
+      ),
+    ).toBe(true);
+    expect(
+      verify(
+        null,
+        promoted["manifest.json"],
+        fixture.publicKeyPem,
+        promoted["manifest.sig"],
+      ),
+    ).toBe(false);
+    expect(digest(await readFile(join(fixture.release, "release-public.pem")))).toBe(
+      (JSON.parse(fixture.manifest.toString("utf8")) as ReleaseManifestV1).assets
+        .publicKey.sha256,
     );
   });
 

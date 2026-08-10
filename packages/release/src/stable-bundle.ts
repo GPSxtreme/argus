@@ -122,7 +122,7 @@ const prepareBundle = async (
   const installer = Buffer.from(
     renderInstaller({
       manifestUrl: stableManifestUrl,
-      publicKeyPem: verified.publicKeyPem,
+      publicKeyPem: trustedPublicKeyPem,
     }),
   );
   return {

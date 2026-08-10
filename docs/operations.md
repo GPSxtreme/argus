@@ -206,11 +206,12 @@ git diff -- apps/web/public/releases/stable
 For a new release, the diff must contain changes to exactly `install.sh`,
 `manifest.json`, and `manifest.sig` in that directory. The promotion command
 first verifies the manifest signature against Argus's canonical stable
-Ed25519 trust root. Only then does it accept the hash-bound candidate
-`release-public.pem` as the release identity and verify every signed candidate
-asset; it then writes those three stable members as one staged directory swap.
-Do not use an immutable GitHub release `install.sh` at the stable URL: it is
-bound to that release's immutable manifest URL, not the stable manifest URL.
+Ed25519 trust root. It embeds that same successfully verified root in the
+stable installer and verifies the hash-bound candidate `release-public.pem`
+alongside every other signed candidate asset; it then writes those three stable
+members as one staged directory swap. Do not use an immutable GitHub release
+`install.sh` at the stable URL: it is bound to that release's immutable manifest
+URL, not the stable manifest URL.
 
 Before committing, run the release verification and the clean-host installer
 smoke described below against the verified candidate. Commit the three changed
