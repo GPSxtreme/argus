@@ -199,12 +199,12 @@ argus_vps_onboard() {
   argus_vps_output=$1
   ARGUS_VPS_TOKEN=$argus_vps_token ARGUS_VPS_OUTPUT=$argus_vps_output expect <<'ARGUS_VPS_EXPECT'
 log_user 0
-log_file -noappend $env(ARGUS_VPS_OUTPUT)
+log_file -a -noappend $env(ARGUS_VPS_OUTPUT)
 set timeout 900
-spawn argus onboard --from /opt/argus/.vps-smoke-onboard.yaml --yes --json
+spawn sh -c {stty rows 24 columns 80; exec argus onboard --from /opt/argus/.vps-smoke-onboard.yaml --yes --json}
 expect {
   -re {Argus API token} { send -- "$env(ARGUS_VPS_TOKEN)\r"; exp_continue }
-  eof
+  eof {}
   timeout { exit 124 }
 }
 set result [wait]
