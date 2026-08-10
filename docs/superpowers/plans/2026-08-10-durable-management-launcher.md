@@ -19,7 +19,7 @@
 - Modify: `packages/release/src/index.ts`
   - Export the management-state module.
 - Modify: `packages/release/src/wrapper.ts`
-  - Remove the wrapper rendering options type; use the deterministic zero-argument renderer.
+  - Remove `ArgusWrapperOptions`; replace `renderArgusWrapper(options)` with deterministic `renderArgusWrapper()`.
 - Modify: `packages/release/src/installer.ts`
   - Bootstrap exact state from the verified manifest, validate the durable wrapper, and transactionally install both files.
 - Modify: `scripts/release/create-manifest.ts`, `scripts/release/export-wrapper.ts`
@@ -147,7 +147,7 @@ Expected: FAIL because the wrapper still embeds version/image and accepts render
 
 - [ ] **Step 4: Implement the durable shell and remove obsolete API paths**
 
-Delete the wrapper rendering options type and all release-specific renderer arguments. Update both release scripts to use the deterministic renderer only. Preserve `exec docker` so signals and exit codes flow through unchanged.
+Delete `ArgusWrapperOptions` and all release-specific renderer arguments. Update both release scripts to call `renderArgusWrapper()` only. Preserve `exec docker` so signals and exit codes flow through unchanged.
 
 - [ ] **Step 5: Run GREEN and commit**
 
@@ -348,10 +348,10 @@ Explain in plain language: installer is required once to move from the legacy wr
 Check every requirement in `docs/superpowers/specs/2026-08-10-durable-management-launcher-design.md` against code/tests. Search for placeholder implementations and obsolete APIs:
 
 ```sh
-rg -n "TODO|FIXME|wrapper rendering options" packages apps scripts docs
+rg -n "TODO|FIXME|ArgusWrapperOptions|renderArgusWrapper\(" packages apps scripts docs
 ```
 
-Expected: no placeholder for this feature, no wrapper rendering options type, and every renderer call has zero arguments.
+Expected: no placeholder for this feature, no `ArgusWrapperOptions`, and every renderer call has zero arguments.
 
 - [ ] **Step 3: Run full Node 24 gates**
 
@@ -389,3 +389,4 @@ argus doctor --json
 ```
 
 Expected: the two launcher hashes match, version/state select the signed release, update is healthy, and the existing ingestion data remains intact. Never touch `ssh gpu` or unrelated `atlas-db`.
+
