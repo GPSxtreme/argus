@@ -195,6 +195,25 @@ sed "s#https://argus.gpsxtre.me/#$argus_vps_controlled_url#" \
   > /opt/argus/.vps-smoke-onboard.yaml
 chmod 600 /opt/argus/.vps-smoke-onboard.yaml
 
+argus_vps_redact_json() {
+  jq '
+    walk(
+      if type == "object" then
+        with_entries(
+          if (.key | ascii_downcase | test("token|secret|password|authorization")) then
+            .value = "[REDACTED]"
+          else
+            .
+          end
+        )
+      else
+        .
+      end
+    )
+  ' "$1" |
+    sed "s#$argus_vps_token#[REDACTED]#g"
+}
+
 argus_vps_onboard() {
   argus_vps_output=$1
   if ARGUS_VPS_TOKEN=$argus_vps_token ARGUS_VPS_OUTPUT=$argus_vps_output expect <<'ARGUS_VPS_EXPECT'
@@ -222,25 +241,20 @@ ARGUS_VPS_EXPECT
     printf '%s\n' \
       "argus VPS smoke: onboard failed with exit code $argus_vps_onboard_status" >&2
     if jq -e . "$argus_vps_output.json" >/dev/null 2>&1; then
-      jq '
-        walk(
-          if type == "object" then
-            with_entries(
-              if (.key | ascii_downcase | test("token|secret|password|authorization")) then
-                .value = "[REDACTED]"
-              else
-                .
-              end
-            )
-          else
-            .
-          end
-        )
-      ' "$argus_vps_output.json" |
-        sed "s#$argus_vps_token#[REDACTED]#g" >&2
+      argus_vps_redact_json "$argus_vps_output.json" >&2
     else
       printf '%s\n' \
         "argus VPS smoke: no structured onboarding failure was captured" >&2
+    fi
+    if argus doctor --json > "$argus_vps_output.doctor.raw" 2>/dev/null; then
+      :
+    fi
+    tr -d '\r' < "$argus_vps_output.doctor.raw" |
+      sed -n '/^{.*}$/p' |
+      tail -n 1 > "$argus_vps_output.doctor.json"
+    if jq -e . "$argus_vps_output.doctor.json" >/dev/null 2>&1; then
+      printf '%s\n' "argus VPS smoke: onboard failure diagnostics" >&2
+      argus_vps_redact_json "$argus_vps_output.doctor.json" >&2
     fi
     return "$argus_vps_onboard_status"
   fi

@@ -109,7 +109,7 @@ const runFailingVpsOnboard = () => {
     "utf8",
   );
   const onboardFunction = harness.match(
-    /(argus_vps_onboard\(\) \{[\s\S]*?\n\})\n\nargus_vps_onboard/u,
+    /(argus_vps_redact_json\(\) \{[\s\S]*?\n\}\n\nargus_vps_onboard\(\) \{[\s\S]*?\n\})\n\nargus_vps_onboard/u,
   )?.[1];
   expect(onboardFunction).toBeDefined();
 
@@ -122,6 +122,10 @@ const runFailingVpsOnboard = () => {
     writeFileSync(
       join(bin, "argus"),
       `#!/bin/sh
+if [ "\${1:-}" = doctor ]; then
+  printf '%s\\n' '{"contractVersion":1,"ok":false,"error":{"code":"DOCTOR_FAILED","message":"fixture doctor failed with ${token}"},"data":{"healthy":false,"checks":[{"component":"host","status":"unhealthy","code":"INSUFFICIENT_DISK","message":"fixture disk check"}]}}'
+  exit 1
+fi
 printf '%s\\n' '{"contractVersion":1,"ok":false,"error":{"code":"APPLY_FAILED","message":"fixture failed with ${token}","details":{"apiToken":"${token}"}}}'
 exit 4
 `,
@@ -375,6 +379,8 @@ describe("GitHub workflow toolchain", () => {
       expect(result.status).toBe(4);
       expect(result.stderr).toContain("onboard failed with exit code 4");
       expect(result.stderr).toContain('"code": "APPLY_FAILED"');
+      expect(result.stderr).toContain("onboard failure diagnostics");
+      expect(result.stderr).toContain('"code": "INSUFFICIENT_DISK"');
       expect(result.stderr).toContain("[REDACTED]");
       expect(result.stderr).not.toContain(token);
     },
