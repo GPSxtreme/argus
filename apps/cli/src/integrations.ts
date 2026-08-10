@@ -224,6 +224,7 @@ const maximumFxEmbedBytes = 8 * 1024 * 1024;
 const releaseContextFile = "release-context.json";
 const pendingReleaseContextFile = "release-context.pending.json";
 const rollbackReleaseContextFile = "rollback-release-context.json";
+const pendingRollbackReleaseContextFile = "rollback-release-context.pending.json";
 export const stableUpdateManifestUrl = "https://argus.gpsxtre.me/releases/stable/manifest.json";
 
 interface ReleasePlan {
@@ -279,6 +280,7 @@ export interface ProductionUpdateIntegration {
   fetchRollbackRelease(): Promise<VerifiedReleaseManifest>;
   stageRollbackRelease(release: VerifiedReleaseManifest): Promise<void>;
   stageCurrentRelease(release: VerifiedReleaseManifest): Promise<void>;
+  promoteStagedRollbackRelease(release: VerifiedReleaseManifest): Promise<void>;
   promoteCurrentRelease(release: VerifiedReleaseManifest): Promise<void>;
   promoteRollbackRelease(release: VerifiedReleaseManifest): Promise<void>;
   promoteManagementRelease(release: VerifiedReleaseManifest): Promise<void>;
@@ -786,7 +788,35 @@ export const createProductionUpdateIntegration = ({
         "The current signed Argus release does not match the verified rollback release.",
       );
     }
-    await atomicBytes(join(root, rollbackReleaseContextFile), current.bytes, 0o644);
+    await atomicBytes(join(root, pendingRollbackReleaseContextFile), current.bytes, 0o644);
+  };
+
+  const promoteStagedRollbackRelease = async (
+    release: VerifiedReleaseManifest,
+  ): Promise<void> => {
+    const stagedPath = join(root, pendingRollbackReleaseContextFile);
+    let staged: VerifiedReleaseManifest;
+    try {
+      staged = (await loadSignedContext(stagedPath)).release;
+    } catch {
+      throw new DeploymentError(
+        "UPDATE_RELEASE_UNVERIFIED",
+        "Argus requires a staged exact verified rollback release before it can commit rollback context.",
+      );
+    }
+    if (!sameRelease(staged, release)) {
+      throw new DeploymentError(
+        "UPDATE_RELEASE_UNVERIFIED",
+        "The staged Argus rollback release does not match the verified prior release.",
+      );
+    }
+    await rename(stagedPath, join(root, rollbackReleaseContextFile));
+    const directory = await open(root, "r");
+    try {
+      await directory.sync();
+    } finally {
+      await directory.close();
+    }
   };
 
   const promoteRollbackRelease = async (
@@ -841,13 +871,28 @@ export const createProductionUpdateIntegration = ({
     try {
       const staged = await loadSignedContext(stagedPath);
       const state = await loadDeploymentState(root);
-      if (
+      const matchesDeployment = (release: VerifiedReleaseManifest): boolean =>
         state?.compose !== undefined &&
-        staged.release.manifest.version === state.argusVersion &&
-        staged.release.manifest.images.app.reference === state.compose.images.argus &&
-        staged.release.manifest.images.postgres.reference === state.compose.images.postgres &&
-        staged.release.manifest.images.searxng.reference === state.compose.images.searxng
-      ) {
+        release.manifest.version === state.argusVersion &&
+        release.manifest.images.app.reference === state.compose.images.argus &&
+        release.manifest.images.postgres.reference === state.compose.images.postgres &&
+        release.manifest.images.searxng.reference === state.compose.images.searxng;
+      if (matchesDeployment(staged.release)) {
+        const current = await loadSignedContext(join(root, releaseContextFile));
+        if (!matchesDeployment(current.release)) {
+          let rollbackCommitted = false;
+          try {
+            rollbackCommitted = sameRelease(
+              (await loadSignedContext(join(root, rollbackReleaseContextFile))).release,
+              current.release,
+            );
+          } catch {
+            // A matching pending context can repair a missing or invalid committed slot.
+          }
+          if (!rollbackCommitted) {
+            await promoteStagedRollbackRelease(current.release);
+          }
+        }
         await rename(stagedPath, join(root, releaseContextFile));
         const directory = await open(root, "r");
         try {
@@ -881,6 +926,7 @@ export const createProductionUpdateIntegration = ({
     fetchRollbackRelease: fetchRollback,
     stageRollbackRelease,
     stageCurrentRelease,
+    promoteStagedRollbackRelease,
     promoteCurrentRelease,
     promoteRollbackRelease,
     promoteManagementRelease,

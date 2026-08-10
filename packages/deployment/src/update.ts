@@ -68,6 +68,7 @@ export interface ApplyUpdateInput {
   root: string;
   plan: UpdatePlan;
   executor: CommandExecutor;
+  onBackupPersisted?: () => Promise<void>;
 }
 
 export interface BackupInstanceInput {
@@ -416,7 +417,7 @@ export const backupInstance = async ({ root, plan }: BackupInstanceInput): Promi
   return backup;
 };
 
-export const applyUpdate = async ({ root, plan, executor }: ApplyUpdateInput): Promise<UpdateResult> => {
+export const applyUpdate = async ({ root, plan, executor, onBackupPersisted }: ApplyUpdateInput): Promise<UpdateResult> => {
   assertVerifiedRelease(plan.release);
   assertVerifiedRelease(plan.rollbackRelease);
   assertCompatible(plan.previousState, plan.release);
@@ -440,6 +441,7 @@ export const applyUpdate = async ({ root, plan, executor }: ApplyUpdateInput): P
   await persist(root, persisted);
   const backup = await backupInstance({ root, plan });
   persisted = { ...persisted, phase: "backed_up", backup };
+  await onBackupPersisted?.();
   const environment = environmentFor(plan.previousState, plan.release);
   await command(root, executor, ["pull"], environment, "Argus image pull failed.");
   persisted = { ...persisted, phase: "pulled" };

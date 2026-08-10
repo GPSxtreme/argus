@@ -598,6 +598,7 @@ describe("production onboarding integration", () => {
         fetchRollbackRelease: expect.any(Function),
         stageRollbackRelease: expect.any(Function),
         stageCurrentRelease: expect.any(Function),
+        promoteStagedRollbackRelease: expect.any(Function),
         promoteCurrentRelease: expect.any(Function),
         promoteRollbackRelease: expect.any(Function),
         promoteManagementRelease: expect.any(Function),
@@ -703,6 +704,7 @@ describe("production onboarding integration", () => {
     const verifiedB = await integration.fetchUpdateRelease();
     await integration.stageRollbackRelease(verifiedA);
     await integration.stageCurrentRelease(verifiedB);
+    await integration.promoteStagedRollbackRelease(verifiedA);
     await integration.promoteCurrentRelease(verifiedB);
     target = releaseC;
     await expect(integration.fetchUpdateRelease()).resolves.toMatchObject({ manifest: { version: "3.0.0" } });
@@ -721,6 +723,7 @@ describe("production onboarding integration", () => {
     });
     await writeFile(join(root, "release-context.json"), contextFor(releaseA));
     await writeFile(join(root, "release-context.pending.json"), contextFor(releaseB));
+    await writeFile(join(root, "rollback-release-context.pending.json"), contextFor(releaseA));
     await saveManagedState(root, releaseB);
     const integration = createProductionUpdateIntegration({
       root,
@@ -733,7 +736,7 @@ describe("production onboarding integration", () => {
     expect(await readFile(join(root, "release-context.json"), "utf8")).toBe(contextFor(releaseB));
   });
 
-  it("returns the runtime, signed context, and management state to the prior release after a successful CLI rollback without replacing the launcher", async () => {
+  it("returns the runtime, signed context, and management state to the prior release after an update, no-op retry, and successful CLI rollback", async () => {
     const root = await mkdtemp(join(tmpdir(), "argus-update-rollback-lifecycle-"));
     const launcherDirectory = await mkdtemp(join(tmpdir(), "argus-immutable-launcher-"));
     const launcher = join(launcherDirectory, "argus");
@@ -784,6 +787,7 @@ describe("production onboarding integration", () => {
     });
 
     await createProgram(dependencies).parseAsync(["node", "argus", "update", "--yes"]);
+    await createProgram(dependencies).parseAsync(["node", "argus", "update", "--yes"]);
     await createProgram(dependencies).parseAsync([
       "node",
       "argus",
@@ -804,6 +808,83 @@ describe("production onboarding integration", () => {
       cliImage: `ghcr.io/gpsxtreme/argus-cli@sha256:${digest("b")}`,
     });
     expect(await readFile(launcher)).toStrictEqual(launcherBytes);
+  });
+
+  it("keeps the prior rollback slot when a later update fails before durable update state is written", async () => {
+    const root = await mkdtemp(join(tmpdir(), "argus-update-rollback-pre-persist-failure-"));
+    const releaseA = releaseFixture({ version: "1.0.0", appMarker: "a", cliMarker: "b" });
+    const releaseB = releaseFixture({ version: "2.0.0", appMarker: "e", cliMarker: "f" });
+    const releaseC = releaseFixture({ version: "3.0.0", appMarker: "c", cliMarker: "d" });
+    const releaseAContext = JSON.stringify({
+      schemaVersion: 1,
+      manifest: Buffer.from(releaseA.manifestBytes).toString("base64"),
+      signature: Buffer.from(releaseA.signature).toString("base64"),
+      fxembed: Buffer.from(releaseA.fxembed).toString("base64"),
+    });
+    await writeFile(join(root, "release-context.json"), releaseAContext);
+    await writeFile(
+      join(root, "management.state"),
+      `schema=1\nversion=${releaseA.version}\ncli_image=ghcr.io/gpsxtreme/argus-cli@sha256:${digest("b")}\n`,
+    );
+    await saveManagedState(root, releaseA);
+
+    let target = releaseB;
+    let failBeforePersist = false;
+    const signed = createProductionUpdateIntegration({
+      root,
+      manifestUrl: "https://release.example/manifest.json",
+      publicKeyPem: releaseA.publicKeyPem,
+      fetcher: async (input) => {
+        const url = String(input);
+        const bytes = url.endsWith("manifest.sig")
+          ? target.signature
+          : url.endsWith("manifest.json")
+            ? target.manifestBytes
+            : target.fxembed;
+        return new Response(Uint8Array.from(bytes).buffer);
+      },
+    });
+    const updateIntegration = {
+      ...signed,
+      async stageCurrentRelease(release: Awaited<ReturnType<typeof signed.fetchUpdateRelease>>) {
+        if (failBeforePersist) {
+          throw new DeploymentError(
+            "UPDATE_STAGING_FAILED",
+            "Injected failure before deployment update state persistence.",
+          );
+        }
+        await signed.stageCurrentRelease(release);
+      },
+    };
+    const dependencies = createNodeCliDependencies({
+      root,
+      executor: new DeploymentExecutor(),
+      prompt: {
+        async confirm() { return true; },
+        async select() { return ""; },
+        async multiselect() { return []; },
+        async text() { return ""; },
+        async secret() { return ""; },
+      },
+      io: { stdout() {}, stderr() {} },
+      updateIntegration,
+      version: "test",
+    });
+
+    await createProgram(dependencies).parseAsync(["node", "argus", "update", "--yes"]);
+    const durableUpdateState = await readFile(join(root, "update-state.json"), "utf8");
+    target = releaseC;
+    failBeforePersist = true;
+
+    await expect(
+      createProgram(dependencies).parseAsync(["node", "argus", "update", "--yes"]),
+    ).rejects.toMatchObject({ exitCode: 1 });
+
+    expect(await readFile(join(root, "update-state.json"), "utf8")).toBe(durableUpdateState);
+    expect(await readFile(join(root, "rollback-release-context.json"), "utf8")).toBe(releaseAContext);
+    await expect(signed.fetchRollbackRelease()).resolves.toMatchObject({
+      manifest: { version: releaseA.version },
+    });
   });
 
   it("retains the verified rollback context and target selections when CLI rollback health fails", async () => {
@@ -954,6 +1035,7 @@ describe("production onboarding integration", () => {
         async fetchRollbackRelease() { return currentRelease; },
         async stageRollbackRelease() { events.push("stage-rollback-context"); },
         async stageCurrentRelease() { events.push("stage-release-context"); },
+        async promoteStagedRollbackRelease() { events.push("commit-rollback-context"); },
         async promoteCurrentRelease() { events.push("promote-release-context"); },
         async promoteRollbackRelease() { events.push("promote-rollback-context"); },
         async promoteManagementRelease() { events.push("promote-management-state"); },
@@ -972,6 +1054,7 @@ describe("production onboarding integration", () => {
       "stage-rollback-context",
       "stage-release-context",
       "backup",
+      "commit-rollback-context",
       "pull",
       "migrate",
       "reconcile",
@@ -1064,6 +1147,7 @@ describe("production onboarding integration", () => {
       fetchRollbackRelease: () => signed.fetchRollbackRelease(),
       stageRollbackRelease: (release: Awaited<ReturnType<typeof signed.fetchCurrentRelease>>) => signed.stageRollbackRelease(release),
       stageCurrentRelease: (release: Awaited<ReturnType<typeof signed.fetchUpdateRelease>>) => signed.stageCurrentRelease(release),
+      promoteStagedRollbackRelease: (release: Awaited<ReturnType<typeof signed.fetchCurrentRelease>>) => signed.promoteStagedRollbackRelease(release),
       async promoteCurrentRelease(release: Awaited<ReturnType<typeof signed.fetchUpdateRelease>>) {
         await signed.promoteCurrentRelease(release);
         throw new DeploymentError(

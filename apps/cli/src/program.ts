@@ -1331,9 +1331,17 @@ const createDeploymentAdapter = (
         );
       }
       const plan = inspection as UpdatePlan;
-      await updateIntegration.stageRollbackRelease(plan.rollbackRelease);
+      if (!plan.noop) {
+        await updateIntegration.stageRollbackRelease(plan.rollbackRelease);
+      }
       await updateIntegration.stageCurrentRelease(plan.release);
-      const applied = await applyUpdate({ root, plan, executor });
+      const applied = await applyUpdate({
+        root,
+        plan,
+        executor,
+        onBackupPersisted: () =>
+          updateIntegration.promoteStagedRollbackRelease(plan.rollbackRelease),
+      });
       if (!applied.health.healthy) {
         throw new DeploymentError(
           "UPDATE_HEALTHCHECK_FAILED",

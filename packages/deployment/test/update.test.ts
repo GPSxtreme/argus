@@ -133,6 +133,77 @@ describe("safe update state machine", () => {
     });
   });
 
+  it("signals rollback readiness after the durable backup and before image pulls", async () => {
+    const root = await rootWithState();
+    const plan = await planUpdate({ root, release: release(), rollbackRelease: release("1.0.0", 1, "f"), executor: executor() });
+    const events: string[] = [];
+    const recordingExecutor: CommandExecutor = {
+      async run(command, args) {
+        if (args.includes("pull")) events.push("pull");
+        return executor().run(command, args);
+      },
+    };
+
+    await applyUpdate({
+      root,
+      plan,
+      executor: recordingExecutor,
+      async onBackupPersisted() {
+        const state = JSON.parse(await readFile(join(root, "update-state.json"), "utf8")) as {
+          phase: string;
+          backup?: unknown;
+        };
+        events.push(`rollback-ready:${state.phase}:${state.backup === undefined ? "missing" : "present"}`);
+      },
+    });
+
+    expect(events.slice(0, 2)).toEqual(["rollback-ready:backed_up:present", "pull"]);
+  });
+
+  it("stops before image pulls when rollback readiness cannot be committed", async () => {
+    const root = await rootWithState();
+    const plan = await planUpdate({ root, release: release(), rollbackRelease: release("1.0.0", 1, "f"), executor: executor() });
+    let pullCalled = false;
+    const recordingExecutor: CommandExecutor = {
+      async run(command, args) {
+        if (args.includes("pull")) pullCalled = true;
+        return executor().run(command, args);
+      },
+    };
+
+    await expect(
+      applyUpdate({
+        root,
+        plan,
+        executor: recordingExecutor,
+        async onBackupPersisted() {
+          throw new Error("rollback context unavailable");
+        },
+      }),
+    ).rejects.toThrow("rollback context unavailable");
+    expect(pullCalled).toBe(false);
+    await expect(readFile(join(root, "update-state.json"), "utf8")).resolves.toContain('"phase": "backed_up"');
+  });
+
+  it("does not signal rollback readiness for a no-op update", async () => {
+    const root = await rootWithState();
+    const currentRelease = release("1.0.0", 1, "f");
+    const plan = await planUpdate({ root, release: currentRelease, rollbackRelease: currentRelease, executor: executor() });
+    let called = false;
+
+    await applyUpdate({
+      root,
+      plan,
+      executor: executor(),
+      async onBackupPersisted() {
+        called = true;
+      },
+    });
+
+    expect(plan.noop).toBe(true);
+    expect(called).toBe(false);
+  });
+
   it("accepts newline-delimited Compose service records during update verification", async () => {
     const root = await rootWithState({ searxng: true });
     const plan = await planUpdate({ root, release: release(), rollbackRelease: release("1.0.0", 1, "f"), executor: executor() });
