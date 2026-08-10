@@ -14,6 +14,7 @@ import { parse } from "yaml";
 
 interface WorkflowStep {
   env?: Record<string, string>;
+  if?: string;
   name?: string;
   uses?: string;
   run?: string;
@@ -222,6 +223,31 @@ describe("GitHub workflow toolchain", () => {
     expect(workflow).toContain("ARGUS_REQUIRE_EXPECT_TESTS=1 pnpm test");
   });
 
+  it("enforces complete stable bundle changes on both pull requests and pushes", () => {
+    const workflow = parse(
+      readFileSync(repositoryFile(".github/workflows/ci.yml"), "utf8"),
+    ) as Workflow;
+    const steps = workflow.jobs.verify?.steps ?? [];
+    const checkout = steps.find((step) =>
+      step.uses?.startsWith("actions/checkout@"),
+    );
+    const policy = steps.find(
+      (step) => step.name === "Enforce stable release bundle change set",
+    );
+
+    expect(checkout?.with?.["fetch-depth"]).toBe(0);
+    expect(policy).toMatchObject({
+      if: "github.event_name == 'pull_request' || github.event.deleted == false",
+      env: {
+        BASE_SHA:
+          "$" + "{{ github.event.pull_request.base.sha || github.event.before }}",
+      },
+    });
+    expect(policy?.run).toContain(
+      "node scripts/ci/assert-stable-bundle-change.mjs",
+    );
+  });
+
   it("uses the integrity-pinned packageManager as the only pnpm setup version source", () => {
     const rootManifest = JSON.parse(
       readFileSync(repositoryFile("package.json"), "utf8"),
@@ -428,6 +454,7 @@ describe("GitHub workflow toolchain", () => {
     expect(fixture.managed?.searxng).toBe('managed');
     expect(workflow.jobs.vps_smoke?.['runs-on']).toBe('ubuntu-24.04');
     expect(workflow.jobs.candidate?.outputs).toMatchObject({
+      acceptance_mode: '$' + '{{ steps.release.outputs.acceptance_mode }}',
       update_manifest_asset_url:
         '$' + '{{ steps.release.outputs.update_manifest_asset_url }}',
       update_version: '$' + '{{ steps.release.outputs.update_version }}',
@@ -439,6 +466,8 @@ describe("GitHub workflow toolchain", () => {
         (step) => step.name === "Verify clean VPS onboarding and operation",
       )?.env,
     ).toMatchObject({
+      ARGUS_VPS_SMOKE_MODE:
+        '$' + '{{ needs.candidate.outputs.acceptance_mode }}',
       ARGUS_UPDATE_MANIFEST_ASSET_URL:
         '$' + '{{ needs.candidate.outputs.update_manifest_asset_url }}',
       ARGUS_UPDATE_EXPECTED_VERSION:
@@ -449,6 +478,10 @@ describe("GitHub workflow toolchain", () => {
     expect(JSON.stringify(workflow)).toContain('ubuntu:24.04');
     expect(JSON.stringify(workflow)).toContain('debian:13');
     expect(JSON.stringify(workflow)).toContain('"ARGUS_VPS_E2E":"1"');
+    expect(JSON.stringify(workflow)).toContain(
+      "release-acceptance-policy.mjs",
+    );
+    expect(harness).toContain("ARGUS_VPS_SMOKE_MODE");
     expect(operations).toContain('/opt/argus');
     expect(operations).toContain('secrets.env');
     expect(operations).toContain('0600');

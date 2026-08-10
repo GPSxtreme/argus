@@ -32,7 +32,16 @@ jobs:
       update_manifest_asset_url: ${{ steps.release.outputs.update_manifest_asset_url }}
       update_manifest_sha256: ${{ steps.release.outputs.update_manifest_sha256 }}
       update_version: ${{ steps.release.outputs.update_version }}
+      acceptance_mode: ${{ steps.release.outputs.acceptance_mode }}
     steps:
+      - name: Check out trusted acceptance policy
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.workflow_sha }}
+          sparse-checkout: scripts/e2e/release-acceptance-policy.mjs
+          sparse-checkout-cone-mode: false
+
       - name: Resolve immutable signed release assets
         id: release
         env:
@@ -47,7 +56,24 @@ jobs:
           jq -e '.draft == false' release.json >/dev/null
           gh api --paginate --slurp "repos/${REPOSITORY}/releases?per_page=100" > releases.json
           target_version=$(printf '%s' "${RELEASE_TAG#v}" | jq -R 'split(".") | map(tonumber)')
-          baseline_tag=$(jq -er --argjson target "$target_version" '
+          asset_url() {
+            local release=$1 name=$2
+            test "$(jq --arg name "$name" '[.assets[] | select(.name == $name and .state == "uploaded")] | length' "$release")" -eq 1
+            jq -er --arg name "$name" '.assets[] | select(.name == $name and .state == "uploaded") | .url' "$release"
+          }
+          target_manifest_asset_url=$(asset_url release.json manifest.json)
+          target_wrapper_asset_url=$(asset_url release.json argus)
+          gh api --header 'Accept: application/octet-stream' "$target_manifest_asset_url" > target-manifest.json
+          gh api --header 'Accept: application/octet-stream' "$target_wrapper_asset_url" > target-wrapper
+          test "$(jq -er '.version' target-manifest.json)" = "${RELEASE_TAG#v}"
+          test "$(node scripts/e2e/release-acceptance-policy.mjs verify-durable-launcher target-manifest.json target-wrapper | jq -er '.durable')" = true
+          target_manifest_sha256=$(sha256sum target-manifest.json | awk 'NR == 1 { print $1 }')
+          [[ "$target_manifest_sha256" =~ ^[a-f0-9]{64}$ ]]
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+            'https://argus.gpsxtre.me/releases/stable/manifest.json' \
+            --output stable-manifest.json
+          cmp -s target-manifest.json stable-manifest.json
+          jq -r --argjson target "$target_version" '
             [ .[] | .[]
               | select(.draft == false and .prerelease == false)
               | .tag_name as $tag
@@ -56,30 +82,48 @@ jobs:
                  | [.major, .minor, .patch | tonumber]) as $version
               | select($version < $target)
               | { tag: $tag, version: $version }
-            ] | sort_by(.version) | last.tag
-          ' releases.json)
-          gh api "repos/${REPOSITORY}/releases/tags/${baseline_tag}" > baseline-release.json
-          asset_url() {
-            local release=$1 name=$2
-            test "$(jq --arg name "$name" '[.assets[] | select(.name == $name and .state == "uploaded")] | length' "$release")" -eq 1
-            jq -er --arg name "$name" '.assets[] | select(.name == $name and .state == "uploaded") | .url' "$release"
-          }
-          target_manifest_asset_url=$(asset_url release.json manifest.json)
-          gh api --header 'Accept: application/octet-stream' "$target_manifest_asset_url" > target-manifest.json
-          target_manifest_sha256=$(sha256sum target-manifest.json | awk 'NR == 1 { print $1 }')
-          [[ "$target_manifest_sha256" =~ ^[a-f0-9]{64}$ ]]
-          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
-            'https://argus.gpsxtre.me/releases/stable/manifest.json' \
-            --output stable-manifest.json
-          cmp -s target-manifest.json stable-manifest.json
-          printf 'installer_url=%s\nmanifest_url=%s\nmanifest_asset_url=%s\nversion=%s\nupdate_manifest_asset_url=%s\nupdate_manifest_sha256=%s\nupdate_version=%s\n' \
-            "$(asset_url baseline-release.json install.sh)" \
-            "https://github.com/${REPOSITORY}/releases/download/${baseline_tag}/manifest.json" \
-            "$(asset_url baseline-release.json manifest.json)" \
-            "${baseline_tag#v}" \
-            "$target_manifest_asset_url" \
-            "$target_manifest_sha256" \
-            "${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+            ] | sort_by(.version) | reverse | .[].tag
+          ' releases.json > earlier-release-tags.txt
+          : > durable-release-tags.txt
+          while IFS= read -r baseline_tag; do
+            gh api "repos/${REPOSITORY}/releases/tags/${baseline_tag}" > baseline-release.json
+            baseline_manifest_asset_url=$(asset_url baseline-release.json manifest.json)
+            baseline_wrapper_asset_url=$(asset_url baseline-release.json argus)
+            gh api --header 'Accept: application/octet-stream' "$baseline_manifest_asset_url" > baseline-manifest.json
+            gh api --header 'Accept: application/octet-stream' "$baseline_wrapper_asset_url" > baseline-wrapper
+            test "$(jq -er '.version' baseline-manifest.json)" = "${baseline_tag#v}"
+            if test "$(node scripts/e2e/release-acceptance-policy.mjs verify-durable-launcher baseline-manifest.json baseline-wrapper | jq -er '.durable')" = true; then
+              printf '%s\n' "$baseline_tag" >> durable-release-tags.txt
+            fi
+          done < earlier-release-tags.txt
+          jq -Rsc 'split("\n") | map(select(length > 0))' durable-release-tags.txt > durable-release-tags.json
+          acceptance_plan=$(node scripts/e2e/release-acceptance-policy.mjs select-baseline --target "$RELEASE_TAG" --durable-tags durable-release-tags.json)
+          acceptance_mode=$(printf '%s' "$acceptance_plan" | jq -er '.mode')
+          update_manifest_asset_url=
+          update_manifest_sha256=
+          update_version=
+          if [ "$acceptance_mode" = update ]; then
+            baseline_tag=$(printf '%s' "$acceptance_plan" | jq -er '.baselineTag')
+            gh api "repos/${REPOSITORY}/releases/tags/${baseline_tag}" > baseline-release.json
+            installer_release=baseline-release.json
+            installer_tag=$baseline_tag
+            update_manifest_asset_url=$target_manifest_asset_url
+            update_manifest_sha256=$target_manifest_sha256
+            update_version=${RELEASE_TAG#v}
+          else
+            test "$acceptance_mode" = bootstrap
+            installer_release=release.json
+            installer_tag=$RELEASE_TAG
+          fi
+          printf 'installer_url=%s\nmanifest_url=%s\nmanifest_asset_url=%s\nversion=%s\nupdate_manifest_asset_url=%s\nupdate_manifest_sha256=%s\nupdate_version=%s\nacceptance_mode=%s\n' \
+            "$(asset_url "$installer_release" install.sh)" \
+            "https://github.com/${REPOSITORY}/releases/download/${installer_tag}/manifest.json" \
+            "$(asset_url "$installer_release" manifest.json)" \
+            "${installer_tag#v}" \
+            "$update_manifest_asset_url" \
+            "$update_manifest_sha256" \
+            "$update_version" \
+            "$acceptance_mode" >> "$GITHUB_OUTPUT"
 
   vps_smoke:
     needs: candidate
@@ -104,6 +148,7 @@ jobs:
           ARGUS_MANIFEST_URL: ${{ needs.candidate.outputs.manifest_url }}
           ARGUS_MANIFEST_ASSET_URL: ${{ needs.candidate.outputs.manifest_asset_url }}
           ARGUS_EXPECTED_VERSION: ${{ needs.candidate.outputs.version }}
+          ARGUS_VPS_SMOKE_MODE: ${{ needs.candidate.outputs.acceptance_mode }}
           ARGUS_UPDATE_MANIFEST_ASSET_URL: ${{ needs.candidate.outputs.update_manifest_asset_url }}
           ARGUS_UPDATE_MANIFEST_SHA256: ${{ needs.candidate.outputs.update_manifest_sha256 }}
           ARGUS_UPDATE_EXPECTED_VERSION: ${{ needs.candidate.outputs.update_version }}

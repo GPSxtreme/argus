@@ -30,11 +30,13 @@ The manual **VPS smoke** workflow verifies a selected immutable release against
 a controlled Web target.
 
 Only after the required smoke evidence is green may a maintainer promote the
-release by updating the reviewed `apps/web/public/releases/stable/manifest.json`
-and `manifest.sig` bytes, along with `apps/web/lib/release.ts` when the landing
-page's current release changes. Preserve the exact signed bytes and run the
-stable-release web tests. The stable channel is intentionally mutable; each
-GitHub release is not.
+release by updating the reviewed stable bundle together: `install.sh`,
+`manifest.json`, and `manifest.sig` under
+`apps/web/public/releases/stable/`. Preserve the exact signed manifest and
+signature bytes, render the stable installer through the promotion tooling, and
+run the stable-release web tests. CI rejects a partial bundle change or an
+extra file under that directory; unrelated repository changes may coexist.
+The stable channel is intentionally mutable; each GitHub release is not.
 
 ## Public site deployment
 

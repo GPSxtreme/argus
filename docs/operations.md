@@ -19,6 +19,9 @@ The resulting instance lives in `/opt/argus`:
 - `compose.yaml` is owned and reconciled by the Argus CLI.
 - `state.json` records the verified release and deployment state.
 - `release-context.json` retains the exact signed release used for rollback.
+- `management.state` selects the signed management CLI for the immutable
+  `/usr/local/bin/argus` launcher. It is strict data, not a configuration file;
+  do not edit it.
 - `secrets.env` contains runtime credentials and must remain mode `0600`.
 - `backups/` contains update backups. Argus never deletes them automatically.
 - `.docker/config.json` stores the mode `0600` GHCR credential while Argus
@@ -79,6 +82,14 @@ stops services. It backs up the current instance, runs storage migrations,
 starts the candidate, and verifies health. A failed update restores the
 previous verified release; keep `/opt/argus/backups` until you have separately
 validated the new version.
+
+Existing installations with the legacy version-pinned wrapper need one final
+signed installer run to bootstrap the immutable launcher and
+`/opt/argus/management.state`. After that one-time transition, `argus update`
+advances the verified management state only; it does not replace
+`/usr/local/bin/argus`. The launcher fails closed before Docker runs when that
+state is missing or malformed. Rerun the signed installer to repair it rather
+than editing the file by hand.
 
 ## Choosing a topology
 
@@ -214,12 +225,14 @@ members as one staged directory swap. Do not use an immutable GitHub release
 URL, not the stable manifest URL.
 
 Before committing, run the release verification and the clean-host installer
-smoke described below against the verified candidate. Commit the three changed
-stable files together in one promotion commit, review it, and deploy it through
-the normal path. Do not combine an ordinary feature change with a stable
-promotion. The pinned v0.1.13 bundle remains its recognized legacy wrapper
+smoke described below against the verified candidate. Keep the promotion
+focused, review it, and deploy it through the normal path. The pinned v0.1.13
+bundle remains its recognized legacy wrapper
 contract; do not regenerate it from the current durable launcher. The next
 promotion carries the verified durable wrapper from its candidate artifact.
+Push and pull-request CI enforce the same rule: if any stable bundle member
+changes, all and only those three paths may change under the stable directory;
+unrelated repository files may be included in the same commit.
 
 If verification, promotion, or deployment fails, retain or restore the prior
 complete bundle. Never repair production by changing one bundle member. Roll

@@ -25,12 +25,23 @@ if [ "${1:-}" != "--inner" ]; then
     ARGUS_MANIFEST_URL \
     ARGUS_MANIFEST_ASSET_URL \
     ARGUS_EXPECTED_VERSION \
-    ARGUS_UPDATE_MANIFEST_ASSET_URL \
-    ARGUS_UPDATE_MANIFEST_SHA256 \
-    ARGUS_UPDATE_EXPECTED_VERSION
+    ARGUS_VPS_SMOKE_MODE
   do
     argus_vps_required "$argus_vps_name"
   done
+  case "$ARGUS_VPS_SMOKE_MODE" in
+    bootstrap) ;;
+    update)
+      for argus_vps_name in \
+        ARGUS_UPDATE_MANIFEST_ASSET_URL \
+        ARGUS_UPDATE_MANIFEST_SHA256 \
+        ARGUS_UPDATE_EXPECTED_VERSION
+      do
+        argus_vps_required "$argus_vps_name"
+      done
+      ;;
+    *) argus_vps_die "ARGUS_VPS_SMOKE_MODE must be bootstrap or update" ;;
+  esac
   for argus_vps_command in docker jq mktemp; do
     command -v "$argus_vps_command" >/dev/null 2>&1 ||
       argus_vps_die "$argus_vps_command is required"
@@ -104,6 +115,7 @@ ARGUS_VPS_DOCKERFILE
     --env ARGUS_MANIFEST_URL \
     --env ARGUS_MANIFEST_ASSET_URL \
     --env ARGUS_EXPECTED_VERSION \
+    --env ARGUS_VPS_SMOKE_MODE \
     --env ARGUS_UPDATE_MANIFEST_ASSET_URL \
     --env ARGUS_UPDATE_MANIFEST_SHA256 \
     --env ARGUS_UPDATE_EXPECTED_VERSION \
@@ -121,14 +133,25 @@ for argus_vps_name in \
   ARGUS_MANIFEST_URL \
   ARGUS_MANIFEST_ASSET_URL \
   ARGUS_EXPECTED_VERSION \
-  ARGUS_UPDATE_MANIFEST_ASSET_URL \
-  ARGUS_UPDATE_MANIFEST_SHA256 \
-  ARGUS_UPDATE_EXPECTED_VERSION
+  ARGUS_VPS_SMOKE_MODE
 do
   argus_vps_required "$argus_vps_name"
 done
-[ "$(printf '%s' "$ARGUS_UPDATE_MANIFEST_SHA256" | grep -Ec '^[a-f0-9]{64}$')" = 1 ] ||
-  argus_vps_die "ARGUS_UPDATE_MANIFEST_SHA256 must be lowercase SHA-256"
+case "$ARGUS_VPS_SMOKE_MODE" in
+  bootstrap) ;;
+  update)
+    for argus_vps_name in \
+      ARGUS_UPDATE_MANIFEST_ASSET_URL \
+      ARGUS_UPDATE_MANIFEST_SHA256 \
+      ARGUS_UPDATE_EXPECTED_VERSION
+    do
+      argus_vps_required "$argus_vps_name"
+    done
+    [ "$(printf '%s' "$ARGUS_UPDATE_MANIFEST_SHA256" | grep -Ec '^[a-f0-9]{64}$')" = 1 ] ||
+      argus_vps_die "ARGUS_UPDATE_MANIFEST_SHA256 must be lowercase SHA-256"
+    ;;
+  *) argus_vps_die "ARGUS_VPS_SMOKE_MODE must be bootstrap or update" ;;
+esac
 for argus_vps_command in base64 curl docker expect jq openssl sha256sum; do
   command -v "$argus_vps_command" >/dev/null 2>&1 ||
     argus_vps_die "$argus_vps_command is required"
@@ -187,7 +210,9 @@ argus_vps_download() {
 
 argus_vps_download "$ARGUS_INSTALLER_URL" "$argus_vps_installer"
 argus_vps_download "$ARGUS_MANIFEST_ASSET_URL" "$argus_vps_manifest"
-argus_vps_download "$ARGUS_UPDATE_MANIFEST_ASSET_URL" "$argus_vps_update_manifest"
+if [ "$ARGUS_VPS_SMOKE_MODE" = update ]; then
+  argus_vps_download "$ARGUS_UPDATE_MANIFEST_ASSET_URL" "$argus_vps_update_manifest"
+fi
 sh -n "$argus_vps_installer"
 chmod 700 "$argus_vps_installer"
 ARGUS_MANIFEST_URL="$ARGUS_MANIFEST_URL" \
@@ -215,13 +240,15 @@ argus_vps_parse_management_state() {
 }
 
 argus_vps_initial_cli_image=$(jq -er '.images.cli.reference' "$argus_vps_manifest")
-argus_vps_update_cli_image=$(jq -er '.images.cli.reference' "$argus_vps_update_manifest")
-[ "$(jq -er '.version' "$argus_vps_update_manifest")" = "$ARGUS_UPDATE_EXPECTED_VERSION" ] ||
-  argus_vps_die "signed update manifest reported the wrong version"
-[ "$(sha256sum "$argus_vps_update_manifest" | awk 'NR == 1 { print $1 }')" = "$ARGUS_UPDATE_MANIFEST_SHA256" ] ||
-  argus_vps_die "downloaded signed update manifest did not match the candidate"
-[ "$ARGUS_EXPECTED_VERSION" != "$ARGUS_UPDATE_EXPECTED_VERSION" ] ||
-  argus_vps_die "signed update candidate must advance the installed release"
+if [ "$ARGUS_VPS_SMOKE_MODE" = update ]; then
+  argus_vps_update_cli_image=$(jq -er '.images.cli.reference' "$argus_vps_update_manifest")
+  [ "$(jq -er '.version' "$argus_vps_update_manifest")" = "$ARGUS_UPDATE_EXPECTED_VERSION" ] ||
+    argus_vps_die "signed update manifest reported the wrong version"
+  [ "$(sha256sum "$argus_vps_update_manifest" | awk 'NR == 1 { print $1 }')" = "$ARGUS_UPDATE_MANIFEST_SHA256" ] ||
+    argus_vps_die "downloaded signed update manifest did not match the candidate"
+  [ "$ARGUS_EXPECTED_VERSION" != "$ARGUS_UPDATE_EXPECTED_VERSION" ] ||
+    argus_vps_die "signed update candidate must advance the installed release"
+fi
 argus_vps_controlled_url=${ARGUS_CONTROLLED_WEB_URL:-https://argus.gpsxtre.me/}
 printf '%s\n' "$argus_vps_controlled_url" |
   grep -Eq '^https://[A-Za-z0-9.-]+(:[0-9]+)?/[A-Za-z0-9._~/%?=-]*$' ||
@@ -312,6 +339,7 @@ argus_vps_parse_management_state /opt/argus/management.state
 [ "$argus_vps_management_version" = "$ARGUS_EXPECTED_VERSION" ] &&
   [ "$argus_vps_management_cli_image" = "$argus_vps_initial_cli_image" ] ||
   argus_vps_die "installed management state did not match the signed baseline"
+if [ "$ARGUS_VPS_SMOKE_MODE" = update ]; then
 argus_vps_launcher_before=$(sha256sum /usr/local/bin/argus)
 argus_vps_management_version_before=$argus_vps_management_version
 argus_vps_management_cli_image_before=$argus_vps_management_cli_image
@@ -345,6 +373,7 @@ argus_vps_parse_management_state /opt/argus/management.state
   argus_vps_die "management state did not advance to the signed update"
 [ "$argus_vps_launcher_before" = "$(sha256sum /usr/local/bin/argus)" ] ||
   argus_vps_die "launcher changed during signed update"
+fi
 
 argus doctor --json > "$argus_vps_doctor"
 argus status --json > "$argus_vps_status_json"
@@ -382,7 +411,7 @@ while :; do
   sleep 2
 done
 
-argus_vps_cli_image=$argus_vps_update_cli_image
+argus_vps_cli_image=$argus_vps_management_cli_image
 docker run --rm --network argus_argus-private \
   --entrypoint node "$argus_vps_cli_image" \
   --input-type=module \
