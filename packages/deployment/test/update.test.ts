@@ -1,9 +1,9 @@
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
 import type { VerifiedReleaseManifest } from "@argus/release";
-import { saveDeploymentState, type CommandExecutor } from "../src/index.js";
+import { afterEach, describe, expect, it } from "vitest";
+import { type CommandExecutor, saveDeploymentState } from "../src/index.js";
 import {
   applyUpdate,
   backupInstance,
@@ -53,7 +53,7 @@ const executor = (fail?: "migration" | "health"): CommandExecutor => ({
   },
 });
 
-const rootWithState = async () => {
+const rootWithState = async ({ searxng = false }: { searxng?: boolean } = {}) => {
   const root = await mkdtemp(join(tmpdir(), "argus-update-"));
   roots.push(root);
   await saveDeploymentState(root, {
@@ -61,12 +61,15 @@ const rootWithState = async () => {
     argusVersion: "1.0.0",
     composeProject: "argus",
     configHash: "a".repeat(64),
-    services: { argus: { image: image("f").reference, healthy: true } },
+    services: {
+      argus: { image: image("f").reference, healthy: true },
+      ...(searxng ? { searxng: { image: image("c").reference, healthy: true } } : {}),
+    },
     compose: {
       version: "1.0.0",
       apiPort: 8788,
       storage: "sqlite",
-      searxng: false,
+      searxng,
       images: { argus: image("f").reference, postgres: image("d").reference, searxng: image("c").reference },
     },
     updatedAt: "2026-08-01T00:00:00.000Z",
@@ -93,6 +96,38 @@ describe("safe update state machine", () => {
     });
   });
 
+  it("accepts newline-delimited Compose service records during update verification", async () => {
+    const root = await rootWithState({ searxng: true });
+    const plan = await planUpdate({ root, release: release(), rollbackRelease: release("1.0.0", 1, "f"), executor: executor() });
+    const composeV239Executor: CommandExecutor = {
+      async run(_command, args) {
+        if (args.includes("ps")) {
+          return {
+            exitCode: 0,
+            stdout: [
+              '{"Service":"argus","State":"running","Health":"starting"}',
+              '{"Service":"searxng","State":"running","Health":"healthy"}',
+            ].join("\n"),
+            stderr: "",
+          };
+        }
+        return { exitCode: 0, stdout: "", stderr: "" };
+      },
+    };
+
+    await expect(applyUpdate({ root, plan, executor: composeV239Executor })).resolves.toMatchObject({
+      version: "2.0.0",
+      phase: "verified",
+      health: {
+        healthy: true,
+        services: [
+          { name: "argus", state: "running", health: "starting" },
+          { name: "searxng", state: "running", health: "healthy" },
+        ],
+      },
+    });
+  });
+
   it("fails a migration before restart and leaves the persisted pull phase", async () => {
     const root = await rootWithState();
     const plan = await planUpdate({ root, release: release(), rollbackRelease: release("1.0.0", 1, "f"), executor: executor() });
@@ -109,6 +144,27 @@ describe("safe update state machine", () => {
     await expect(rollbackUpdate({ root, executor: executor(), release: release("1.0.0", 1, "f") })).resolves.toMatchObject({
       version: "1.0.0",
       phase: "rolled_back",
+    });
+  });
+
+  it("fails an explicitly unhealthy newline-delimited Compose status", async () => {
+    const root = await rootWithState();
+    const plan = await planUpdate({ root, release: release(), rollbackRelease: release("1.0.0", 1, "f"), executor: executor() });
+    const unhealthyExecutor: CommandExecutor = {
+      async run(_command, args) {
+        if (args.includes("ps")) {
+          return {
+            exitCode: 0,
+            stdout: '{"Service":"argus","State":"running","Health":"unhealthy"}',
+            stderr: "",
+          };
+        }
+        return { exitCode: 0, stdout: "", stderr: "" };
+      },
+    };
+
+    await expect(applyUpdate({ root, plan, executor: unhealthyExecutor })).rejects.toMatchObject({
+      code: "UPDATE_HEALTHCHECK_FAILED",
     });
   });
 
