@@ -1,4 +1,10 @@
-import { createHash } from "node:crypto";
+import {
+  createHash,
+  createPrivateKey,
+  generateKeyPairSync,
+  sign,
+} from "node:crypto";
+import { spawnSync } from "node:child_process";
 import {
   mkdtemp,
   mkdir,
@@ -9,11 +15,14 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   buildReleaseArtifacts,
+  type ReleaseManifestV1,
   type ReleaseImageInput,
+  serializeReleaseManifestCanonical,
+  verifyReleaseDirectory,
 } from "../src/index.js";
 import {
   createStableBundleIO,
@@ -24,6 +33,12 @@ const fixturePrivateKey = `-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEIGJqC73Ezwmnx3FFQ5W1czmiNwXmLFn2Xso+6xXKPXKf
 -----END PRIVATE KEY-----`;
 const temporaryDirectories: string[] = [];
+const repositoryRoot = resolve(import.meta.dirname, "../../..");
+const tsxCli = resolve(repositoryRoot, "node_modules/tsx/dist/cli.mjs");
+const verifyManifestCli = resolve(
+  repositoryRoot,
+  "scripts/release/verify-manifest.ts",
+);
 
 const sha = (character: string): string => character.repeat(64);
 const image = (
@@ -163,6 +178,48 @@ describe("promoteStableBundle", () => {
     expect((await stat(join(fixture.stable, "install.sh"))).mode & 0o777).toBe(0o755);
     expect((await stat(join(fixture.stable, "manifest.json"))).mode & 0o777).toBe(0o644);
     expect((await stat(join(fixture.stable, "manifest.sig"))).mode & 0o777).toBe(0o644);
+    expect((await readdir(fixture.stable)).sort()).toEqual([
+      "install.sh",
+      "manifest.json",
+      "manifest.sig",
+    ]);
+  });
+
+  it("reads candidate public-key bytes once for signature trust, asset identity, and output", async () => {
+    const fixture = await createFixtureRelease();
+    const replacementPublicKey = generateKeyPairSync("ed25519").publicKey
+      .export({ type: "spki", format: "pem" })
+      .toString();
+    const manifest = JSON.parse(fixture.manifest.toString("utf8")) as ReleaseManifestV1;
+    manifest.assets.publicKey.sha256 = digest(Buffer.from(replacementPublicKey));
+    const manifestBytes = Buffer.from(serializeReleaseManifestCanonical(manifest));
+    await Promise.all([
+      writeFile(join(fixture.release, "manifest.json"), manifestBytes),
+      writeFile(
+        join(fixture.release, "manifest.sig"),
+        sign(null, manifestBytes, createPrivateKey(fixturePrivateKey)),
+      ),
+    ]);
+    const candidateKeyPath = join(fixture.release, "release-public.pem");
+    let candidateKeyReads = 0;
+    const verificationIO = {
+      async readFile(path: string): Promise<Buffer> {
+        if (path === candidateKeyPath) {
+          candidateKeyReads += 1;
+          return Buffer.from(
+            candidateKeyReads === 1
+              ? fixture.publicKeyPem
+              : replacementPublicKey,
+          );
+        }
+        return readFile(path);
+      },
+    };
+
+    await expect(
+      verifyReleaseDirectory(fixture.release, undefined, verificationIO),
+    ).rejects.toThrow("Signed checksum mismatch for release-public.pem");
+    expect(candidateKeyReads).toBe(1);
   });
 
   it.each([
@@ -288,5 +345,29 @@ describe("promoteStableBundle", () => {
     expect(stable["install.sh"].toString("utf8")).toContain(
       "https://argus.gpsxtre.me/releases/stable/manifest.json",
     );
+  });
+});
+
+describe("verify-manifest CLI", () => {
+  it("verifies arbitrary explicit manifest and signature paths", async () => {
+    const fixture = await createFixtureRelease();
+    const manifestPath = join(fixture.release, "candidate-release.json");
+    const signaturePath = join(fixture.release, "candidate-release.ed25519");
+    await Promise.all([
+      writeFile(manifestPath, fixture.manifest),
+      writeFile(signaturePath, fixture.signature),
+    ]);
+
+    const result = spawnSync(
+      process.execPath,
+      [tsxCli, verifyManifestCli, manifestPath, signaturePath],
+      { cwd: repositoryRoot, encoding: "utf8" },
+    );
+
+    expect(result).toMatchObject({
+      status: 0,
+      stderr: "",
+      stdout: `1.2.3 ${digest(fixture.manifest)}\n`,
+    });
   });
 });

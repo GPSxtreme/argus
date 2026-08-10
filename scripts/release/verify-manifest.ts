@@ -1,5 +1,5 @@
 import { dirname, join, resolve } from "node:path";
-import { verifyReleaseDirectory } from "./verify-release-directory.js";
+import { verifyReleaseFiles } from "./verify-release-directory.js";
 
 const usage =
   "Usage: verify-manifest.ts MANIFEST_PATH SIGNATURE_PATH [PUBLIC_KEY_PATH]";
@@ -20,15 +20,12 @@ const main = async (): Promise<void> => {
     publicKeyArgument ?? join(dirname(manifestPath), "release-public.pem"),
   );
   const directory = dirname(manifestPath);
-  if (
-    manifestPath !== join(directory, "manifest.json") ||
-    signaturePath !== join(directory, "manifest.sig")
-  ) {
-    throw new TypeError(
-      "Manifest and signature paths must be manifest.json and manifest.sig in one release directory.",
-    );
-  }
-  const verified = await verifyReleaseDirectory(directory, publicKeyPath);
+  const verified = await verifyReleaseFiles({
+    releaseDirectory: directory,
+    manifestPath,
+    signaturePath,
+    verificationPublicKeyPath: publicKeyPath,
+  });
   process.stdout.write(
     `${verified.release.manifest.version} ${verified.release.manifestSha256}\n`,
   );
