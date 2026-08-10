@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -68,11 +68,30 @@ describe("renderCompose", () => {
     expect(parsed.networks["argus-egress"]).toEqual({});
   });
 
+  it("delivers only the dedicated secret file to managed SearXNG", () => {
+    const parsed = parse(
+      renderCompose({ version: "0.2.0", storage: "postgres", searxng: true }),
+    ) as {
+      services: Record<
+        string,
+        { env_file?: Array<{ path: string; format: string }> }
+      >;
+    };
+
+    expect(parsed.services.argus?.env_file).toEqual([
+      { path: "secrets.env", format: "raw" },
+    ]);
+    expect(parsed.services.searxng?.env_file).toEqual([
+      { path: "searxng/secrets.env", format: "raw" },
+    ]);
+  });
+
   it.runIf(composeAvailable)(
     "round-trips the controlled egress topology through Docker Compose",
     async () => {
       const root = await mkdtemp(join(tmpdir(), "argus-compose-topology-"));
       roots.push(root);
+      await mkdir(join(root, "searxng"));
       await Promise.all([
         writeFile(
           join(root, "compose.yaml"),
@@ -83,6 +102,10 @@ describe("renderCompose", () => {
           }),
         ),
         writeFile(join(root, "secrets.env"), "POSTGRES_PASSWORD=test\n"),
+        writeFile(
+          join(root, "searxng", "secrets.env"),
+          `SEARXNG_SECRET=${"a".repeat(64)}\n`,
+        ),
       ]);
       const parsed = JSON.parse(
         execFileSync(
