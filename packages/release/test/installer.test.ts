@@ -1400,17 +1400,25 @@ exec /bin/rm "$@"`,
     });
 
     const second = await createFixture();
+    const secondWrapperSha = createHash("sha256")
+      .update(await readFile(second.wrapper))
+      .digest("hex");
+    const secondBytes = Buffer.from(JSON.stringify(manifest(secondWrapperSha)));
     await writeFile(
       second.target,
       "mine\n# argus-host-wrapper schema=1\nargus_version=1.0.0\nargus_cli_image=spoof\n--env 'ARGUS_INSTALL_ROOT=/opt/argus'\n# generated-by=@argus/release\n",
     );
-    await expect(runInstaller(second, bytes)).rejects.toMatchObject({
+    await expect(runInstaller(second, secondBytes)).rejects.toMatchObject({
       stderr: expect.stringContaining("unrelated"),
     });
 
     const third = await createFixture();
+    const thirdWrapperSha = createHash("sha256")
+      .update(await readFile(third.wrapper))
+      .digest("hex");
+    const thirdBytes = Buffer.from(JSON.stringify(manifest(thirdWrapperSha)));
     await mkdir(join(third.root, "installer.lock"));
-    await expect(runInstaller(third, bytes)).rejects.toMatchObject({
+    await expect(runInstaller(third, thirdBytes)).rejects.toMatchObject({
       stderr: expect.stringContaining("in progress"),
     });
   }, 20_000);
