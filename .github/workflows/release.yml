@@ -204,6 +204,21 @@ jobs:
           sh -n dist/release/argus
           sh -n dist/release/install.sh
 
+      - name: Upload verified stable-promotion input
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: stable-promotion-input
+          if-no-files-found: error
+          path: |-
+            dist/release/manifest.json
+            dist/release/manifest.sig
+            dist/release/release-public.pem
+            dist/release/argus
+            dist/release/install.sh
+            dist/release/fxembed.js
+            dist/release/FXEMBED-LICENSE.md
+            dist/release/fxembed-provenance.json
+
       - name: Publish immutable GitHub Release
         uses: softprops/action-gh-release@62c96d0c4e8a889135c1f3a25910db8dbe0e85f7 # v2.3.4
         with:

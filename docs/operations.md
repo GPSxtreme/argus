@@ -185,6 +185,48 @@ pnpm argus config apply /app/argus.yaml
 Invalid files never replace the current snapshot. Reapplying identical content
 is a no-op. Runtime services should all mount the same config revision.
 
+## Stable release promotion and rollback
+
+Stable delivery is one checked-in bundle, not three independently deployable
+files:
+
+- `apps/web/public/releases/stable/install.sh`
+- `apps/web/public/releases/stable/manifest.json`
+- `apps/web/public/releases/stable/manifest.sig`
+
+After the signed release workflow has published its immutable release, download
+its `stable-promotion-input` artifact so those eight verified release files are
+in `dist/release`. Verify that directory and render the new stable bundle only
+with the release tooling:
+
+```sh
+pnpm tsx scripts/release/verify-manifest.ts dist/release/manifest.json dist/release/manifest.sig dist/release/release-public.pem
+pnpm tsx scripts/release/promote-stable.ts dist/release apps/web/public/releases/stable
+git diff -- apps/web/public/releases/stable
+```
+
+For a new release, the diff must contain changes to exactly `install.sh`,
+`manifest.json`, and `manifest.sig` in that directory. The promotion command
+first verifies the signed manifest, its signing identity, and every signed
+candidate asset; it then writes those three stable members as one staged
+directory swap. Do not use an immutable GitHub release `install.sh` at the
+stable URL: it is bound to that release's immutable manifest URL, not the
+stable manifest URL.
+
+Before committing, run the release verification and the clean-host installer
+smoke described below against the verified candidate. Commit the three changed
+stable files together in one promotion commit, review it, and deploy it through
+the normal path. Do not combine an ordinary feature change with a stable
+promotion. The pinned v0.1.13 bundle remains its recognized legacy wrapper
+contract; do not regenerate it from the current durable launcher. The next
+promotion carries the verified durable wrapper from its candidate artifact.
+
+If verification, promotion, or deployment fails, retain or restore the prior
+complete bundle. Never repair production by changing one bundle member. Roll
+back a deployed promotion by reverting its complete promotion commit, then
+verify the restored three-file diff and public bytes; do not hand-edit or
+selectively revert `install.sh`, `manifest.json`, or `manifest.sig`.
+
 ## Installer smoke
 
 `.github/workflows/installer-smoke.yml` runs automatically after the signed

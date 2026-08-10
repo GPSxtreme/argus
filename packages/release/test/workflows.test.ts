@@ -356,6 +356,44 @@ describe("GitHub workflow toolchain", () => {
     expect(publish?.with?.overwrite_files).toBe(false);
   });
 
+  it("exports every verified release input needed for one stable-bundle promotion", () => {
+    const workflow = parse(
+      readFileSync(repositoryFile(".github/workflows/release.yml"), "utf8"),
+    ) as Workflow;
+    const steps = workflow.jobs.release?.steps ?? [];
+    const verificationIndex = steps.findIndex(
+      (step) => step.name === "Build and verify signed assets",
+    );
+    const promotionArtifactIndex = steps.findIndex(
+      (step) => step.name === "Upload verified stable-promotion input",
+    );
+    const publishIndex = steps.findIndex(
+      (step) => step.name === "Publish immutable GitHub Release",
+    );
+    const promotionArtifact = steps[promotionArtifactIndex];
+
+    expect(promotionArtifact?.uses).toBe(
+      "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+    );
+    expect(promotionArtifact?.with).toEqual({
+      name: "stable-promotion-input",
+      path: [
+        "dist/release/manifest.json",
+        "dist/release/manifest.sig",
+        "dist/release/release-public.pem",
+        "dist/release/argus",
+        "dist/release/install.sh",
+        "dist/release/fxembed.js",
+        "dist/release/FXEMBED-LICENSE.md",
+        "dist/release/fxembed-provenance.json",
+      ].join("\n"),
+      "if-no-files-found": "error",
+    });
+    expect(verificationIndex).toBeGreaterThanOrEqual(0);
+    expect(promotionArtifactIndex).toBeGreaterThan(verificationIndex);
+    expect(publishIndex).toBeGreaterThan(promotionArtifactIndex);
+  });
+
   it("defines a clean-VPS smoke using an immutable signed candidate", () => {
     const harness = readFileSync(
       repositoryFile("scripts/e2e/vps-smoke.sh"),
