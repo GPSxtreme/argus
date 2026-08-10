@@ -1,13 +1,12 @@
 import { createHash, verify } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { renderInstaller } from "@argus/release";
 import { describe, expect, it } from "vitest";
-import { canonicalManifestUrl, installerOptions } from "../lib/distribution";
+import { canonicalManifestUrl } from "../lib/distribution";
 import { releasePublicKey } from "../lib/release-public-key";
 import nextConfig from "../next.config";
 
-const stableAsset = (name: "manifest.json" | "manifest.sig") =>
+const stableAsset = (name: "install.sh" | "manifest.json" | "manifest.sig") =>
   resolve(process.cwd(), "apps/web/public/releases/stable", name);
 
 describe("stable release artifacts", () => {
@@ -27,13 +26,15 @@ describe("stable release artifacts", () => {
     expect(verify(null, manifest, releasePublicKey, signature)).toBe(true);
   });
 
-  it("pins the site-served installer bytes and its trust chain inputs", () => {
-    const bytes = renderInstaller(installerOptions);
+  it("pins the site-served installer bytes and its trust chain inputs", async () => {
+    const bytes = await readFile(stableAsset("install.sh"));
+    const installer = bytes.toString("utf8");
+
     expect(
       createHash("sha256").update(bytes).digest("hex"),
     ).toBe("91e3559f37084926fa30676f44e1da392e12da68d81530abeb9686f585e01080");
-    expect(bytes).toContain(canonicalManifestUrl);
-    expect(bytes).toContain(releasePublicKey);
+    expect(installer).toContain(canonicalManifestUrl);
+    expect(installer).toContain(releasePublicKey);
   });
 
   it("serves the mutable stable files with explicit cache and content types", async () => {
