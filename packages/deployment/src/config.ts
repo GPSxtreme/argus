@@ -13,6 +13,7 @@ export interface InstanceEndpoints {
 export interface RenderedInstanceConfig {
   yaml: string;
   secrets: string;
+  searxngSecrets?: string;
   secretEnvironment: Record<string, string>;
 }
 
@@ -153,8 +154,12 @@ export const renderInstanceConfig = (
   return {
     yaml,
     secrets: `${Object.entries(secretEnvironment)
+      .filter(([name]) => name !== "SEARXNG_SECRET")
       .map(([name, value]) => `${name}=${value}`)
       .join("\n")}\n`,
+    ...(searxngSecret === undefined
+      ? {}
+      : { searxngSecrets: `SEARXNG_SECRET=${searxngSecret}\n` }),
     secretEnvironment,
   };
 };

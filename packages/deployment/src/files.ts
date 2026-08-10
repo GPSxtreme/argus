@@ -7,12 +7,14 @@ import type { RenderedInstanceConfig } from "./config.js";
 export interface InstancePaths {
   config: string;
   secrets: string;
+  searxngSecrets: string;
   state: string;
 }
 
 export const instancePaths = (root: string): InstancePaths => ({
   config: join(root, "argus.yaml"),
   secrets: join(root, "secrets.env"),
+  searxngSecrets: join(root, "searxng", "secrets.env"),
   state: join(root, "state.json"),
 });
 
@@ -64,6 +66,18 @@ const atomicWrite = async (
   }
 };
 
+const removePersistedFile = async (
+  path: string,
+  io: InstanceIO,
+): Promise<void> => {
+  try {
+    await io.unlink(path);
+    await syncDirectory(path, io);
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+};
+
 export interface WriteInstanceFilesInput {
   root: string;
   rendered: RenderedInstanceConfig;
@@ -92,6 +106,16 @@ export const writeInstanceFiles = async ({
   }
   await atomicWrite(paths.config, rendered.yaml, 0o644, io);
   await atomicWrite(paths.secrets, rendered.secrets, 0o600, io);
+  if (rendered.searxngSecrets === undefined) {
+    await removePersistedFile(paths.searxngSecrets, io);
+  } else {
+    await atomicWrite(
+      paths.searxngSecrets,
+      rendered.searxngSecrets,
+      0o600,
+      io,
+    );
+  }
 };
 
 export const loadDeploymentState = async (root: string): Promise<DeploymentStateV1 | undefined> => {

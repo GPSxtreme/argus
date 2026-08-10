@@ -37,6 +37,9 @@ const postgresService = `  postgres:
 
 const searxngService = `  searxng:
     image: \${SEARXNG_IMAGE}
+    env_file:
+      - path: searxng/secrets.env
+        format: raw
     volumes:
       - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
     networks: [argus-private, argus-egress]
