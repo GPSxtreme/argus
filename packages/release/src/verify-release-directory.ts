@@ -51,21 +51,15 @@ export const verifyReleaseFiles = async (
     io.readFile(candidatePublicKeyPath),
   ]);
   const publicKeyPem = candidatePublicKeyBytes.toString("utf8");
+  const verificationPublicKeyPem =
+    verificationPublicKeyPath === candidatePublicKeyPath
+      ? publicKeyPem
+      : (await io.readFile(verificationPublicKeyPath)).toString("utf8");
   const release = verifyReleaseManifestWithIdentity(
     manifestBytes,
     signature,
-    publicKeyPem,
+    verificationPublicKeyPem,
   );
-  if (verificationPublicKeyPath !== candidatePublicKeyPath) {
-    const verificationPublicKeyPem = (
-      await io.readFile(verificationPublicKeyPath)
-    ).toString("utf8");
-    verifyReleaseManifestWithIdentity(
-      manifestBytes,
-      signature,
-      verificationPublicKeyPem,
-    );
-  }
   const candidatePublicKeySha256 = createHash("sha256")
     .update(candidatePublicKeyBytes)
     .digest("hex");

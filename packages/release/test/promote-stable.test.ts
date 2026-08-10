@@ -21,6 +21,7 @@ import {
   buildReleaseArtifacts,
   type ReleaseManifestV1,
   type ReleaseImageInput,
+  renderInstaller,
   serializeReleaseManifestCanonical,
   verifyReleaseDirectory,
 } from "../src/index.js";
@@ -129,6 +130,32 @@ const createFixtureRelease = async (): Promise<FixtureRelease> => {
   };
 };
 
+interface CrossSignedFixture extends FixtureRelease {
+  verificationPublicKeyPath: string;
+  verificationPublicKeyPem: string;
+}
+
+const createCrossSignedFixture = async (): Promise<CrossSignedFixture> => {
+  const fixture = await createFixtureRelease();
+  const verificationKey = generateKeyPairSync("ed25519");
+  const verificationPublicKeyPem = verificationKey.publicKey
+    .export({ type: "spki", format: "pem" })
+    .toString();
+  const verificationPublicKeyPath = join(fixture.root, "external-trust.pem");
+  await Promise.all([
+    writeFile(
+      join(fixture.release, "manifest.sig"),
+      sign(null, fixture.manifest, verificationKey.privateKey),
+    ),
+    writeFile(verificationPublicKeyPath, verificationPublicKeyPem),
+  ]);
+  return {
+    ...fixture,
+    verificationPublicKeyPath,
+    verificationPublicKeyPem,
+  };
+};
+
 const writeStableSentinels = async (stable: string): Promise<void> => {
   await Promise.all([
     writeFile(join(stable, "install.sh"), "prior installer\n", { mode: 0o755 }),
@@ -220,6 +247,24 @@ describe("promoteStableBundle", () => {
       verifyReleaseDirectory(fixture.release, undefined, verificationIO),
     ).rejects.toThrow("Signed checksum mismatch for release-public.pem");
     expect(candidateKeyReads).toBe(1);
+  });
+
+  it("returns the hash-bound candidate identity when an external key verifies the signature", async () => {
+    const fixture = await createCrossSignedFixture();
+
+    const verified = await verifyReleaseDirectory(
+      fixture.release,
+      fixture.verificationPublicKeyPath,
+    );
+
+    expect(verified.publicKeyPem).toBe(fixture.publicKeyPem);
+    expect(verified.publicKeyPem).not.toBe(fixture.verificationPublicKeyPem);
+    const installer = renderInstaller({
+      manifestUrl: "https://argus.gpsxtre.me/releases/stable/manifest.json",
+      publicKeyPem: verified.publicKeyPem,
+    });
+    expect(installer).toContain(fixture.publicKeyPem);
+    expect(installer).not.toContain(fixture.verificationPublicKeyPem);
   });
 
   it.each([
@@ -369,5 +414,40 @@ describe("verify-manifest CLI", () => {
       stderr: "",
       stdout: `1.2.3 ${digest(fixture.manifest)}\n`,
     });
+  });
+
+  it("uses a distinct explicit public key only as the signature trust anchor", async () => {
+    const fixture = await createCrossSignedFixture();
+    const withOverride = spawnSync(
+      process.execPath,
+      [
+        tsxCli,
+        verifyManifestCli,
+        join(fixture.release, "manifest.json"),
+        join(fixture.release, "manifest.sig"),
+        fixture.verificationPublicKeyPath,
+      ],
+      { cwd: repositoryRoot, encoding: "utf8" },
+    );
+    const withoutOverride = spawnSync(
+      process.execPath,
+      [
+        tsxCli,
+        verifyManifestCli,
+        join(fixture.release, "manifest.json"),
+        join(fixture.release, "manifest.sig"),
+      ],
+      { cwd: repositoryRoot, encoding: "utf8" },
+    );
+
+    expect(withOverride).toMatchObject({
+      status: 0,
+      stderr: "",
+      stdout: `1.2.3 ${digest(fixture.manifest)}\n`,
+    });
+    expect(withoutOverride.status).not.toBe(0);
+    expect(withoutOverride.stderr).toContain(
+      "Release manifest signature is invalid",
+    );
   });
 });
