@@ -1,4 +1,4 @@
-import { lstat, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -22,6 +22,12 @@ const state: ManagementStateV1 = {
   cliImage: `ghcr.io/gpsxtreme/argus-cli@sha256:${digest}`,
 };
 const valid = `schema=1\nversion=0.1.13\ncli_image=ghcr.io/gpsxtreme/argus-cli@sha256:${digest}\n`;
+const concurrentState: ManagementStateV1 = {
+  schema: 1,
+  version: "0.1.14",
+  cliImage: `ghcr.io/gpsxtreme/argus-cli@sha256:${"b".repeat(64)}`,
+};
+const concurrentValid = `schema=1\nversion=0.1.14\ncli_image=ghcr.io/gpsxtreme/argus-cli@sha256:${"b".repeat(64)}\n`;
 const temporaryDirectories: string[] = [];
 
 const temporaryDirectory = async (): Promise<string> => {
@@ -122,6 +128,7 @@ describe("writeManagementStateAtomic", () => {
 
     expect(await readFile(path, "utf8")).toBe(valid);
     expect((await lstat(path)).mode & 0o777).toBe(0o644);
+    expect(await readdir(directory)).toEqual(["management.state"]);
   });
 
   it("uses a same-directory durable rename sequence", async () => {
@@ -131,16 +138,26 @@ describe("writeManagementStateAtomic", () => {
     await writeManagementStateAtomic("/opt/argus/management.state", state, filesystem);
 
     expect(events).toEqual([
+      "open:/opt/argus/.management.state.lock:wx:600",
+      "stat:/opt/argus/.management.state.lock",
+      "chmod:600",
+      "sync:file",
+      "lstat:/opt/argus/.management.state.lock",
+      "open:/opt/argus:r",
+      "sync:directory",
+      "close:directory",
       "lstat:/opt/argus/management.state",
       expect.stringMatching(/^open:\/opt\/argus\/\.management\.state\.[^.]+\.tmp:wx:644$/u),
       `write:${valid}`,
       "chmod:644",
       "sync:file",
+      expect.stringMatching(/^stat:\/opt\/argus\/\.management\.state\.[^.]+\.tmp$/u),
       "close:file",
       "lstat:/opt/argus/management.state",
       expect.stringMatching(
         /^rename:\/opt\/argus\/management\.state:\/opt\/argus\/\.management\.state\.backup-[^.]+$/u,
       ),
+      expect.stringMatching(/^lstat:\/opt\/argus\/\.management\.state\.backup-[^.]+$/u),
       "open:/opt/argus:r",
       "sync:directory",
       "close:directory",
@@ -149,13 +166,22 @@ describe("writeManagementStateAtomic", () => {
       expect.stringMatching(
         /^rename:\/opt\/argus\/\.management\.state\.[^.]+\.tmp:\/opt\/argus\/management\.state$/u,
       ),
+      "lstat:/opt/argus/management.state",
       "open:/opt/argus:r",
       "sync:directory",
       "close:directory",
+      "lstat:/opt/argus/management.state",
+      expect.stringMatching(/^lstat:\/opt\/argus\/\.management\.state\.backup-[^.]+$/u),
       expect.stringMatching(/^unlink:\/opt\/argus\/\.management\.state\.backup-[^.]+$/u),
       "open:/opt/argus:r",
       "sync:directory",
       "close:directory",
+      "lstat:/opt/argus/.management.state.lock",
+      "unlink:/opt/argus/.management.state.lock",
+      "open:/opt/argus:r",
+      "sync:directory",
+      "close:directory",
+      "close:file",
     ]);
   });
 
@@ -241,6 +267,93 @@ describe("writeManagementStateAtomic", () => {
     expect(filesystem.backupContents).toBe("previous state\n");
   });
 
+  it("excludes a concurrent writer until the active transaction has recovered", async () => {
+    const fixture = concurrentWriterFileSystem();
+    const firstWrite = writeManagementStateAtomic(
+      "/opt/argus/management.state",
+      state,
+      fixture.fileSystem,
+    );
+    await fixture.firstPromotionReady;
+
+    const concurrentResult = await writeManagementStateAtomic(
+      "/opt/argus/management.state",
+      concurrentState,
+      fixture.fileSystem,
+    ).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    fixture.failFirstPromotion();
+    await expect(firstWrite).rejects.toThrow("injected first-writer parent sync failure");
+
+    expect(concurrentResult).toBeInstanceOf(Error);
+    expect((concurrentResult as Error).message).toContain("locked");
+    expect(fixture.targetContents).toBe("previous state\n");
+    expect(fixture.targetContents).not.toBe(concurrentValid);
+  });
+
+  it("leaves a stale lock untouched with actionable crash-recovery guidance", async () => {
+    const directory = await temporaryDirectory();
+    const path = join(directory, "management.state");
+    const lockPath = join(directory, ".management.state.lock");
+    await writeFile(path, "previous state\n", { mode: 0o600 });
+    await writeFile(lockPath, "", { mode: 0o600 });
+
+    await expect(writeManagementStateAtomic(path, state)).rejects.toThrow(
+      "If no writer is active, remove the stale lock",
+    );
+
+    expect(await readFile(path, "utf8")).toBe("previous state\n");
+    expect((await lstat(lockPath)).isFile()).toBe(true);
+  });
+
+  it("never installs a backup that becomes a symlink during restoration", async () => {
+    const events: string[] = [];
+    const filesystem = recordingFileSystem(events, {
+      failDirectorySyncWithTargetContents: valid,
+      swapBackupToSymlinkDuringRestore: true,
+    });
+
+    await expect(
+      writeManagementStateAtomic("/opt/argus/management.state", state, filesystem),
+    ).rejects.toThrow("ownership");
+
+    expect(filesystem.targetIsSymlink).toBe(false);
+    expect(filesystem.backupIsSymlink).toBe(true);
+  });
+
+  it("does not claim an ambiguously missing cleanup backup is retained", async () => {
+    const events: string[] = [];
+    const filesystem = recordingFileSystem(events, { backupUnlinkIsAmbiguouslyMissing: true });
+
+    const failure = await writeManagementStateAtomic(
+      "/opt/argus/management.state",
+      state,
+      filesystem,
+    ).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).not.toContain("prior state remains at");
+    expect((failure as Error).message).toContain("could not be confirmed");
+    expect(filesystem.backupContents).toBeUndefined();
+  });
+
+  it("does not remove a lock path that no longer belongs to this writer", async () => {
+    const events: string[] = [];
+    const filesystem = recordingFileSystem(events, { replaceLockBeforeRelease: true });
+
+    await expect(
+      writeManagementStateAtomic("/opt/argus/management.state", state, filesystem),
+    ).rejects.toThrow("lock cleanup");
+
+    expect(filesystem.targetContents).toBe(valid);
+    expect(events).not.toContain("unlink:/opt/argus/.management.state.lock");
+  });
+
   it("rejects a symlink target before opening a temporary replacement", async () => {
     const events: string[] = [];
     const filesystem = recordingFileSystem(events, { targetIsSymlink: true });
@@ -249,7 +362,9 @@ describe("writeManagementStateAtomic", () => {
       writeManagementStateAtomic("/opt/argus/management.state", state, filesystem),
     ).rejects.toThrow("symlink");
 
-    expect(events).toEqual(["lstat:/opt/argus/management.state"]);
+    expect(events).toContain("lstat:/opt/argus/management.state");
+    expect(events.some((event) => event.includes(".tmp:wx"))).toBe(false);
+    expect(events).toContain("unlink:/opt/argus/.management.state.lock");
   });
 
   it("rejects a target that becomes a symlink before rename", async () => {
@@ -288,19 +403,29 @@ const recordingFileSystem = (
     failDirectorySyncWithTargetContents?: string | string[];
     failBackupUnlink?: boolean;
     failRestoreRename?: boolean;
+    backupUnlinkIsAmbiguouslyMissing?: boolean;
+    replaceLockBeforeRelease?: boolean;
+    swapBackupToSymlinkDuringRestore?: boolean;
     targetContents?: string | undefined;
     targetIsSymlink?: boolean;
     targetBecomesSymlink?: boolean;
   } = {},
 ): ManagementStateFileSystem & {
   targetContents: string | undefined;
+  targetIsSymlink: boolean;
   backupContents: string | undefined;
+  backupIsSymlink: boolean;
 } => {
   const target = "/opt/argus/management.state";
   let targetLstatCount = 0;
+  let lockLstatCount = 0;
   const contentsByPath = new Map<string, string>();
+  const identitiesByPath = new Map<string, number>();
+  let nextIdentity = 2;
+  const symlinks = new Set<string>();
   if (options.targetContents !== undefined || !("targetContents" in options)) {
     contentsByPath.set(target, options.targetContents ?? "previous state\n");
+    identitiesByPath.set(target, 1);
   }
   const directorySyncFailures =
     options.failDirectorySyncWithTargetContents === undefined
@@ -312,26 +437,30 @@ const recordingFileSystem = (
     Object.assign(new Error(`ENOENT: no such file or directory, lstat '${path}'`), {
       code: "ENOENT",
     });
-  const file = {
+  const file = (path: string) => ({
     writeFile: async (written: string): Promise<void> => {
       events.push(`write:${written}`);
-      const temporary = [...contentsByPath.keys()].find((path) =>
-        path.includes(".management.state."),
-      );
-      if (temporary === undefined) throw new Error("temporary management state is missing");
-      contentsByPath.set(temporary, written);
+      contentsByPath.set(path, written);
     },
     chmod: async (mode: number): Promise<void> => {
       events.push(`chmod:${mode.toString(8)}`);
     },
     sync: async (): Promise<void> => {
       events.push("sync:file");
-      if (options.failFileSync) throw new Error("injected file sync failure");
+      if (options.failFileSync && path.endsWith(".tmp")) {
+        throw new Error("injected file sync failure");
+      }
+    },
+    stat: async () => {
+      events.push(`stat:${path}`);
+      const ino = identitiesByPath.get(path);
+      if (ino === undefined) throw missing(path);
+      return { dev: 1, ino };
     },
     close: async (): Promise<void> => {
       events.push("close:file");
     },
-  };
+  });
   const directory = {
     writeFile: async (): Promise<void> => {
       throw new Error("directory cannot be written");
@@ -349,6 +478,7 @@ const recordingFileSystem = (
         throw new Error("injected parent sync failure");
       }
     },
+    stat: async () => ({ dev: 1, ino: 0 }),
     close: async (): Promise<void> => {
       events.push("close:directory");
     },
@@ -358,44 +488,181 @@ const recordingFileSystem = (
     get targetContents(): string | undefined {
       return contentsByPath.get(target);
     },
+    get targetIsSymlink(): boolean {
+      return symlinks.has(target);
+    },
     get backupContents(): string | undefined {
       return [...contentsByPath.entries()].find(([path]) =>
         path.includes(".management.state.backup-"),
       )?.[1];
     },
+    get backupIsSymlink(): boolean {
+      return [...symlinks].some((path) => path.includes(".management.state.backup-"));
+    },
     lstat: async (path: string) => {
       events.push(`lstat:${path}`);
       if (path === target) targetLstatCount += 1;
+      if (path === "/opt/argus/.management.state.lock") {
+        lockLstatCount += 1;
+        if (options.replaceLockBeforeRelease && lockLstatCount === 2) {
+          identitiesByPath.set(path, nextIdentity);
+          nextIdentity += 1;
+        }
+      }
       if (path === target && options.targetIsSymlink) {
-        return { isSymbolicLink: () => true };
+        return { dev: 1, ino: identitiesByPath.get(path) ?? 1, isSymbolicLink: () => true };
       }
       if (path === target && options.targetBecomesSymlink && targetLstatCount === 2) {
-        return { isSymbolicLink: () => true };
+        return { dev: 1, ino: identitiesByPath.get(path) ?? 1, isSymbolicLink: () => true };
       }
       if (!contentsByPath.has(path)) throw missing(path);
-      return { isSymbolicLink: () => false };
+      const ino = identitiesByPath.get(path);
+      if (ino === undefined) throw missing(path);
+      return { dev: 1, ino, isSymbolicLink: () => symlinks.has(path) };
     },
     open: async (path: string, flags: string, mode?: number) => {
       events.push(`open:${path}:${flags}${mode === undefined ? "" : `:${mode.toString(8)}`}`);
-      if (path !== "/opt/argus" && flags === "wx") contentsByPath.set(path, "");
-      return path === "/opt/argus" ? directory : file;
+      if (path !== "/opt/argus" && flags === "wx") {
+        if (contentsByPath.has(path)) throw Object.assign(new Error("already exists"), { code: "EEXIST" });
+        contentsByPath.set(path, "");
+        identitiesByPath.set(path, nextIdentity);
+        nextIdentity += 1;
+      }
+      return path === "/opt/argus" ? directory : file(path);
     },
     rename: async (from: string, to: string): Promise<void> => {
       events.push(`rename:${from}:${to}`);
       if (options.failRestoreRename && from.includes(".management.state.backup-")) {
         throw new Error("injected restore rename failure");
       }
+      if (options.swapBackupToSymlinkDuringRestore && from.includes(".management.state.backup-")) {
+        contentsByPath.set(from, "symlink target");
+        identitiesByPath.set(from, nextIdentity);
+        nextIdentity += 1;
+        symlinks.add(from);
+      }
       const source = contentsByPath.get(from);
       if (source === undefined) throw missing(from);
       contentsByPath.delete(from);
       contentsByPath.set(to, source);
+      const sourceIdentity = identitiesByPath.get(from);
+      identitiesByPath.delete(from);
+      if (sourceIdentity !== undefined) identitiesByPath.set(to, sourceIdentity);
+      if (symlinks.delete(from)) symlinks.add(to);
     },
     unlink: async (path: string): Promise<void> => {
       events.push(`unlink:${path}`);
       if (options.failBackupUnlink && path.includes(".management.state.backup-")) {
         throw new Error("injected backup cleanup failure");
       }
+      if (options.backupUnlinkIsAmbiguouslyMissing && path.includes(".management.state.backup-")) {
+        contentsByPath.delete(path);
+        identitiesByPath.delete(path);
+        throw missing(path);
+      }
       contentsByPath.delete(path);
+      identitiesByPath.delete(path);
+      symlinks.delete(path);
+    },
+  };
+};
+
+const concurrentWriterFileSystem = (): {
+  fileSystem: ManagementStateFileSystem;
+  firstPromotionReady: Promise<void>;
+  failFirstPromotion(): void;
+  readonly targetContents: string | undefined;
+} => {
+  const target = "/opt/argus/management.state";
+  const files = new Map<string, string>([[target, "previous state\n"]]);
+  const identities = new Map<string, number>([[target, 1]]);
+  let nextIdentity = 2;
+  let signalFirstPromotion: (() => void) | undefined;
+  const firstPromotionReady = new Promise<void>((resolve) => {
+    signalFirstPromotion = resolve;
+  });
+  let releaseFirstPromotion: (() => void) | undefined;
+  const firstPromotionFailure = new Promise<void>((resolve) => {
+    releaseFirstPromotion = resolve;
+  });
+  let firstPromotionPending = true;
+  const missing = (path: string): NodeJS.ErrnoException =>
+    Object.assign(new Error(`ENOENT: no such file or directory, lstat '${path}'`), {
+      code: "ENOENT",
+    });
+  const exists = (path: string): NodeJS.ErrnoException =>
+    Object.assign(new Error(`EEXIST: file already exists, open '${path}'`), {
+      code: "EEXIST",
+    });
+  const fileSystem: ManagementStateFileSystem = {
+    lstat: async (path) => {
+      if (!files.has(path)) throw missing(path);
+      const ino = identities.get(path);
+      if (ino === undefined) throw missing(path);
+      return { dev: 1, ino, isSymbolicLink: () => false };
+    },
+    open: async (path, flags) => {
+      if (path === "/opt/argus") {
+        return {
+          writeFile: async () => {
+            throw new Error("directory cannot be written");
+          },
+          chmod: async () => {
+            throw new Error("directory cannot be chmodded");
+          },
+          sync: async () => {
+            if (firstPromotionPending && files.get(target) === valid) {
+              firstPromotionPending = false;
+              signalFirstPromotion?.();
+              await firstPromotionFailure;
+              throw new Error("injected first-writer parent sync failure");
+            }
+          },
+          stat: async () => ({ dev: 1, ino: 0 }),
+          close: async () => undefined,
+        };
+      }
+      if (flags === "wx" && files.has(path)) throw exists(path);
+      if (flags === "wx") {
+        files.set(path, "");
+        identities.set(path, nextIdentity);
+        nextIdentity += 1;
+      }
+      return {
+        writeFile: async (written: string) => {
+          files.set(path, written);
+        },
+        chmod: async () => undefined,
+        sync: async () => undefined,
+        stat: async () => {
+          const ino = identities.get(path);
+          if (ino === undefined) throw missing(path);
+          return { dev: 1, ino };
+        },
+        close: async () => undefined,
+      };
+    },
+    rename: async (from, to) => {
+      const source = files.get(from);
+      if (source === undefined) throw missing(from);
+      files.delete(from);
+      files.set(to, source);
+      const sourceIdentity = identities.get(from);
+      identities.delete(from);
+      if (sourceIdentity !== undefined) identities.set(to, sourceIdentity);
+    },
+    unlink: async (path) => {
+      if (!files.delete(path)) throw missing(path);
+      identities.delete(path);
+    },
+  };
+
+  return {
+    fileSystem,
+    firstPromotionReady,
+    failFirstPromotion: () => releaseFirstPromotion?.(),
+    get targetContents() {
+      return files.get(target);
     },
   };
 };
