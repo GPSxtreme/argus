@@ -4,18 +4,18 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   applyDeployment,
-  getDeploymentStatus,
-  inspectDeployment,
-  loadDeploymentState,
-  planDeployment,
-  isPinnedImageReference,
-  restartDeployment,
-  startDeployment,
-  stopDeployment,
   type CommandExecutor,
   type CommandResult,
   type DeploymentContext,
   type DesiredDeployment,
+  getDeploymentStatus,
+  inspectDeployment,
+  isPinnedImageReference,
+  loadDeploymentState,
+  planDeployment,
+  restartDeployment,
+  startDeployment,
+  stopDeployment,
 } from "../src/index.js";
 
 const roots: string[] = [];
@@ -42,7 +42,7 @@ class FixtureExecutor implements CommandExecutor {
   }: {
     running?: boolean;
     ignoreLifecycleActions?: boolean;
-    psShape?: "array" | "object";
+    psShape?: "array" | "object" | "ndjson";
     health?: string;
   } = {}) {
     this.running = running;
@@ -51,7 +51,7 @@ class FixtureExecutor implements CommandExecutor {
     this.health = health;
   }
 
-  private readonly psShape: "array" | "object";
+  private readonly psShape: "array" | "object" | "ndjson";
   private readonly health: string;
 
   async run(
@@ -67,7 +67,10 @@ class FixtureExecutor implements CommandExecutor {
       ];
       return {
         exitCode: 0,
-        stdout: JSON.stringify(this.psShape === "object" ? services[0] : services),
+        stdout:
+          this.psShape === "ndjson"
+            ? services.map((service) => JSON.stringify(service)).join("\n")
+            : JSON.stringify(this.psShape === "object" ? services[0] : services),
         stderr: "",
       };
     }
@@ -147,6 +150,16 @@ describe("deployment reconciliation", () => {
     const status = await getDeploymentStatus(context);
     expect(status.services).toEqual([
       { name: "argus", state: "running", health: "healthy" },
+    ]);
+    expect(status.healthy).toBe(true);
+  });
+
+  it("parses newline-delimited Compose ps output for a multi-service project", async () => {
+    const { context } = await contextFor({ psShape: "ndjson" });
+    const status = await getDeploymentStatus(context);
+    expect(status.services).toEqual([
+      { name: "argus", state: "running", health: "healthy" },
+      { name: "searxng", state: "running", health: "healthy" },
     ]);
     expect(status.healthy).toBe(true);
   });
