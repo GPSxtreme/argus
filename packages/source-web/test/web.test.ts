@@ -37,6 +37,25 @@ describe("web source", () => {
     });
   });
 
+  it("parses RSS GUID text when the GUID has attributes", () => {
+    const items = parseFeed(
+      "https://deadline.com/feed/",
+      `<?xml version="1.0"?><rss version="2.0"><channel><title>Deadline</title>
+       <item><guid isPermaLink="false">https://deadline.com/?p=1237029936</guid>
+       <title>John Oliver</title><link>https://deadline.com/2026/08/john-oliver/</link>
+       <description>Latest television news</description></item>
+       </channel></rss>`,
+    );
+
+    expect(items).toEqual([
+      expect.objectContaining({
+        externalId: "https://deadline.com/?p=1237029936",
+        url: "https://deadline.com/2026/08/john-oliver/",
+        title: "John Oliver",
+      }),
+    ]);
+  });
+
   it("never expands DOCTYPE entities and unescapes predefined ones", () => {
     const items = parseFeed(
       "https://example.com/rss",

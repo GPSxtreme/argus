@@ -37,6 +37,23 @@ describe("ingestion engine", () => {
     expect(first.contentHash).toBe(second.contentHash);
   });
 
+  it("does not revise unchanged content when raw collection metadata changes", () => {
+    const first = normalizeItem({
+      source: "web",
+      targetId: "news",
+      watchIds: ["security"],
+      item: { ...item, raw: { score: 0.8, positions: [3, 15] } },
+    });
+    const second = normalizeItem({
+      source: "web",
+      targetId: "news",
+      watchIds: ["security"],
+      item: { ...item, raw: { score: 0.65, positions: [13, 4] } },
+    });
+
+    expect(first.contentHash).toBe(second.contentHash);
+  });
+
   it("classifies keyword matches without discarding unmatched records", () => {
     expect(classify(item, ["sol", "exploit"])).toEqual(["sol"]);
     expect(classify(item, ["unrelated"])).toEqual([]);

@@ -27,7 +27,6 @@ export const normalizeItem = (input: NormalizeItemInput): RecordEnvelope => {
       text: item.text,
       author: item.author,
       publishedAt: item.publishedAt,
-      raw: item.raw,
     }),
     ingestedAt: input.now ?? new Date().toISOString(),
   };
