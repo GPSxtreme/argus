@@ -741,6 +741,16 @@ argus_identity() {
   [ -n "$argus_identity_sha" ] || return 1
   printf '%s:%s\\n' "$argus_identity_metadata" "$argus_identity_sha"
 }
+argus_capture_snapshot() {
+  argus_snapshot_metadata=$(stat -c '%d:%i:%s:%a:%u:%g:%Y:%Z' "$1" 2>/dev/null ||
+    stat -f '%d:%i:%z:%Lp:%u:%g:%m:%c' "$1" 2>/dev/null) || return 1
+  argus_snapshot_preservation_metadata=$(stat -c '%s:%a:%u:%g:%Y' "$1" 2>/dev/null ||
+    stat -f '%z:%Lp:%u:%g:%m' "$1" 2>/dev/null) || return 1
+  argus_snapshot_sha=$(sha256sum "$1" | awk 'NR == 1 { print $1 }') || return 1
+  [ -n "$argus_snapshot_sha" ] || return 1
+  argus_captured_identity="$argus_snapshot_metadata:$argus_snapshot_sha"
+  argus_captured_preservation_identity="$argus_snapshot_preservation_metadata:$argus_snapshot_sha"
+}
 argus_preservation_identity() {
   argus_preservation_metadata=$(stat -c '%s:%a:%u:%g:%Y' "$1" 2>/dev/null ||
     stat -f '%z:%Lp:%u:%g:%m' "$1" 2>/dev/null) || return 1
@@ -817,8 +827,10 @@ if [ -L "$argus_target" ]; then
   argus_die "refusing to replace symlink $argus_target"
 fi
 if [ -e "$argus_target" ]; then
-  argus_target_identity=$(argus_identity "$argus_target") ||
+  argus_capture_snapshot "$argus_target" ||
     argus_die "could not inspect existing installation target"
+  argus_target_identity=$argus_captured_identity
+  argus_target_preservation_identity=$argus_captured_preservation_identity
   if cmp -s "$argus_tmp/argus" "$argus_target"; then
     argus_existing_exact=1
   elif argus_is_legacy_wrapper "$argus_target" 2>/dev/null; then
@@ -831,8 +843,10 @@ else
   argus_existing_exact=0
 fi
 if [ -e "$argus_state_path" ]; then
-  argus_state_identity=$(argus_identity "$argus_state_path") ||
+  argus_capture_snapshot "$argus_state_path" ||
     argus_die "could not inspect existing management state"
+  argus_state_identity=$argus_captured_identity
+  argus_state_preservation_identity=$argus_captured_preservation_identity
 else
   argus_state_identity=absent
 fi
@@ -906,8 +920,8 @@ if [ "$argus_existing_exact" -eq 0 ] && [ "$argus_target_identity" != absent ]; 
   [ ! -L "$argus_target" ] &&
     [ "$(argus_identity "$argus_target" 2>/dev/null || true)" = "$argus_target_identity" ] ||
     argus_die "installation target changed before preservation"
-  argus_target_preservation_identity=$(argus_preservation_identity "$argus_target") ||
-    argus_die "could not inspect existing installation target for preservation"
+  argus_snapshot_matches "$argus_target" "$argus_target_identity" ||
+    argus_die "installation target changed during preservation"
   argus_backup_tmp=$(argus_make_temp_as_owner "$argus_target_dir" '.argus.backup.XXXXXX') ||
     argus_die "could not preserve the existing Argus wrapper"
   argus_backup_as_owner "$argus_target" "$argus_backup_tmp" ||
@@ -921,8 +935,8 @@ if [ "$argus_state_existing_exact" -eq 0 ] && [ "$argus_state_identity" != absen
   [ ! -L "$argus_state_path" ] &&
     [ "$(argus_identity "$argus_state_path" 2>/dev/null || true)" = "$argus_state_identity" ] ||
     argus_die "management state changed before preservation"
-  argus_state_preservation_identity=$(argus_preservation_identity "$argus_state_path") ||
-    argus_die "could not inspect existing management state for preservation"
+  argus_snapshot_matches "$argus_state_path" "$argus_state_identity" ||
+    argus_die "management state changed during preservation"
   argus_state_backup_tmp=$(argus_make_temp_as_owner "$argus_install_root" '.management.state.backup.XXXXXX') ||
     argus_die "could not preserve the existing management state"
   argus_backup_as_owner "$argus_state_path" "$argus_state_backup_tmp" ||
