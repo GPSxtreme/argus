@@ -265,6 +265,35 @@ const environmentFor = (state: DeploymentStateV1, release: VerifiedReleaseManife
   SEARXNG_IMAGE: release.manifest.images.searxng.reference,
 });
 
+const releaseServiceImages = (release: VerifiedReleaseManifest) => ({
+  argus: release.manifest.images.app.reference,
+  postgres: release.manifest.images.postgres.reference,
+  searxng: release.manifest.images.searxng.reference,
+});
+
+const stateForRelease = (state: DeploymentStateV1, release: VerifiedReleaseManifest): DeploymentStateV1 => {
+  const images = releaseServiceImages(release);
+  return {
+    ...state,
+    argusVersion: release.manifest.version,
+    services: Object.fromEntries(
+      Object.entries(state.services).map(([name, service]) => {
+        const image = images[name as keyof typeof images];
+        return [name, image === undefined ? service : { ...service, image, healthy: true }];
+      }),
+    ),
+    ...(state.compose === undefined
+      ? {}
+      : {
+          compose: {
+            ...state.compose,
+            version: release.manifest.version,
+            images,
+          },
+        }),
+  };
+};
+
 const command = async (
   root: string,
   executor: CommandExecutor,
@@ -421,18 +450,7 @@ export const applyUpdate = async ({ root, plan, executor }: ApplyUpdateInput): P
   const compose = plan.previousState.compose;
   if (!compose) throw new Error("Update state lost Compose configuration.");
   await saveDeploymentState(root, {
-    ...plan.previousState,
-    argusVersion: plan.targetVersion,
-    services: Object.fromEntries(Object.entries(plan.previousState.services).map(([name, service]) => [name, { ...service, healthy: true }])),
-    compose: {
-      ...compose,
-      version: plan.targetVersion,
-      images: {
-        argus: plan.release.manifest.images.app.reference,
-        postgres: plan.release.manifest.images.postgres.reference,
-        searxng: plan.release.manifest.images.searxng.reference,
-      },
-    },
+    ...stateForRelease(plan.previousState, plan.release),
     updatedAt: new Date().toISOString(),
   });
   persisted = { ...persisted, phase: "verified" };
@@ -470,7 +488,7 @@ export const rollbackUpdate = async ({ root, executor, release }: RollbackUpdate
       recovery: "Run 'argus doctor --json' and preserve the existing backup for recovery.",
     });
   }
-  await saveDeploymentState(root, backup.state);
+  await saveDeploymentState(root, stateForRelease(backup.state, persisted.rollbackRelease));
   await persist(root, { ...persisted, phase: "rolled_back" });
   return { version: backup.state.argusVersion, phase: "rolled_back", health: report };
 };

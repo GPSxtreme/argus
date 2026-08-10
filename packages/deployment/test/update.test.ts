@@ -63,7 +63,9 @@ const rootWithState = async ({ searxng = false }: { searxng?: boolean } = {}) =>
     configHash: "a".repeat(64),
     services: {
       argus: { image: image("f").reference, healthy: true },
-      ...(searxng ? { searxng: { image: image("c").reference, healthy: true } } : {}),
+      postgres: { image: image("e").reference, healthy: true },
+      searxng: { image: image("b").reference, healthy: true },
+      auxiliary: { image: image("e").reference, healthy: false },
     },
     compose: {
       version: "1.0.0",
@@ -78,6 +80,41 @@ const rootWithState = async ({ searxng = false }: { searxng?: boolean } = {}) =>
 };
 
 describe("safe update state machine", () => {
+  it("synchronizes managed service images to signed releases through update and rollback", async () => {
+    const root = await rootWithState();
+    const rollbackRelease = release("1.0.0", 1, "f");
+    const targetRelease = release();
+    const plan = await planUpdate({ root, release: targetRelease, rollbackRelease, executor: executor() });
+
+    await applyUpdate({ root, plan, executor: executor() });
+    const updated = JSON.parse(await readFile(join(root, "state.json"), "utf8"));
+    expect(updated.compose.images).toEqual({
+      argus: image("a").reference,
+      postgres: image("d").reference,
+      searxng: image("c").reference,
+    });
+    expect(updated.services).toMatchObject({
+      argus: { image: image("a").reference, healthy: true },
+      postgres: { image: image("d").reference, healthy: true },
+      searxng: { image: image("c").reference, healthy: true },
+      auxiliary: { image: image("e").reference, healthy: false },
+    });
+
+    await rollbackUpdate({ root, executor: executor(), release: rollbackRelease });
+    const rolledBack = JSON.parse(await readFile(join(root, "state.json"), "utf8"));
+    expect(rolledBack.compose.images).toEqual({
+      argus: image("f").reference,
+      postgres: image("d").reference,
+      searxng: image("c").reference,
+    });
+    expect(rolledBack.services).toMatchObject({
+      argus: { image: image("f").reference, healthy: true },
+      postgres: { image: image("d").reference, healthy: true },
+      searxng: { image: image("c").reference, healthy: true },
+      auxiliary: { image: image("e").reference, healthy: false },
+    });
+  });
+
   it("backs up SQLite database sidecars and completes every success phase", async () => {
     const root = await rootWithState();
     await writeFile(join(root, "argus.db"), "db");
