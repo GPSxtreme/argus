@@ -178,7 +178,7 @@ git commit -m "build: package Argus runtime images"
 - Test: `packages/release/test/wrapper.test.ts`
 
 **Interfaces:**
-- Produces: `renderArgusWrapper({ version, cliImageDigest }): string`.
+- Produces: an immutable wrapper script that reads release state at runtime.
 
 - [ ] **Step 1: Write a failing wrapper snapshot test**
 

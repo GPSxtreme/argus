@@ -8,7 +8,10 @@ import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import {
   buildReleaseArtifacts,
+  managementStateForRelease,
+  renderArgusWrapper,
   type ReleaseImageInput,
+  verifyReleaseManifestWithIdentity,
 } from "../src/index.js";
 
 const fixturePrivateKey = `-----BEGIN PRIVATE KEY-----
@@ -24,37 +27,37 @@ const image = (
   reference: `${repository}@sha256:${sha(character)}`,
 });
 
-const input = () => ({
-  version: "1.2.3",
+const input = (version = "1.2.3", cliDigest = "b") => ({
+  version,
   sourceDateEpoch: "1785580200",
   images: [
     image("app", "ghcr.io/gpsxtreme/argus", "a"),
-    image("cli", "ghcr.io/gpsxtreme/argus-cli", "b"),
+    image("cli", "ghcr.io/gpsxtreme/argus-cli", cliDigest),
     image("searxng", "docker.io/searxng/searxng", "c"),
     image("postgres", "docker.io/library/postgres", "d"),
   ],
   fxembed: {
     bytes: Buffer.from("export default { fetch() {} };\n"),
-    url: "https://github.com/gpsxtreme/argus/releases/download/v1.2.3/fxembed.js",
+    url: `https://github.com/gpsxtreme/argus/releases/download/v${version}/fxembed.js`,
     compatibilityDate: "2026-04-11",
   },
   wrapper: {
     bytes: Buffer.from("#!/bin/sh\nexec true\n"),
-    url: "https://github.com/gpsxtreme/argus/releases/download/v1.2.3/argus",
+    url: `https://github.com/gpsxtreme/argus/releases/download/v${version}/argus`,
   },
   installer: {
     bytes: Buffer.from("#!/bin/sh\n# installer\n"),
-    url: "https://github.com/gpsxtreme/argus/releases/download/v1.2.3/install.sh",
+    url: `https://github.com/gpsxtreme/argus/releases/download/v${version}/install.sh`,
   },
   publicKeyUrl:
-    "https://github.com/gpsxtreme/argus/releases/download/v1.2.3/release-public.pem",
+    `https://github.com/gpsxtreme/argus/releases/download/v${version}/release-public.pem`,
   fxembedLicense: {
     bytes: Buffer.from("MIT\n"),
-    url: "https://github.com/gpsxtreme/argus/releases/download/v1.2.3/FXEMBED-LICENSE.md",
+    url: `https://github.com/gpsxtreme/argus/releases/download/v${version}/FXEMBED-LICENSE.md`,
   },
   fxembedProvenance: {
     bytes: Buffer.from('{"revision":"fixture"}\n'),
-    url: "https://github.com/gpsxtreme/argus/releases/download/v1.2.3/fxembed-provenance.json",
+    url: `https://github.com/gpsxtreme/argus/releases/download/v${version}/fxembed-provenance.json`,
   },
   privateKeyPem: fixturePrivateKey,
 });
@@ -100,6 +103,59 @@ describe("release manifest builder", () => {
         built.signature,
       ),
     ).toBe(true);
+  });
+
+  it("keeps immutable wrapper bytes across releases while signing distinct state", () => {
+    const firstWrapper = Buffer.from(renderArgusWrapper());
+    const secondWrapper = Buffer.from(renderArgusWrapper());
+    const first = buildReleaseArtifacts({
+      ...input("1.2.3", "b"),
+      wrapper: {
+        bytes: firstWrapper,
+        url: "https://github.com/gpsxtreme/argus/releases/download/v1.2.3/argus",
+      },
+    });
+    const second = buildReleaseArtifacts({
+      ...input("1.2.4", "e"),
+      wrapper: {
+        bytes: secondWrapper,
+        url: "https://github.com/gpsxtreme/argus/releases/download/v1.2.4/argus",
+      },
+    });
+
+    const wrapperSha256 = (bytes: Uint8Array): string =>
+      createHash("sha256").update(bytes).digest("hex");
+    const firstVerified = verifyReleaseManifestWithIdentity(
+      first.manifestBytes,
+      first.signature,
+      first.publicKeyPem,
+    );
+    const secondVerified = verifyReleaseManifestWithIdentity(
+      second.manifestBytes,
+      second.signature,
+      second.publicKeyPem,
+    );
+
+    expect(firstWrapper).toEqual(secondWrapper);
+    expect(wrapperSha256(firstWrapper)).toBe(wrapperSha256(secondWrapper));
+    expect(firstVerified.manifest.assets.wrapper.sha256).toBe(
+      secondVerified.manifest.assets.wrapper.sha256,
+    );
+    expect(first.manifestBytes).not.toEqual(second.manifestBytes);
+    expect(first.signature).not.toEqual(second.signature);
+    const firstState = managementStateForRelease(firstVerified);
+    const secondState = managementStateForRelease(secondVerified);
+    expect(firstState).toEqual({
+      schema: 1,
+      version: "1.2.3",
+      cliImage: `ghcr.io/gpsxtreme/argus-cli@sha256:${sha("b")}`,
+    });
+    expect(secondState).toEqual({
+      schema: 1,
+      version: "1.2.4",
+      cliImage: `ghcr.io/gpsxtreme/argus-cli@sha256:${sha("e")}`,
+    });
+    expect(firstState).not.toEqual(secondState);
   });
 
   it("rejects duplicate image tags before producing release bytes", () => {
