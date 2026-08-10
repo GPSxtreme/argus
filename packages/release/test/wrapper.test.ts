@@ -91,7 +91,7 @@ const createWrapperFixture = (
     executable(
       join(bin, "docker"),
       options.signal
-        ? `#!/bin/sh\nprintf 'ready\\n' > "$ARGUS_READY"\ntrap 'printf TERM > "$ARGUS_SIGNAL"; exit 143' TERM\nwhile :; do sleep 1; done\n`
+        ? `#!/bin/sh\ntrap 'printf TERM > "$ARGUS_SIGNAL"; exit 143' TERM\nprintf 'ready\\n' > "$ARGUS_READY"\nwhile :; do sleep 1; done\n`
         : `#!/bin/sh\nprintf '%s\\0' "$@" > "$ARGUS_RECORD"\nexit "\${FAKE_DOCKER_EXIT:-0}"\n`,
     );
   }
