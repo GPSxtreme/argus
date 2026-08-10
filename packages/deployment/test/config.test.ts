@@ -48,6 +48,10 @@ describe("renderInstanceConfig", () => {
     expect(rendered.yaml).toContain("token: ${ARGUS_API_TOKEN}");
     expect(rendered.yaml).not.toContain("api-secret");
     expect(rendered.secrets).toContain("ARGUS_API_TOKEN=api-secret");
+    expect(rendered.secrets).not.toContain("SEARXNG_SECRET");
+    expect(rendered.searxngSecrets).toMatch(
+      /^SEARXNG_SECRET=[a-f0-9]{64}\n$/u,
+    );
     expect(rendered.secretEnvironment.SEARXNG_SECRET).toMatch(/^[a-f0-9]{64}$/u);
     expect(rendered.secretEnvironment.SEARXNG_SECRET).not.toBe("api-secret");
   });
@@ -104,6 +108,7 @@ api:
     expect(rendered.yaml).not.toContain("endpoint: https://fxembed.invalid");
     expect(rendered.yaml).not.toContain("searchEndpoint");
     expect(rendered.yaml).toContain("web:\n    enabled: true");
+    expect(rendered.searxngSecrets).toBeUndefined();
   });
 
   it("faithfully renders Postgres, watches, processors, and required secrets", () => {
@@ -230,7 +235,10 @@ api:
         apiToken: value,
       });
       expect(rendered.secrets).toContain(`ARGUS_API_TOKEN=${value}\n`);
-      expect(rendered.secrets).toMatch(/SEARXNG_SECRET=[a-f0-9]{64}\n/u);
+      expect(rendered.secrets).not.toContain("SEARXNG_SECRET");
+      expect(rendered.searxngSecrets).toMatch(
+        /^SEARXNG_SECRET=[a-f0-9]{64}\n$/u,
+      );
       expect(rendered.secretEnvironment.ARGUS_API_TOKEN).toBe(value);
     }
   });

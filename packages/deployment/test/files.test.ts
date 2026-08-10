@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -48,6 +48,42 @@ describe("instance files", () => {
 
     const mode = (await stat(join(root, "secrets.env"))).mode & 0o777;
     expect(mode).toBe(0o600);
+  });
+
+  it("writes only the managed SearXNG secret to its dedicated 0600 file", async () => {
+    const root = await mkdtemp(join(tmpdir(), "argus-instance-"));
+    roots.push(root);
+
+    await writeInstanceFiles({ root, rendered, io: nodeInstanceIO });
+
+    const path = join(root, "searxng", "secrets.env");
+    expect(await readFile(path, "utf8")).toBe(
+      "SEARXNG_SECRET=1f00076a613e2faf84e8bc33a6230860bf43be86af998e5f93a1dfd455c9a4c8\n",
+    );
+    expect((await stat(path)).mode & 0o777).toBe(0o600);
+    expect(await readFile(join(root, "secrets.env"), "utf8")).not.toContain(
+      "SEARXNG_SECRET",
+    );
+  });
+
+  it("removes a stale managed SearXNG secret when managed mode is disabled", async () => {
+    const root = await mkdtemp(join(tmpdir(), "argus-instance-"));
+    roots.push(root);
+    const path = join(root, "searxng", "secrets.env");
+    await mkdir(join(root, "searxng"));
+    await writeFile(path, "SEARXNG_SECRET=stale\n", { mode: 0o600 });
+    const { searxngSecrets: _searxngSecrets, ...withoutSearxngSecrets } =
+      rendered;
+
+    await writeInstanceFiles({
+      root,
+      rendered: withoutSearxngSecrets,
+      io: nodeInstanceIO,
+    });
+
+    await expect(readFile(path, "utf8")).rejects.toMatchObject({
+      code: "ENOENT",
+    });
   });
 
   it("writes YAML without a secret value and with mode 0644", async () => {
@@ -116,7 +152,10 @@ describe("instance files", () => {
     let directoryCloses = 0;
     const open = vi.spyOn(nodeInstanceIO, "open").mockImplementation(async (...args) => {
       const handle = await originalOpen(...args);
-      if (args[0] === root && args[1] === "r") {
+      if (
+        (args[0] === root || args[0] === join(root, "searxng")) &&
+        args[1] === "r"
+      ) {
         const sync = handle.sync.bind(handle);
         const close = handle.close.bind(handle);
         vi.spyOn(handle, "sync").mockImplementation(async () => {
@@ -141,15 +180,21 @@ describe("instance files", () => {
       updatedAt: "2026-08-01T00:00:00.000Z",
     });
 
-    expect(open.mock.calls.filter(([path, flags]) => path === root && flags === "r")).toHaveLength(3);
-    expect(directorySyncs).toBe(3);
-    expect(directoryCloses).toBe(3);
+    expect(
+      open.mock.calls.filter(
+        ([path, flags]) =>
+          (path === root || path === join(root, "searxng")) && flags === "r",
+      ),
+    ).toHaveLength(4);
+    expect(directorySyncs).toBe(4);
+    expect(directoryCloses).toBe(4);
   });
 
   it("uses fixed paths below the instance root", () => {
     expect(instancePaths("/opt/argus")).toEqual({
       config: "/opt/argus/argus.yaml",
       secrets: "/opt/argus/secrets.env",
+      searxngSecrets: "/opt/argus/searxng/secrets.env",
       state: "/opt/argus/state.json",
     });
   });
