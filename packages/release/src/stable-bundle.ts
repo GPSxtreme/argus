@@ -119,7 +119,6 @@ const prepareBundle = async (
   if (checksum(manifest) !== verified.release.manifestSha256) {
     throw new TypeError("Release manifest changed while it was being verified.");
   }
-  verifyReleaseManifestWithIdentity(manifest, signature, verified.publicKeyPem);
   const installer = Buffer.from(
     renderInstaller({
       manifestUrl: stableManifestUrl,

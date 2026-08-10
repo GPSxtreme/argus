@@ -144,15 +144,18 @@ const createCrossSignedFixture = async (): Promise<CrossSignedFixture> => {
     .export({ type: "spki", format: "pem" })
     .toString();
   const verificationPublicKeyPath = join(fixture.root, "external-trust.pem");
+  const verificationSignature = sign(
+    null,
+    fixture.manifest,
+    verificationKey.privateKey,
+  );
   await Promise.all([
-    writeFile(
-      join(fixture.release, "manifest.sig"),
-      sign(null, fixture.manifest, verificationKey.privateKey),
-    ),
+    writeFile(join(fixture.release, "manifest.sig"), verificationSignature),
     writeFile(verificationPublicKeyPath, verificationPublicKeyPem),
   ]);
   return {
     ...fixture,
+    signature: Buffer.from(verificationSignature),
     verificationPublicKeyPath,
     verificationPublicKeyPem,
   };
@@ -231,6 +234,40 @@ describe("promoteStableBundle", () => {
       "manifest.json",
       "manifest.sig",
     ]);
+  });
+
+  it("promotes a root-signed release with a distinct hash-bound candidate identity", async () => {
+    const fixture = await createCrossSignedFixture();
+
+    await expect(
+      promoteStableBundle(fixture.release, fixture.stable, {
+        trustedPublicKeyPem: fixture.verificationPublicKeyPem,
+      }),
+    ).resolves.toMatchObject({
+      version: "1.2.3",
+      manifestSha256: digest(fixture.manifest),
+    });
+
+    const promoted = await stableBytes(fixture.stable);
+    expect(promoted["manifest.json"]).toEqual(fixture.manifest);
+    expect(promoted["manifest.sig"]).toEqual(fixture.signature);
+    expect(promoted["install.sh"].toString("utf8")).toContain(
+      fixture.publicKeyPem,
+    );
+    expect(promoted["install.sh"].toString("utf8")).not.toContain(
+      fixture.verificationPublicKeyPem,
+    );
+  });
+
+  it("preserves the prior bundle when the root-signed release lacks its trusted root", async () => {
+    const fixture = await createCrossSignedFixture();
+    const prior = await stableBytes(fixture.stable);
+
+    await expect(
+      promoteStableBundle(fixture.release, fixture.stable),
+    ).rejects.toThrow("Release manifest signature is invalid");
+
+    await expect(stableBytes(fixture.stable)).resolves.toEqual(prior);
   });
 
   it("reads candidate public-key bytes once for signature trust, asset identity, and output", async () => {
