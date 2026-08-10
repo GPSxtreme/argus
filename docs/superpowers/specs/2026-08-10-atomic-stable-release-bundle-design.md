@@ -27,10 +27,14 @@ The public `/install.sh` route serves the checked-in stable installer bytes.
 It does not render the installer from the current application source at request
 or build time.
 
-A stable promotion updates all three files in one commit. Until that commit is
-deployed, the previous complete bundle remains available. After deployment,
-the new complete bundle is available. Deploying unrelated `main` changes cannot
-alter the bootstrap installer.
+A stable promotion generates `install.sh` from the verified candidate's public
+key and the canonical stable manifest URL, then updates all three files in one
+commit. The immutable GitHub-release installer is a different artifact because
+it embeds that release's immutable GitHub manifest URL; it must not be copied
+to the stable route. Until the promotion commit is deployed, the previous
+complete bundle remains available. After deployment, the new complete bundle
+is available. Deploying unrelated `main` changes cannot alter the bootstrap
+installer.
 
 ## Trust and compatibility invariants
 
@@ -63,8 +67,9 @@ content-type headers.
 1. Build a signed release candidate and its durable wrapper.
 2. Verify the candidate manifest, signature, installer, wrapper checksum, and
    image digests using the release toolchain.
-3. Copy the exact candidate `install.sh`, `manifest.json`, and `manifest.sig`
-   into the stable bundle paths.
+3. Copy the exact candidate `manifest.json` and `manifest.sig`, and render the
+   stable `install.sh` using the verified candidate public key plus
+   `https://argus.gpsxtre.me/releases/stable/manifest.json`.
 4. Run stable-bundle tests and the clean-host installer smoke.
 5. Commit all three files together and merge through the normal reviewed path.
 6. After deployment, verify public bytes match the committed hashes before
