@@ -30,6 +30,7 @@ jobs:
       manifest_asset_url: ${{ steps.release.outputs.manifest_asset_url }}
       version: ${{ steps.release.outputs.version }}
       update_manifest_asset_url: ${{ steps.release.outputs.update_manifest_asset_url }}
+      update_manifest_sha256: ${{ steps.release.outputs.update_manifest_sha256 }}
       update_version: ${{ steps.release.outputs.update_version }}
     steps:
       - name: Resolve immutable signed release assets
@@ -65,16 +66,19 @@ jobs:
           }
           target_manifest_asset_url=$(asset_url release.json manifest.json)
           gh api --header 'Accept: application/octet-stream' "$target_manifest_asset_url" > target-manifest.json
+          target_manifest_sha256=$(sha256sum target-manifest.json | awk 'NR == 1 { print $1 }')
+          [[ "$target_manifest_sha256" =~ ^[a-f0-9]{64}$ ]]
           curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
             'https://argus.gpsxtre.me/releases/stable/manifest.json' \
             --output stable-manifest.json
           cmp -s target-manifest.json stable-manifest.json
-          printf 'installer_url=%s\nmanifest_url=%s\nmanifest_asset_url=%s\nversion=%s\nupdate_manifest_asset_url=%s\nupdate_version=%s\n' \
+          printf 'installer_url=%s\nmanifest_url=%s\nmanifest_asset_url=%s\nversion=%s\nupdate_manifest_asset_url=%s\nupdate_manifest_sha256=%s\nupdate_version=%s\n' \
             "$(asset_url baseline-release.json install.sh)" \
             "https://github.com/${REPOSITORY}/releases/download/${baseline_tag}/manifest.json" \
             "$(asset_url baseline-release.json manifest.json)" \
             "${baseline_tag#v}" \
             "$target_manifest_asset_url" \
+            "$target_manifest_sha256" \
             "${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
 
   vps_smoke:
@@ -101,6 +105,7 @@ jobs:
           ARGUS_MANIFEST_ASSET_URL: ${{ needs.candidate.outputs.manifest_asset_url }}
           ARGUS_EXPECTED_VERSION: ${{ needs.candidate.outputs.version }}
           ARGUS_UPDATE_MANIFEST_ASSET_URL: ${{ needs.candidate.outputs.update_manifest_asset_url }}
+          ARGUS_UPDATE_MANIFEST_SHA256: ${{ needs.candidate.outputs.update_manifest_sha256 }}
           ARGUS_UPDATE_EXPECTED_VERSION: ${{ needs.candidate.outputs.update_version }}
           ARGUS_CONTROLLED_WEB_URL: ${{ inputs.controlled_web_url }}
           ARGUS_GITHUB_TOKEN: ${{ github.token }}

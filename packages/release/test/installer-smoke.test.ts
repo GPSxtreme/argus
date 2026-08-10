@@ -855,8 +855,12 @@ exit 42
 
     expect(smoke).toContain("ARGUS_UPDATE_MANIFEST_ASSET_URL");
     expect(smoke).toContain("ARGUS_UPDATE_EXPECTED_VERSION");
+    expect(smoke).toContain("ARGUS_UPDATE_MANIFEST_SHA256");
     expect(smoke).toContain("sha256sum /usr/local/bin/argus");
     expect(smoke).toContain("argus update --json --yes");
+    expect(smoke).toContain("/opt/argus/release-context.json");
+    expect(smoke).toContain("base64 --decode");
+    expect(smoke).toContain("persisted signed update context did not match the candidate");
     expect(smoke).toContain("management state did not advance to the signed update");
     expect(smoke).toContain("launcher changed during signed update");
   });

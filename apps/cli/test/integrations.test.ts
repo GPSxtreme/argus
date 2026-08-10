@@ -1,4 +1,14 @@
-import { mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  open,
+  readdir,
+  readFile,
+  rename,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApp } from "@argus/app";
@@ -953,7 +963,7 @@ describe("production onboarding integration", () => {
     await writeFile(join(root, "management.state"), priorManagementState);
     await saveManagedState(root, current);
     let writeAttempted = false;
-    let interruptPromotion = true;
+    let interruptRename = true;
     const updateIntegration = createProductionUpdateIntegration({
       root,
       manifestUrl: "https://release.example/manifest.json",
@@ -969,13 +979,21 @@ describe("production onboarding integration", () => {
       },
       writeManagementState: async (path, state) => {
         writeAttempted = true;
-        if (interruptPromotion) {
-          throw new DeploymentError(
-            "UPDATE_MANAGEMENT_PROMOTION_FAILED",
-            "Management state promotion failed.",
-          );
-        }
-        await writeManagementStateAtomic(path, state);
+        await writeManagementStateAtomic(path, state, {
+          lstat,
+          open,
+          async rename(source, destination) {
+            if (interruptRename) {
+              interruptRename = false;
+              throw new DeploymentError(
+                "UPDATE_MANAGEMENT_PROMOTION_FAILED",
+                "Management state promotion failed.",
+              );
+            }
+            await rename(source, destination);
+          },
+          unlink,
+        });
       },
     });
     let verified = false;
@@ -1015,11 +1033,25 @@ describe("production onboarding integration", () => {
     expect(JSON.parse(stdout)).not.toHaveProperty("data");
     expect(await readFile(join(root, "release-context.json"), "utf8")).toBe(targetContext);
     expect(await readFile(join(root, "management.state"), "utf8")).toBe(priorManagementState);
+    expect(await readdir(root)).not.toEqual(
+      expect.arrayContaining([expect.stringMatching(/\.tmp$/u)]),
+    );
 
-    interruptPromotion = false;
-    const retry = await dependencies.deployment.inspectUpdate?.();
-    expect(retry).toMatchObject({ noop: true, targetVersion: target.version });
-    await dependencies.deployment.applyUpdate?.(retry);
+    stdout = "";
+    verified = false;
+    await createProgram(dependencies).parseAsync([
+      "node",
+      "argus",
+      "update",
+      "--json",
+      "--yes",
+    ]);
+    expect(verified).toBe(true);
+    expect(JSON.parse(stdout)).toMatchObject({
+      contractVersion: 1,
+      ok: true,
+      data: { version: target.version, health: { healthy: true } },
+    });
     expect(parseManagementState(await readFile(join(root, "management.state"), "utf8"))).toEqual({
       schema: 1,
       version: target.version,

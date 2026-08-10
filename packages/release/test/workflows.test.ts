@@ -287,6 +287,8 @@ describe("GitHub workflow toolchain", () => {
       update_manifest_asset_url:
         '$' + '{{ steps.release.outputs.update_manifest_asset_url }}',
       update_version: '$' + '{{ steps.release.outputs.update_version }}',
+      update_manifest_sha256:
+        '$' + '{{ steps.release.outputs.update_manifest_sha256 }}',
     });
     expect(
       workflow.jobs.vps_smoke?.steps?.find(
@@ -297,6 +299,8 @@ describe("GitHub workflow toolchain", () => {
         '$' + '{{ needs.candidate.outputs.update_manifest_asset_url }}',
       ARGUS_UPDATE_EXPECTED_VERSION:
         '$' + '{{ needs.candidate.outputs.update_version }}',
+      ARGUS_UPDATE_MANIFEST_SHA256:
+        '$' + '{{ needs.candidate.outputs.update_manifest_sha256 }}',
     });
     expect(JSON.stringify(workflow)).toContain('ubuntu:24.04');
     expect(JSON.stringify(workflow)).toContain('debian:13');

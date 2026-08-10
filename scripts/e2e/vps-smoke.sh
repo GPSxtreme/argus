@@ -26,6 +26,7 @@ if [ "${1:-}" != "--inner" ]; then
     ARGUS_MANIFEST_ASSET_URL \
     ARGUS_EXPECTED_VERSION \
     ARGUS_UPDATE_MANIFEST_ASSET_URL \
+    ARGUS_UPDATE_MANIFEST_SHA256 \
     ARGUS_UPDATE_EXPECTED_VERSION
   do
     argus_vps_required "$argus_vps_name"
@@ -104,6 +105,7 @@ ARGUS_VPS_DOCKERFILE
     --env ARGUS_MANIFEST_ASSET_URL \
     --env ARGUS_EXPECTED_VERSION \
     --env ARGUS_UPDATE_MANIFEST_ASSET_URL \
+    --env ARGUS_UPDATE_MANIFEST_SHA256 \
     --env ARGUS_UPDATE_EXPECTED_VERSION \
     --env ARGUS_CONTROLLED_WEB_URL \
     --env ARGUS_GITHUB_TOKEN \
@@ -120,11 +122,14 @@ for argus_vps_name in \
   ARGUS_MANIFEST_ASSET_URL \
   ARGUS_EXPECTED_VERSION \
   ARGUS_UPDATE_MANIFEST_ASSET_URL \
+  ARGUS_UPDATE_MANIFEST_SHA256 \
   ARGUS_UPDATE_EXPECTED_VERSION
 do
   argus_vps_required "$argus_vps_name"
 done
-for argus_vps_command in curl docker expect jq openssl; do
+[ "$(printf '%s' "$ARGUS_UPDATE_MANIFEST_SHA256" | grep -Ec '^[a-f0-9]{64}$')" = 1 ] ||
+  argus_vps_die "ARGUS_UPDATE_MANIFEST_SHA256 must be lowercase SHA-256"
+for argus_vps_command in base64 curl docker expect jq openssl sha256sum; do
   command -v "$argus_vps_command" >/dev/null 2>&1 ||
     argus_vps_die "$argus_vps_command is required"
 done
@@ -133,6 +138,7 @@ argus_vps_work=$(mktemp -d /tmp/argus-vps-inner.XXXXXX)
 argus_vps_installer=$argus_vps_work/install.sh
 argus_vps_manifest=$argus_vps_work/manifest.json
 argus_vps_update_manifest=$argus_vps_work/update-manifest.json
+argus_vps_update_context_manifest=$argus_vps_work/update-context-manifest.json
 argus_vps_first=$argus_vps_work/onboard-first.log
 argus_vps_second=$argus_vps_work/onboard-second.log
 argus_vps_doctor=$argus_vps_work/doctor.json
@@ -212,6 +218,8 @@ argus_vps_initial_cli_image=$(jq -er '.images.cli.reference' "$argus_vps_manifes
 argus_vps_update_cli_image=$(jq -er '.images.cli.reference' "$argus_vps_update_manifest")
 [ "$(jq -er '.version' "$argus_vps_update_manifest")" = "$ARGUS_UPDATE_EXPECTED_VERSION" ] ||
   argus_vps_die "signed update manifest reported the wrong version"
+[ "$(sha256sum "$argus_vps_update_manifest" | awk 'NR == 1 { print $1 }')" = "$ARGUS_UPDATE_MANIFEST_SHA256" ] ||
+  argus_vps_die "downloaded signed update manifest did not match the candidate"
 [ "$ARGUS_EXPECTED_VERSION" != "$ARGUS_UPDATE_EXPECTED_VERSION" ] ||
   argus_vps_die "signed update candidate must advance the installed release"
 argus_vps_controlled_url=${ARGUS_CONTROLLED_WEB_URL:-https://argus.gpsxtre.me/}
@@ -262,6 +270,23 @@ jq -e --arg version "$ARGUS_UPDATE_EXPECTED_VERSION" '
   .contractVersion == 1 and .ok == true and .data.version == $version and
   .data.health.healthy == true
 ' "$argus_vps_work/update.json" >/dev/null
+[ -f /opt/argus/release-context.json ] && [ ! -L /opt/argus/release-context.json ] ||
+  argus_vps_die "persisted signed update context is not a regular file"
+jq -e '
+  type == "object" and .schemaVersion == 1 and
+  (keys | sort == ["fxembed", "manifest", "schemaVersion", "signature"]) and
+  (.manifest | type == "string") and (.signature | type == "string") and
+  (.fxembed | type == "string")
+' /opt/argus/release-context.json >/dev/null ||
+  argus_vps_die "persisted signed update context is malformed"
+argus_vps_update_context_base64=$(jq -er '.manifest' /opt/argus/release-context.json)
+printf '%s' "$argus_vps_update_context_base64" |
+  base64 --decode > "$argus_vps_update_context_manifest" ||
+  argus_vps_die "persisted signed update context manifest is not base64"
+[ "$(base64 < "$argus_vps_update_context_manifest" | tr -d '\n')" = "$argus_vps_update_context_base64" ] ||
+  argus_vps_die "persisted signed update context manifest is not canonical base64"
+[ "$(sha256sum "$argus_vps_update_context_manifest" | awk 'NR == 1 { print $1 }')" = "$ARGUS_UPDATE_MANIFEST_SHA256" ] ||
+  argus_vps_die "persisted signed update context did not match the candidate"
 argus_vps_parse_management_state /opt/argus/management.state
 [ "$argus_vps_management_version" = "$ARGUS_UPDATE_EXPECTED_VERSION" ] &&
   [ "$argus_vps_management_cli_image" = "$argus_vps_update_cli_image" ] &&
