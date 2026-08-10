@@ -23,3 +23,10 @@
 - Added a rollback regression that removes `backup.state.compose` from persisted update state, requires `UPDATE_STATE_UNAVAILABLE`, and verifies the deployment state file is not written.
 - RED: `fnm exec --using 24.19.0 -- pnpm vitest run packages/deployment/test/update.test.ts` resolved rollback successfully before the fix.
 - GREEN: the same command passed all 15 update-state tests after the Compose-state invariant was enforced.
+
+## Fix round 2
+
+- Rollback now calls `requireComposeState(backup.state)` immediately after backup/release validation and before resolving paths, restoring SQLite files, or running Docker.
+- The compose-less backup regression now places a backed-up SQLite database over a changed live database and uses a recording executor; it requires zero Docker calls and unchanged live database and deployment-state files.
+- RED: `fnm exec --using 24.19.0 -- pnpm vitest run packages/deployment/test/update.test.ts` failed with recorded `docker compose up -d` and `docker compose ps` calls before the fix.
+- GREEN: the same command passed all 15 update-state tests after preflight Compose validation was added.

@@ -483,6 +483,7 @@ export const rollbackUpdate = async ({ root, executor, release }: RollbackUpdate
       { recovery: "Keep the backup and select a release compatible with its state schema." },
     );
   }
+  requireComposeState(backup.state);
   const backupRoot = confinedPath(root, backup.path);
   for (const file of backup.sqliteFiles) {
     const destination = confinedPath(root, file.relativePath);

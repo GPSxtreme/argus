@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { VerifiedReleaseManifest } from "@argus/release";
@@ -213,21 +213,41 @@ describe("safe update state machine", () => {
     await expect(rollbackUpdate({ root, executor: executor(), release: release("1.0.0", 2, "f") })).rejects.toThrow(/incompatible/u);
   });
 
-  it("rejects a compose-less persisted rollback backup before writing deployment state", async () => {
+  it("rejects a compose-less persisted rollback backup before side effects", async () => {
     const root = await rootWithState();
     const rollbackRelease = release("1.0.0", 1, "f");
+    const databasePath = join(root, "data", "argus.db");
+    await mkdir(join(root, "data"));
+    await writeFile(databasePath, "backup database");
     const plan = await planUpdate({ root, release: release(), rollbackRelease, executor: executor() });
     await backupInstance({ root, plan });
     const originalState = await readFile(join(root, "state.json"), "utf8");
+    await writeFile(databasePath, "live database");
     const persisted = JSON.parse(await readFile(join(root, "update-state.json"), "utf8")) as {
       backup: { state: { compose?: unknown } };
     };
     delete persisted.backup.state.compose;
     await writeFile(join(root, "update-state.json"), JSON.stringify(persisted));
+    const calls: string[][] = [];
+    const recordingExecutor: CommandExecutor = {
+      async run(_command, args) {
+        calls.push(args);
+        if (args.includes("ps")) return { exitCode: 0, stdout: '[{"Service":"argus","State":"running","Health":"healthy"}]', stderr: "" };
+        return { exitCode: 0, stdout: "", stderr: "" };
+      },
+    };
+    let error: unknown;
+    try {
+      await rollbackUpdate({ root, executor: recordingExecutor, release: rollbackRelease });
+    } catch (caught) {
+      error = caught;
+    }
 
-    await expect(rollbackUpdate({ root, executor: executor(), release: rollbackRelease })).rejects.toMatchObject({
+    expect(error).toMatchObject({
       code: "UPDATE_STATE_UNAVAILABLE",
     });
+    expect(calls).toEqual([]);
+    await expect(readFile(databasePath, "utf8")).resolves.toBe("live database");
     await expect(readFile(join(root, "state.json"), "utf8")).resolves.toBe(originalState);
   });
 
