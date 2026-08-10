@@ -1,0 +1,292 @@
+import { createHash } from "node:crypto";
+import {
+  mkdtemp,
+  mkdir,
+  readdir,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import {
+  buildReleaseArtifacts,
+  type ReleaseImageInput,
+} from "../src/index.js";
+import {
+  createStableBundleIO,
+  promoteStableBundle,
+} from "../src/stable-bundle.js";
+
+const fixturePrivateKey = `-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEIGJqC73Ezwmnx3FFQ5W1czmiNwXmLFn2Xso+6xXKPXKf
+-----END PRIVATE KEY-----`;
+const temporaryDirectories: string[] = [];
+
+const sha = (character: string): string => character.repeat(64);
+const image = (
+  name: ReleaseImageInput["name"],
+  repository: string,
+  character: string,
+): ReleaseImageInput => ({
+  name,
+  reference: `${repository}@sha256:${sha(character)}`,
+});
+const digest = (bytes: Uint8Array): string =>
+  createHash("sha256").update(bytes).digest("hex");
+
+interface FixtureRelease {
+  root: string;
+  release: string;
+  stable: string;
+  manifest: Buffer;
+  signature: Buffer;
+  publicKeyPem: string;
+}
+
+const createFixtureRelease = async (): Promise<FixtureRelease> => {
+  const root = await mkdtemp(join(tmpdir(), "argus-promote-stable-"));
+  temporaryDirectories.push(root);
+  const release = join(root, "release");
+  const stable = join(root, "stable");
+  await mkdir(release);
+  await mkdir(stable);
+
+  const fxembed = Buffer.from("export default { fetch() {} };\n");
+  const wrapper = Buffer.from("#!/bin/sh\nexec true\n");
+  const installer = Buffer.from("#!/bin/sh\n# immutable candidate\n");
+  const fxembedLicense = Buffer.from("MIT\n");
+  const fxembedProvenance = Buffer.from('{"revision":"fixture"}\n');
+  const built = buildReleaseArtifacts({
+    version: "1.2.3",
+    sourceDateEpoch: "1785580200",
+    images: [
+      image("app", "ghcr.io/gpsxtreme/argus", "a"),
+      image("cli", "ghcr.io/gpsxtreme/argus-cli", "b"),
+      image("searxng", "docker.io/searxng/searxng", "c"),
+      image("postgres", "docker.io/library/postgres", "d"),
+    ],
+    fxembed: {
+      bytes: fxembed,
+      url: "https://github.com/gpsxtreme/argus/releases/download/v1.2.3/fxembed.js",
+      compatibilityDate: "2026-04-11",
+    },
+    wrapper: {
+      bytes: wrapper,
+      url: "https://github.com/gpsxtreme/argus/releases/download/v1.2.3/argus",
+    },
+    installer: {
+      bytes: installer,
+      url: "https://github.com/gpsxtreme/argus/releases/download/v1.2.3/install.sh",
+    },
+    publicKeyUrl:
+      "https://github.com/gpsxtreme/argus/releases/download/v1.2.3/release-public.pem",
+    fxembedLicense: {
+      bytes: fxembedLicense,
+      url: "https://github.com/gpsxtreme/argus/releases/download/v1.2.3/FXEMBED-LICENSE.md",
+    },
+    fxembedProvenance: {
+      bytes: fxembedProvenance,
+      url: "https://github.com/gpsxtreme/argus/releases/download/v1.2.3/fxembed-provenance.json",
+    },
+    privateKeyPem: fixturePrivateKey,
+  });
+  await Promise.all([
+    writeFile(join(release, "manifest.json"), built.manifestBytes),
+    writeFile(join(release, "manifest.sig"), built.signature),
+    writeFile(join(release, "release-public.pem"), built.publicKeyPem),
+    writeFile(join(release, "argus"), wrapper, { mode: 0o755 }),
+    writeFile(join(release, "install.sh"), installer, { mode: 0o755 }),
+    writeFile(join(release, "fxembed.js"), fxembed),
+    writeFile(join(release, "FXEMBED-LICENSE.md"), fxembedLicense),
+    writeFile(join(release, "fxembed-provenance.json"), fxembedProvenance),
+  ]);
+  await writeStableSentinels(stable);
+  return {
+    root,
+    release,
+    stable,
+    manifest: Buffer.from(built.manifestBytes),
+    signature: Buffer.from(built.signature),
+    publicKeyPem: built.publicKeyPem,
+  };
+};
+
+const writeStableSentinels = async (stable: string): Promise<void> => {
+  await Promise.all([
+    writeFile(join(stable, "install.sh"), "prior installer\n", { mode: 0o755 }),
+    writeFile(join(stable, "manifest.json"), "prior manifest\n"),
+    writeFile(join(stable, "manifest.sig"), "prior signature\n"),
+  ]);
+};
+
+interface StableBundleBytes {
+  "install.sh": Buffer;
+  "manifest.json": Buffer;
+  "manifest.sig": Buffer;
+}
+
+const stableBytes = async (stable: string): Promise<StableBundleBytes> => ({
+  "install.sh": await readFile(join(stable, "install.sh")),
+  "manifest.json": await readFile(join(stable, "manifest.json")),
+  "manifest.sig": await readFile(join(stable, "manifest.sig")),
+});
+
+afterEach(async () => {
+  await Promise.all(temporaryDirectories.splice(0).map((path) => rm(path, { recursive: true })));
+});
+
+describe("promoteStableBundle", () => {
+  it("promotes a fully verified release as one stable installer, manifest, and signature bundle", async () => {
+    const fixture = await createFixtureRelease();
+    const prior = await stableBytes(fixture.stable);
+
+    await expect(promoteStableBundle(fixture.release, fixture.stable)).resolves.toEqual({
+      version: "1.2.3",
+      manifestSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      installerSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+
+    const promoted = await stableBytes(fixture.stable);
+    expect(promoted["manifest.json"]).toEqual(fixture.manifest);
+    expect(promoted["manifest.sig"]).toEqual(fixture.signature);
+    expect(promoted["install.sh"].toString("utf8")).toContain(
+      "https://argus.gpsxtre.me/releases/stable/manifest.json",
+    );
+    expect(promoted["install.sh"].toString("utf8")).toContain(fixture.publicKeyPem);
+    expect(promoted["install.sh"]).not.toEqual(prior["install.sh"]);
+    expect(promoted["manifest.json"]).not.toEqual(prior["manifest.json"]);
+    expect(promoted["manifest.sig"]).not.toEqual(prior["manifest.sig"]);
+    expect(digest(promoted["manifest.json"])).toBe(digest(fixture.manifest));
+    expect((await stat(join(fixture.stable, "install.sh"))).mode & 0o777).toBe(0o755);
+    expect((await stat(join(fixture.stable, "manifest.json"))).mode & 0o777).toBe(0o644);
+    expect((await stat(join(fixture.stable, "manifest.sig"))).mode & 0o777).toBe(0o644);
+  });
+
+  it.each([
+    ["a bad signature", async (fixture: FixtureRelease) => {
+      await writeFile(join(fixture.release, "manifest.sig"), "invalid");
+    }],
+    ["a mismatched wrapper checksum", async (fixture: FixtureRelease) => {
+      await writeFile(join(fixture.release, "argus"), "#!/bin/sh\nexit 1\n");
+    }],
+    ["a missing signed asset", async (fixture: FixtureRelease) => {
+      await rm(join(fixture.release, "fxembed.js"));
+    }],
+    ["a mismatched release public key", async (fixture: FixtureRelease) => {
+      await writeFile(
+        join(fixture.release, "release-public.pem"),
+        "-----BEGIN PUBLIC KEY-----\ninvalid\n-----END PUBLIC KEY-----\n",
+      );
+    }],
+  ])("leaves every stable bundle byte untouched for %s", async (_label, corrupt) => {
+    const fixture = await createFixtureRelease();
+    const prior = await stableBytes(fixture.stable);
+    await corrupt(fixture);
+
+    await expect(promoteStableBundle(fixture.release, fixture.stable)).rejects.toThrow();
+
+    await expect(stableBytes(fixture.stable)).resolves.toEqual(prior);
+  });
+
+  it("restores the complete prior bundle when the staging swap fails", async () => {
+    const fixture = await createFixtureRelease();
+    const prior = await stableBytes(fixture.stable);
+    const nodeIO = createStableBundleIO();
+    const failingIO = createStableBundleIO({
+      rename: async (from, to) => {
+        if (from.includes(".staging-") && to === fixture.stable) {
+          throw new Error("injected staging promotion failure");
+        }
+        await nodeIO.rename(from, to);
+      },
+    });
+
+    await expect(
+      promoteStableBundle(fixture.release, fixture.stable, failingIO),
+    ).rejects.toThrow("injected staging promotion failure");
+
+    await expect(stableBytes(fixture.stable)).resolves.toEqual(prior);
+  });
+
+  it("retains the prior bundle as recovery evidence when restoration cannot be synced", async () => {
+    const fixture = await createFixtureRelease();
+    const prior = await stableBytes(fixture.stable);
+    const nodeIO = createStableBundleIO();
+    const failingIO = createStableBundleIO({
+      syncDirectory: async (directory) => {
+        if (directory === dirname(fixture.stable)) {
+          throw new Error("injected parent sync failure");
+        }
+        await nodeIO.syncDirectory(directory);
+      },
+    });
+
+    await expect(
+      promoteStableBundle(fixture.release, fixture.stable, failingIO),
+    ).rejects.toThrow("injected parent sync failure");
+
+    const recovery = (await readdir(fixture.root)).find((entry) =>
+      entry.startsWith(".stable.backup-"),
+    );
+    expect(recovery).toBeDefined();
+    await expect(stableBytes(join(fixture.root, recovery ?? "missing"))).resolves.toEqual(
+      prior,
+    );
+  });
+
+  it("never replaces a published complete bundle with a partially deleted backup", async () => {
+    const fixture = await createFixtureRelease();
+    const nodeIO = createStableBundleIO();
+    const failingIO = createStableBundleIO({
+      removeDirectory: async (directory) => {
+        if (directory.includes(".stable.backup-")) {
+          await rm(join(directory, "manifest.json"));
+          throw new Error("injected partial backup cleanup failure");
+        }
+        await nodeIO.removeDirectory(directory);
+      },
+    });
+
+    await expect(
+      promoteStableBundle(fixture.release, fixture.stable, failingIO),
+    ).rejects.toThrow("injected partial backup cleanup failure");
+
+    const stable = await stableBytes(fixture.stable);
+    expect(stable["manifest.json"]).toEqual(fixture.manifest);
+    expect(stable["manifest.sig"]).toEqual(fixture.signature);
+    expect(stable["install.sh"].toString("utf8")).toContain(
+      "https://argus.gpsxtre.me/releases/stable/manifest.json",
+    );
+  });
+
+  it("keeps the already published bundle complete when backup-removal durability cannot be proven", async () => {
+    const fixture = await createFixtureRelease();
+    const nodeIO = createStableBundleIO();
+    let parentSyncs = 0;
+    const failingIO = createStableBundleIO({
+      syncDirectory: async (directory) => {
+        if (directory === dirname(fixture.stable)) {
+          parentSyncs += 1;
+          if (parentSyncs === 2) {
+            throw new Error("injected final parent sync failure");
+          }
+        }
+        await nodeIO.syncDirectory(directory);
+      },
+    });
+
+    await expect(
+      promoteStableBundle(fixture.release, fixture.stable, failingIO),
+    ).rejects.toThrow("injected final parent sync failure");
+
+    const stable = await stableBytes(fixture.stable);
+    expect(stable["manifest.json"]).toEqual(fixture.manifest);
+    expect(stable["manifest.sig"]).toEqual(fixture.signature);
+    expect(stable["install.sh"].toString("utf8")).toContain(
+      "https://argus.gpsxtre.me/releases/stable/manifest.json",
+    );
+  });
+});

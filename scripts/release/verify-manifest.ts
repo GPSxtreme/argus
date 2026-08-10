@@ -1,7 +1,5 @@
-import { readFile } from "node:fs/promises";
-import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
-import { verifyReleaseManifestWithIdentity } from "../../packages/release/src/index.js";
+import { verifyReleaseDirectory } from "./verify-release-directory.js";
 
 const usage =
   "Usage: verify-manifest.ts MANIFEST_PATH SIGNATURE_PATH [PUBLIC_KEY_PATH]";
@@ -21,38 +19,18 @@ const main = async (): Promise<void> => {
   const publicKeyPath = resolve(
     publicKeyArgument ?? join(dirname(manifestPath), "release-public.pem"),
   );
-  const [manifestBytes, signature, publicKeyPem] = await Promise.all([
-    readFile(manifestPath),
-    readFile(signaturePath),
-    readFile(publicKeyPath, "utf8"),
-  ]);
-  const verified = verifyReleaseManifestWithIdentity(
-    manifestBytes,
-    signature,
-    publicKeyPem,
-  );
   const directory = dirname(manifestPath);
-  const artifacts = [
-    ["fxembed", "fxembed.js"],
-    ["wrapper", "argus"],
-    ["installer", "install.sh"],
-    ["publicKey", "release-public.pem"],
-    ["fxembedLicense", "FXEMBED-LICENSE.md"],
-    ["fxembedProvenance", "fxembed-provenance.json"],
-  ] as const;
-  for (const [name, filename] of artifacts) {
-    const asset = verified.manifest.assets[name];
-    if (asset === undefined) {
-      throw new TypeError(`Signed manifest is missing ${name} checksum coverage.`);
-    }
-    const bytes = await readFile(join(directory, filename));
-    const digest = createHash("sha256").update(bytes).digest("hex");
-    if (digest !== asset.sha256) {
-      throw new TypeError(`Signed checksum mismatch for ${filename}.`);
-    }
+  if (
+    manifestPath !== join(directory, "manifest.json") ||
+    signaturePath !== join(directory, "manifest.sig")
+  ) {
+    throw new TypeError(
+      "Manifest and signature paths must be manifest.json and manifest.sig in one release directory.",
+    );
   }
+  const verified = await verifyReleaseDirectory(directory, publicKeyPath);
   process.stdout.write(
-    `${verified.manifest.version} ${verified.manifestSha256}\n`,
+    `${verified.release.manifest.version} ${verified.release.manifestSha256}\n`,
   );
 };
 
