@@ -197,7 +197,7 @@ chmod 600 /opt/argus/.vps-smoke-onboard.yaml
 
 argus_vps_onboard() {
   argus_vps_output=$1
-  ARGUS_VPS_TOKEN=$argus_vps_token ARGUS_VPS_OUTPUT=$argus_vps_output expect <<'ARGUS_VPS_EXPECT'
+  if ARGUS_VPS_TOKEN=$argus_vps_token ARGUS_VPS_OUTPUT=$argus_vps_output expect <<'ARGUS_VPS_EXPECT'
 log_user 0
 log_file -a -noappend $env(ARGUS_VPS_OUTPUT)
 set timeout 900
@@ -210,9 +210,40 @@ expect {
 set result [wait]
 exit [lindex $result 3]
 ARGUS_VPS_EXPECT
+  then
+    argus_vps_onboard_status=0
+  else
+    argus_vps_onboard_status=$?
+  fi
   tr -d '\r' < "$argus_vps_output" |
     sed -n '/^{.*}$/p' |
     tail -n 1 > "$argus_vps_output.json"
+  if [ "$argus_vps_onboard_status" -ne 0 ]; then
+    printf '%s\n' \
+      "argus VPS smoke: onboard failed with exit code $argus_vps_onboard_status" >&2
+    if jq -e . "$argus_vps_output.json" >/dev/null 2>&1; then
+      jq '
+        walk(
+          if type == "object" then
+            with_entries(
+              if (.key | ascii_downcase | test("token|secret|password|authorization")) then
+                .value = "[REDACTED]"
+              else
+                .
+              end
+            )
+          else
+            .
+          end
+        )
+      ' "$argus_vps_output.json" |
+        sed "s#$argus_vps_token#[REDACTED]#g" >&2
+    else
+      printf '%s\n' \
+        "argus VPS smoke: no structured onboarding failure was captured" >&2
+    fi
+    return "$argus_vps_onboard_status"
+  fi
   jq -e '.contractVersion == 1 and .ok == true' \
     "$argus_vps_output.json" >/dev/null
 }

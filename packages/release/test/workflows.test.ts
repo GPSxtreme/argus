@@ -103,6 +103,56 @@ exec pnpm tsx ${shellQuote(join(repositoryRoot, "apps/cli/src/main.ts"))} onboar
   }
 };
 
+const runFailingVpsOnboard = () => {
+  const harness = readFileSync(
+    repositoryFile("scripts/e2e/vps-smoke.sh"),
+    "utf8",
+  );
+  const onboardFunction = harness.match(
+    /(argus_vps_onboard\(\) \{[\s\S]*?\n\})\n\nargus_vps_onboard/u,
+  )?.[1];
+  expect(onboardFunction).toBeDefined();
+
+  const directory = mkdtempSync(join(tmpdir(), "argus-vps-failure-"));
+  const token = "argus_vps_test_secret";
+  try {
+    const bin = join(directory, "bin");
+    const output = join(directory, "onboard.log");
+    mkdirSync(bin);
+    writeFileSync(
+      join(bin, "argus"),
+      `#!/bin/sh
+printf '%s\\n' '{"contractVersion":1,"ok":false,"error":{"code":"APPLY_FAILED","message":"fixture failed with ${token}","details":{"apiToken":"${token}"}}}'
+exit 4
+`,
+      { mode: 0o755 },
+    );
+
+    const result = spawnSync(
+      "sh",
+      [
+        "-c",
+        `set -eu
+${onboardFunction}
+argus_vps_token=${shellQuote(token)}
+argus_vps_onboard ${shellQuote(output)}
+`,
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH ?? ""}`,
+        },
+        timeout: 5_000,
+      },
+    );
+    return { result, token };
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+};
+
 describe("GitHub workflow toolchain", () => {
   it("installs Expect before running the mandatory workflow harness tests", () => {
     const workflow = readFileSync(
@@ -313,6 +363,20 @@ describe("GitHub workflow toolchain", () => {
 
       expect(result.error).toBeUndefined();
       expect(result.status).toBe(124);
+    },
+  );
+
+  it.skipIf(!expectAvailable)(
+    "reports a structured onboarding failure without exposing secrets",
+    () => {
+      const { result, token } = runFailingVpsOnboard();
+
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(4);
+      expect(result.stderr).toContain("onboard failed with exit code 4");
+      expect(result.stderr).toContain('"code": "APPLY_FAILED"');
+      expect(result.stderr).toContain("[REDACTED]");
+      expect(result.stderr).not.toContain(token);
     },
   );
 });
