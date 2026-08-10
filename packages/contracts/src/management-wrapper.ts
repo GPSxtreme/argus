@@ -5,6 +5,9 @@
  * the same object without creating a package dependency cycle.
  */
 export const MANAGEMENT_WRAPPER_REQUIREMENTS = {
+  stateFile: "/opt/argus/management.state",
+  stateSchema: 1,
+  maximumStateBytes: 1024,
   dockerConfig: "/opt/argus/.docker",
   mounts: [
     "/etc/os-release:/host/etc/os-release:ro",
@@ -25,3 +28,10 @@ export const MANAGEMENT_WRAPPER_REQUIREMENTS = {
   ],
   hostNetwork: true,
 } as const;
+
+const normalizedSemVerPattern =
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+
+/** Accepts complete, normalized SemVer 2.0 versions. */
+export const isNormalizedSemVer = (value: string): boolean =>
+  normalizedSemVerPattern.test(value);
