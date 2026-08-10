@@ -6,9 +6,9 @@ import {
   rename,
   unlink,
 } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { ArgusConfig } from "@argus/config";
-import { contentHash } from "@argus/contracts";
+import { contentHash, MANAGEMENT_WRAPPER_REQUIREMENTS } from "@argus/contracts";
 import {
   ARGUS_FXEMBED_WORKER_NAME,
   applyDeployment,
@@ -31,9 +31,11 @@ import {
 } from "@argus/deployment";
 import {
   MAX_RELEASE_MANIFEST_BYTES,
+  managementStateForRelease,
   type ReleaseManifestV1,
   type VerifiedReleaseManifest,
   verifyReleaseManifestWithIdentity,
+  writeManagementStateAtomic,
 } from "@argus/release";
 
 const withHttpDeadline = async <T>(
@@ -269,6 +271,7 @@ export interface ProductionUpdateIntegration {
   fetchRollbackRelease(): Promise<VerifiedReleaseManifest>;
   stageCurrentRelease(release: VerifiedReleaseManifest): Promise<void>;
   promoteCurrentRelease(release: VerifiedReleaseManifest): Promise<void>;
+  promoteManagementRelease(release: VerifiedReleaseManifest): Promise<void>;
 }
 
 export const createReleaseComposition = ({
@@ -744,6 +747,16 @@ export const createProductionUpdateIntegration = ({
     }
   };
 
+  const promoteManagementRelease = async (
+    release: VerifiedReleaseManifest,
+  ): Promise<void> => {
+    fetchedFor(release);
+    await writeManagementStateAtomic(
+      join(root, basename(MANAGEMENT_WRAPPER_REQUIREMENTS.stateFile)),
+      managementStateForRelease(release),
+    );
+  };
+
   const fetchRollback = async (): Promise<VerifiedReleaseManifest> => {
     const stagedPath = join(root, pendingReleaseContextFile);
     try {
@@ -780,6 +793,7 @@ export const createProductionUpdateIntegration = ({
     fetchRollbackRelease: fetchRollback,
     stageCurrentRelease,
     promoteCurrentRelease,
+    promoteManagementRelease,
   };
 };
 

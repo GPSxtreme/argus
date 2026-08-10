@@ -15,6 +15,23 @@ import {
 } from "../src/integrations.js";
 import { createNodeCliDependencies } from "../src/program.js";
 
+const updateEventCapture = vi.hoisted(() => ({
+  events: undefined as string[] | undefined,
+}));
+
+vi.mock("@argus/deployment", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@argus/deployment")>();
+  return {
+    ...actual,
+    applyUpdate: async (input: Parameters<typeof actual.applyUpdate>[0]) => {
+      updateEventCapture.events?.push("backup");
+      const result = await actual.applyUpdate(input);
+      updateEventCapture.events?.push("save-deployment-state");
+      return result;
+    },
+  };
+});
+
 const repositories: Awaited<ReturnType<typeof createSqliteRepository>>[] = [];
 afterEach(() => {
   for (const repository of repositories.splice(0)) repository.close();
@@ -557,6 +574,7 @@ describe("production onboarding integration", () => {
         fetchRollbackRelease: expect.any(Function),
         stageCurrentRelease: expect.any(Function),
         promoteCurrentRelease: expect.any(Function),
+        promoteManagementRelease: expect.any(Function),
       }),
     });
   });
@@ -687,7 +705,7 @@ describe("production onboarding integration", () => {
     expect(await readFile(join(root, "release-context.json"), "utf8")).toBe(contextFor(releaseB));
   });
 
-  it("stages the target before apply and promotes it only after healthy update verification", async () => {
+  it("orders signed-context and management-state promotion after durable healthy update state", async () => {
     const root = await mkdtemp(join(tmpdir(), "argus-update-order-"));
     const current = releaseFixture({ version: "1.0.0", appMarker: "a" });
     const target = releaseFixture({ version: "2.0.0", appMarker: "b" });
@@ -726,9 +744,9 @@ describe("production onboarding integration", () => {
         async run(_command, args) {
           if (args.includes("pull")) events.push("pull");
           if (args.includes("migrate")) events.push("migrate");
-          if (args.includes("up")) events.push("up");
+          if (args.includes("up")) events.push("reconcile");
           if (args.includes("ps")) {
-            events.push("healthy");
+            events.push("health");
             return { exitCode: 0, stdout: '[{"Service":"argus","State":"running","Health":"healthy"}]', stderr: "" };
           }
           return { exitCode: 0, stdout: "", stderr: "" };
@@ -745,15 +763,119 @@ describe("production onboarding integration", () => {
       updateIntegration: {
         async fetchUpdateRelease() { return targetRelease; },
         async fetchRollbackRelease() { return currentRelease; },
-        async stageCurrentRelease() { events.push("stage"); },
-        async promoteCurrentRelease() { events.push("promote"); },
+        async stageCurrentRelease() { events.push("stage-release-context"); },
+        async promoteCurrentRelease() { events.push("promote-release-context"); },
+        async promoteManagementRelease() { events.push("promote-management-state"); },
       },
       version: "test",
     });
 
     const plan = await dependencies.deployment.inspectUpdate?.();
+    updateEventCapture.events = events;
+    try {
+      await dependencies.deployment.applyUpdate?.(plan);
+    } finally {
+      updateEventCapture.events = undefined;
+    }
+    expect(events).toEqual([
+      "stage-release-context",
+      "backup",
+      "pull",
+      "migrate",
+      "reconcile",
+      "health",
+      "save-deployment-state",
+      "promote-release-context",
+      "promote-management-state",
+    ]);
+  });
+
+  it("writes management state only from the exact fetched verified release", async () => {
+    const root = await mkdtemp(join(tmpdir(), "argus-update-management-state-"));
+    const fixture = releaseFixture({ version: "2.0.0" });
+    const integration = createProductionUpdateIntegration({
+      root,
+      manifestUrl: "https://release.example/manifest.json",
+      publicKeyPem: fixture.publicKeyPem,
+      fetcher: async (input) => {
+        const url = String(input);
+        const bytes = url.endsWith("manifest.sig")
+          ? fixture.signature
+          : url.endsWith("manifest.json")
+            ? fixture.manifestBytes
+            : fixture.fxembed;
+        return new Response(Uint8Array.from(bytes).buffer);
+      },
+    });
+
+    const release = await integration.fetchUpdateRelease();
+    await integration.promoteManagementRelease(release);
+
+    expect(await readFile(join(root, "management.state"), "utf8")).toBe(
+      `schema=1\nversion=2.0.0\ncli_image=ghcr.io/gpsxtreme/argus-cli@sha256:${digest("b")}\n`,
+    );
+    await expect(
+      integration.promoteManagementRelease({ ...release, manifestSha256: digest("other") }),
+    ).rejects.toMatchObject({ code: "UPDATE_RELEASE_UNVERIFIED" });
+  });
+
+  it("repairs stale management state for a healthy no-op update", async () => {
+    const root = await mkdtemp(join(tmpdir(), "argus-update-management-noop-"));
+    const current = releaseFixture({ version: "1.0.0", appMarker: "a" });
+    const stale = releaseFixture({ version: "0.9.0", appMarker: "a" });
+    const context = JSON.stringify({
+      schemaVersion: 1,
+      manifest: Buffer.from(current.manifestBytes).toString("base64"),
+      signature: Buffer.from(current.signature).toString("base64"),
+      fxembed: Buffer.from(current.fxembed).toString("base64"),
+    });
+    await writeFile(join(root, "release-context.json"), context);
+    await saveManagedState(root, current);
+    await writeFile(
+      join(root, "management.state"),
+      `schema=1\nversion=${stale.version}\ncli_image=ghcr.io/gpsxtreme/argus-cli@sha256:${digest("b")}\n`,
+    );
+    const updateIntegration = createProductionUpdateIntegration({
+      root,
+      manifestUrl: "https://release.example/manifest.json",
+      publicKeyPem: current.publicKeyPem,
+      fetcher: async (input) => {
+        const url = String(input);
+        const bytes = url.endsWith("manifest.sig")
+          ? current.signature
+          : url.endsWith("manifest.json")
+            ? current.manifestBytes
+            : current.fxembed;
+        return new Response(Uint8Array.from(bytes).buffer);
+      },
+    });
+    const dependencies = createNodeCliDependencies({
+      root,
+      executor: {
+        async run(_command, args) {
+          return args.includes("ps")
+            ? { exitCode: 0, stdout: '[{"Service":"argus","State":"running","Health":"healthy"}]', stderr: "" }
+            : { exitCode: 0, stdout: "", stderr: "" };
+        },
+      },
+      prompt: {
+        async confirm() { return true; },
+        async select() { return ""; },
+        async multiselect() { return []; },
+        async text() { return ""; },
+        async secret() { return ""; },
+      },
+      io: { stdout() {}, stderr() {} },
+      updateIntegration,
+      version: "test",
+    });
+
+    const plan = await dependencies.deployment.inspectUpdate?.();
+    expect((plan as { noop: boolean }).noop).toBe(true);
     await dependencies.deployment.applyUpdate?.(plan);
-    expect(events).toEqual(["stage", "pull", "migrate", "up", "healthy", "promote"]);
+    expect(await readFile(join(root, "management.state"), "utf8")).toBe(
+      `schema=1\nversion=${current.version}\ncli_image=ghcr.io/gpsxtreme/argus-cli@sha256:${digest("b")}\n`,
+    );
   });
 
   it("rejects an unhealthy no-op without promoting a different signed target context", async () => {
@@ -768,6 +890,8 @@ describe("production onboarding integration", () => {
     });
     await writeFile(join(root, "release-context.json"), context);
     await saveManagedState(root, current);
+    const priorManagementState = `schema=1\nversion=${current.version}\ncli_image=ghcr.io/gpsxtreme/argus-cli@sha256:${digest("b")}\n`;
+    await writeFile(join(root, "management.state"), priorManagementState);
     const updateIntegration = createProductionUpdateIntegration({
       root,
       manifestUrl: "https://release.example/manifest.json",
@@ -813,6 +937,7 @@ describe("production onboarding integration", () => {
       code: "UPDATE_HEALTHCHECK_FAILED",
     });
     expect(await readFile(join(root, "release-context.json"), "utf8")).toBe(context);
+    expect(await readFile(join(root, "management.state"), "utf8")).toBe(priorManagementState);
   });
 
   it("verifies assets, applies one exact plan, and reverifies persisted signed context", async () => {

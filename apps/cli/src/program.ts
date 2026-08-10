@@ -1,4 +1,8 @@
 import {
+  constants as fsConstants,
+  readFileSync,
+} from "node:fs";
+import {
   chmod,
   lstat,
   mkdir,
@@ -8,43 +12,39 @@ import {
   stat,
   unlink,
 } from "node:fs/promises";
-import {
-  constants as fsConstants,
-  readFileSync,
-} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import {
+  type ArgusConfig,
   loadConfig,
   resolveConfigPath,
-  type ArgusConfig,
 } from "@argus/config";
 import {
+  applyUpdate,
+  type CommandExecutor,
   createArgusDoctorApi,
   DeploymentError,
+  type DiagnosticReport,
   getDeploymentStatus,
   inspectHost,
   loadDeploymentState,
+  type OnboardingAnswersV1,
   onboardingAnswersSchema,
-  repairService,
-  applyUpdate,
   planUpdate,
-  rollbackUpdate,
+  repairService,
   restartDeployment,
+  rollbackUpdate,
   runDoctor,
   MANAGEMENT_WRAPPER_REQUIREMENTS as SHARED_MANAGEMENT_WRAPPER_REQUIREMENTS,
   startDeployment,
   stopDeployment,
-  type DiagnosticReport,
-  type OnboardingAnswersV1,
-  type CommandExecutor,
   type UpdatePlan,
 } from "@argus/deployment";
-import type { ProductionUpdateIntegration } from "./integrations.js";
 import type { VerifiedReleaseManifest } from "@argus/release";
 import { targetsFromConfig } from "@argus/scheduler";
 import { Command, CommanderError } from "commander";
 import { parse } from "yaml";
 import { z } from "zod";
+import type { ProductionUpdateIntegration } from "./integrations.js";
 import {
   CliExitError,
   type CliIO,
@@ -1341,6 +1341,7 @@ const createDeploymentAdapter = (
         );
       }
       await updateIntegration.promoteCurrentRelease(plan.release);
+      await updateIntegration.promoteManagementRelease(plan.release);
       return applied;
     },
     async verifyUpdate(applied) {
