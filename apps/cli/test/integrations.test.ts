@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApp } from "@argus/app";
@@ -9,7 +9,11 @@ import {
   type OnboardingAnswersV1,
   saveDeploymentState,
 } from "@argus/deployment";
-import { buildReleaseArtifacts } from "@argus/release";
+import {
+  buildReleaseArtifacts,
+  parseManagementState,
+  writeManagementStateAtomic,
+} from "@argus/release";
 import { createSqliteRepository } from "@argus/storage-sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -223,11 +227,13 @@ class DeploymentExecutor implements CommandExecutor {
 const releaseFixture = ({
   version = "1.2.3",
   appMarker = "a",
+  cliMarker = "b",
   fxembedMarker = "default",
   releaseBaseUrl = `https://release.example/v${version}`,
 }: {
   version?: string;
   appMarker?: string;
+  cliMarker?: string;
   fxembedMarker?: string;
   releaseBaseUrl?: string;
 } = {}) => {
@@ -238,7 +244,7 @@ const releaseFixture = ({
     sourceDateEpoch: "1785580200",
     images: [
       { name: "app", reference: `ghcr.io/gpsxtreme/argus@sha256:${digest(appMarker)}` },
-      { name: "cli", reference: `ghcr.io/gpsxtreme/argus-cli@sha256:${digest("b")}` },
+      { name: "cli", reference: `ghcr.io/gpsxtreme/argus-cli@sha256:${digest(cliMarker)}` },
       { name: "searxng", reference: `docker.io/searxng/searxng@sha256:${digest("c")}` },
       { name: "postgres", reference: `docker.io/library/postgres@sha256:${digest("d")}` },
     ],
@@ -926,10 +932,10 @@ describe("production onboarding integration", () => {
     expect(await readFile(join(root, "management.state"), "utf8")).toBe(priorManagementState);
   });
 
-  it("preserves management state and skips final verification when atomic management promotion fails", async () => {
+  it("retries an interrupted management promotion to one canonical advanced state", async () => {
     const root = await mkdtemp(join(tmpdir(), "argus-update-during-management-"));
     const current = releaseFixture({ version: "1.0.0", appMarker: "a" });
-    const target = releaseFixture({ version: "2.0.0", appMarker: "b" });
+    const target = releaseFixture({ version: "2.0.0", appMarker: "b", cliMarker: "e" });
     const currentContext = JSON.stringify({
       schemaVersion: 1,
       manifest: Buffer.from(current.manifestBytes).toString("base64"),
@@ -947,6 +953,7 @@ describe("production onboarding integration", () => {
     await writeFile(join(root, "management.state"), priorManagementState);
     await saveManagedState(root, current);
     let writeAttempted = false;
+    let interruptPromotion = true;
     const updateIntegration = createProductionUpdateIntegration({
       root,
       manifestUrl: "https://release.example/manifest.json",
@@ -960,12 +967,15 @@ describe("production onboarding integration", () => {
             : target.fxembed;
         return new Response(Uint8Array.from(bytes).buffer);
       },
-      writeManagementState: async () => {
+      writeManagementState: async (path, state) => {
         writeAttempted = true;
-        throw new DeploymentError(
-          "UPDATE_MANAGEMENT_PROMOTION_FAILED",
-          "Management state promotion failed.",
-        );
+        if (interruptPromotion) {
+          throw new DeploymentError(
+            "UPDATE_MANAGEMENT_PROMOTION_FAILED",
+            "Management state promotion failed.",
+          );
+        }
+        await writeManagementStateAtomic(path, state);
       },
     });
     let verified = false;
@@ -1005,6 +1015,19 @@ describe("production onboarding integration", () => {
     expect(JSON.parse(stdout)).not.toHaveProperty("data");
     expect(await readFile(join(root, "release-context.json"), "utf8")).toBe(targetContext);
     expect(await readFile(join(root, "management.state"), "utf8")).toBe(priorManagementState);
+
+    interruptPromotion = false;
+    const retry = await dependencies.deployment.inspectUpdate?.();
+    expect(retry).toMatchObject({ noop: true, targetVersion: target.version });
+    await dependencies.deployment.applyUpdate?.(retry);
+    expect(parseManagementState(await readFile(join(root, "management.state"), "utf8"))).toEqual({
+      schema: 1,
+      version: target.version,
+      cliImage: `ghcr.io/gpsxtreme/argus-cli@sha256:${digest("e")}`,
+    });
+    expect(await readdir(root)).not.toEqual(
+      expect.arrayContaining([expect.stringMatching(/\.tmp$/u)]),
+    );
   });
 
   it("repairs stale management state for a healthy no-op update", async () => {

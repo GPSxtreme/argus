@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   mkdirSync,
   mkdtempSync,
@@ -13,6 +13,7 @@ import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
 interface WorkflowStep {
+  env?: Record<string, string>;
   name?: string;
   uses?: string;
   run?: string;
@@ -24,6 +25,7 @@ interface Workflow {
     string,
     {
       env?: Record<string, string>;
+      outputs?: Record<string, string>;
       "runs-on"?: string;
       steps?: WorkflowStep[];
     }
@@ -281,6 +283,21 @@ describe("GitHub workflow toolchain", () => {
     expect(fixture.deployment?.root).toBe('/opt/argus');
     expect(fixture.managed?.searxng).toBe('managed');
     expect(workflow.jobs.vps_smoke?.['runs-on']).toBe('ubuntu-24.04');
+    expect(workflow.jobs.candidate?.outputs).toMatchObject({
+      update_manifest_asset_url:
+        '$' + '{{ steps.release.outputs.update_manifest_asset_url }}',
+      update_version: '$' + '{{ steps.release.outputs.update_version }}',
+    });
+    expect(
+      workflow.jobs.vps_smoke?.steps?.find(
+        (step) => step.name === "Verify clean VPS onboarding and operation",
+      )?.env,
+    ).toMatchObject({
+      ARGUS_UPDATE_MANIFEST_ASSET_URL:
+        '$' + '{{ needs.candidate.outputs.update_manifest_asset_url }}',
+      ARGUS_UPDATE_EXPECTED_VERSION:
+        '$' + '{{ needs.candidate.outputs.update_version }}',
+    });
     expect(JSON.stringify(workflow)).toContain('ubuntu:24.04');
     expect(JSON.stringify(workflow)).toContain('debian:13');
     expect(JSON.stringify(workflow)).toContain('"ARGUS_VPS_E2E":"1"');

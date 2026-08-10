@@ -850,6 +850,17 @@ exit 42
     );
   });
 
+  it("defines a signed predecessor-to-stable update lifecycle for VPS smoke", async () => {
+    const smoke = await read("scripts/e2e/vps-smoke.sh");
+
+    expect(smoke).toContain("ARGUS_UPDATE_MANIFEST_ASSET_URL");
+    expect(smoke).toContain("ARGUS_UPDATE_EXPECTED_VERSION");
+    expect(smoke).toContain("sha256sum /usr/local/bin/argus");
+    expect(smoke).toContain("argus update --json --yes");
+    expect(smoke).toContain("management state did not advance to the signed update");
+    expect(smoke).toContain("launcher changed during signed update");
+  });
+
   it("defines pinned OS and architecture coverage with sanitized artifacts", async () => {
     const source = await read(".github/workflows/installer-smoke.yml");
     const workflow = parse(source) as {

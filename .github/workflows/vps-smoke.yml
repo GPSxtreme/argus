@@ -29,6 +29,8 @@ jobs:
       manifest_url: ${{ steps.release.outputs.manifest_url }}
       manifest_asset_url: ${{ steps.release.outputs.manifest_asset_url }}
       version: ${{ steps.release.outputs.version }}
+      update_manifest_asset_url: ${{ steps.release.outputs.update_manifest_asset_url }}
+      update_version: ${{ steps.release.outputs.update_version }}
     steps:
       - name: Resolve immutable signed release assets
         id: release
@@ -42,15 +44,37 @@ jobs:
           [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
           gh api "repos/${REPOSITORY}/releases/tags/${RELEASE_TAG}" > release.json
           jq -e '.draft == false' release.json >/dev/null
+          gh api --paginate --slurp "repos/${REPOSITORY}/releases?per_page=100" > releases.json
+          target_version=$(printf '%s' "${RELEASE_TAG#v}" | jq -R 'split(".") | map(tonumber)')
+          baseline_tag=$(jq -er --argjson target "$target_version" '
+            [ .[] | .[]
+              | select(.draft == false and .prerelease == false)
+              | .tag_name as $tag
+              | select($tag | test("^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"))
+              | ($tag | capture("^v(?<major>[0-9]+)\\.(?<minor>[0-9]+)\\.(?<patch>[0-9]+)$")
+                 | [.major, .minor, .patch | tonumber]) as $version
+              | select($version < $target)
+              | { tag: $tag, version: $version }
+            ] | sort_by(.version) | last.tag
+          ' releases.json)
+          gh api "repos/${REPOSITORY}/releases/tags/${baseline_tag}" > baseline-release.json
           asset_url() {
-            local name=$1
-            test "$(jq --arg name "$name" '[.assets[] | select(.name == $name and .state == "uploaded")] | length' release.json)" -eq 1
-            jq -er --arg name "$name" '.assets[] | select(.name == $name and .state == "uploaded") | .url' release.json
+            local release=$1 name=$2
+            test "$(jq --arg name "$name" '[.assets[] | select(.name == $name and .state == "uploaded")] | length' "$release")" -eq 1
+            jq -er --arg name "$name" '.assets[] | select(.name == $name and .state == "uploaded") | .url' "$release"
           }
-          printf 'installer_url=%s\nmanifest_url=%s\nmanifest_asset_url=%s\nversion=%s\n' \
-            "$(asset_url install.sh)" \
-            "https://github.com/${REPOSITORY}/releases/download/${RELEASE_TAG}/manifest.json" \
-            "$(asset_url manifest.json)" \
+          target_manifest_asset_url=$(asset_url release.json manifest.json)
+          gh api --header 'Accept: application/octet-stream' "$target_manifest_asset_url" > target-manifest.json
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+            'https://argus.gpsxtre.me/releases/stable/manifest.json' \
+            --output stable-manifest.json
+          cmp -s target-manifest.json stable-manifest.json
+          printf 'installer_url=%s\nmanifest_url=%s\nmanifest_asset_url=%s\nversion=%s\nupdate_manifest_asset_url=%s\nupdate_version=%s\n' \
+            "$(asset_url baseline-release.json install.sh)" \
+            "https://github.com/${REPOSITORY}/releases/download/${baseline_tag}/manifest.json" \
+            "$(asset_url baseline-release.json manifest.json)" \
+            "${baseline_tag#v}" \
+            "$target_manifest_asset_url" \
             "${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
 
   vps_smoke:
@@ -76,6 +100,8 @@ jobs:
           ARGUS_MANIFEST_URL: ${{ needs.candidate.outputs.manifest_url }}
           ARGUS_MANIFEST_ASSET_URL: ${{ needs.candidate.outputs.manifest_asset_url }}
           ARGUS_EXPECTED_VERSION: ${{ needs.candidate.outputs.version }}
+          ARGUS_UPDATE_MANIFEST_ASSET_URL: ${{ needs.candidate.outputs.update_manifest_asset_url }}
+          ARGUS_UPDATE_EXPECTED_VERSION: ${{ needs.candidate.outputs.update_version }}
           ARGUS_CONTROLLED_WEB_URL: ${{ inputs.controlled_web_url }}
           ARGUS_GITHUB_TOKEN: ${{ github.token }}
           ARGUS_GITHUB_USER: ${{ github.actor }}

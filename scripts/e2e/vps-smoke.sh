@@ -24,7 +24,9 @@ if [ "${1:-}" != "--inner" ]; then
     ARGUS_INSTALLER_URL \
     ARGUS_MANIFEST_URL \
     ARGUS_MANIFEST_ASSET_URL \
-    ARGUS_EXPECTED_VERSION
+    ARGUS_EXPECTED_VERSION \
+    ARGUS_UPDATE_MANIFEST_ASSET_URL \
+    ARGUS_UPDATE_EXPECTED_VERSION
   do
     argus_vps_required "$argus_vps_name"
   done
@@ -101,6 +103,8 @@ ARGUS_VPS_DOCKERFILE
     --env ARGUS_MANIFEST_URL \
     --env ARGUS_MANIFEST_ASSET_URL \
     --env ARGUS_EXPECTED_VERSION \
+    --env ARGUS_UPDATE_MANIFEST_ASSET_URL \
+    --env ARGUS_UPDATE_EXPECTED_VERSION \
     --env ARGUS_CONTROLLED_WEB_URL \
     --env ARGUS_GITHUB_TOKEN \
     --env ARGUS_GITHUB_USER \
@@ -114,7 +118,9 @@ for argus_vps_name in \
   ARGUS_INSTALLER_URL \
   ARGUS_MANIFEST_URL \
   ARGUS_MANIFEST_ASSET_URL \
-  ARGUS_EXPECTED_VERSION
+  ARGUS_EXPECTED_VERSION \
+  ARGUS_UPDATE_MANIFEST_ASSET_URL \
+  ARGUS_UPDATE_EXPECTED_VERSION
 do
   argus_vps_required "$argus_vps_name"
 done
@@ -126,6 +132,7 @@ done
 argus_vps_work=$(mktemp -d /tmp/argus-vps-inner.XXXXXX)
 argus_vps_installer=$argus_vps_work/install.sh
 argus_vps_manifest=$argus_vps_work/manifest.json
+argus_vps_update_manifest=$argus_vps_work/update-manifest.json
 argus_vps_first=$argus_vps_work/onboard-first.log
 argus_vps_second=$argus_vps_work/onboard-second.log
 argus_vps_doctor=$argus_vps_work/doctor.json
@@ -174,6 +181,7 @@ argus_vps_download() {
 
 argus_vps_download "$ARGUS_INSTALLER_URL" "$argus_vps_installer"
 argus_vps_download "$ARGUS_MANIFEST_ASSET_URL" "$argus_vps_manifest"
+argus_vps_download "$ARGUS_UPDATE_MANIFEST_ASSET_URL" "$argus_vps_update_manifest"
 sh -n "$argus_vps_installer"
 chmod 700 "$argus_vps_installer"
 ARGUS_MANIFEST_URL="$ARGUS_MANIFEST_URL" \
@@ -186,6 +194,26 @@ sh "$argus_vps_installer"
 
 [ "$(argus --version)" = "$ARGUS_EXPECTED_VERSION" ] ||
   argus_vps_die "installed wrapper reported the wrong release"
+
+argus_vps_parse_management_state() {
+  argus_vps_state_path=$1
+  [ -f "$argus_vps_state_path" ] && [ ! -L "$argus_vps_state_path" ] ||
+    argus_vps_die "management state is not a regular file"
+  argus_vps_management_state=$(jq -R -s -e '
+    capture("^schema=(?<schema>[0-9]+)\\nversion=(?<version>(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?)\\ncli_image=(?<cliImage>[a-z0-9]+([._-][a-z0-9]+)*([/:][a-z0-9]+([._/-][a-z0-9]+)*)*@sha256:[a-f0-9]{64})\\n$")
+    | select(.schema == "1")
+  ' "$argus_vps_state_path") ||
+    argus_vps_die "management state is not canonical"
+  argus_vps_management_version=$(printf '%s' "$argus_vps_management_state" | jq -er '.version')
+  argus_vps_management_cli_image=$(printf '%s' "$argus_vps_management_state" | jq -er '.cliImage')
+}
+
+argus_vps_initial_cli_image=$(jq -er '.images.cli.reference' "$argus_vps_manifest")
+argus_vps_update_cli_image=$(jq -er '.images.cli.reference' "$argus_vps_update_manifest")
+[ "$(jq -er '.version' "$argus_vps_update_manifest")" = "$ARGUS_UPDATE_EXPECTED_VERSION" ] ||
+  argus_vps_die "signed update manifest reported the wrong version"
+[ "$ARGUS_EXPECTED_VERSION" != "$ARGUS_UPDATE_EXPECTED_VERSION" ] ||
+  argus_vps_die "signed update candidate must advance the installed release"
 argus_vps_controlled_url=${ARGUS_CONTROLLED_WEB_URL:-https://argus.gpsxtre.me/}
 printf '%s\n' "$argus_vps_controlled_url" |
   grep -Eq '^https://[A-Za-z0-9.-]+(:[0-9]+)?/[A-Za-z0-9._~/%?=-]*$' ||
@@ -221,6 +249,27 @@ argus_vps_onboard "$argus_vps_first"
 argus_vps_onboard "$argus_vps_second"
 jq -e '.data.plan.deployment.changes == []' \
   "$argus_vps_second.json" >/dev/null
+
+argus_vps_parse_management_state /opt/argus/management.state
+[ "$argus_vps_management_version" = "$ARGUS_EXPECTED_VERSION" ] &&
+  [ "$argus_vps_management_cli_image" = "$argus_vps_initial_cli_image" ] ||
+  argus_vps_die "installed management state did not match the signed baseline"
+argus_vps_launcher_before=$(sha256sum /usr/local/bin/argus)
+argus_vps_management_version_before=$argus_vps_management_version
+argus_vps_management_cli_image_before=$argus_vps_management_cli_image
+argus update --json --yes > "$argus_vps_work/update.json"
+jq -e --arg version "$ARGUS_UPDATE_EXPECTED_VERSION" '
+  .contractVersion == 1 and .ok == true and .data.version == $version and
+  .data.health.healthy == true
+' "$argus_vps_work/update.json" >/dev/null
+argus_vps_parse_management_state /opt/argus/management.state
+[ "$argus_vps_management_version" = "$ARGUS_UPDATE_EXPECTED_VERSION" ] &&
+  [ "$argus_vps_management_cli_image" = "$argus_vps_update_cli_image" ] &&
+  [ "$argus_vps_management_version" != "$argus_vps_management_version_before" ] &&
+  [ "$argus_vps_management_cli_image" != "$argus_vps_management_cli_image_before" ] ||
+  argus_vps_die "management state did not advance to the signed update"
+[ "$argus_vps_launcher_before" = "$(sha256sum /usr/local/bin/argus)" ] ||
+  argus_vps_die "launcher changed during signed update"
 
 argus doctor --json > "$argus_vps_doctor"
 argus status --json > "$argus_vps_status_json"
@@ -258,7 +307,7 @@ while :; do
   sleep 2
 done
 
-argus_vps_cli_image=$(jq -er '.images.cli.reference' "$argus_vps_manifest")
+argus_vps_cli_image=$argus_vps_update_cli_image
 docker run --rm --network argus_argus-private \
   --entrypoint node "$argus_vps_cli_image" \
   --input-type=module \
