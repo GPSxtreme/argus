@@ -801,7 +801,7 @@ exit 42
     fixtureTestDeadlineMs,
   );
 
-  it("installs the exact signed wrapper twice and verifies onboarding health", async () => {
+  it("installs the exact signed wrapper and management state twice before onboarding", async () => {
     const smoke = await read("scripts/e2e/installer-smoke.sh");
 
     expect(smoke).toMatch(/^#!\/bin\/sh\nset -eu\n/u);
@@ -827,6 +827,11 @@ exit 42
     expect(smoke).toContain("sha256sum");
     expect(smoke).toContain("cmp -s");
     expect(smoke).toContain("argus --version");
+    expect(smoke).toContain("argus_management_state=/opt/argus/management.state");
+    expect(smoke).toContain("argus_management_state_mode");
+    expect(smoke).toContain("schema=1");
+    expect(smoke).toContain("management state has unexpected extra content");
+    expect(smoke).toContain("second installation changed management state");
     expect(smoke).toContain("argus onboard --from");
     expect(smoke).toContain("https://example.com/");
     expect(smoke).toContain("argus doctor --json");

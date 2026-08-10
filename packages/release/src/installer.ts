@@ -40,6 +40,9 @@ argus_tmp=
 argus_lock=
 argus_target_tmp=
 argus_backup_tmp=
+argus_state_tmp=
+argus_state_backup_tmp=
+argus_wrapper_test_tmp=
 argus_github_headers=
 
 argus_die() {
@@ -61,6 +64,23 @@ argus_cleanup() {
     elif command -v sudo >/dev/null 2>&1; then
       sudo -n rm -f -- "$argus_backup_tmp" >/dev/null 2>&1 || true
     fi
+  fi
+  if [ -n "$argus_state_tmp" ]; then
+    if [ -w "$(dirname "$argus_state_tmp")" ]; then
+      rm -f -- "$argus_state_tmp" 2>/dev/null || true
+    elif command -v sudo >/dev/null 2>&1; then
+      sudo -n rm -f -- "$argus_state_tmp" >/dev/null 2>&1 || true
+    fi
+  fi
+  if [ -n "$argus_state_backup_tmp" ]; then
+    if [ -w "$(dirname "$argus_state_backup_tmp")" ]; then
+      rm -f -- "$argus_state_backup_tmp" 2>/dev/null || true
+    elif command -v sudo >/dev/null 2>&1; then
+      sudo -n rm -f -- "$argus_state_backup_tmp" >/dev/null 2>&1 || true
+    fi
+  fi
+  if [ -n "$argus_wrapper_test_tmp" ]; then
+    rm -f -- "$argus_wrapper_test_tmp" 2>/dev/null || true
   fi
   if [ -n "$argus_lock" ]; then
     if [ -w "$(dirname "$argus_lock")" ]; then
@@ -211,6 +231,7 @@ printf '%s\\n' "$argus_install_root" | LC_ALL=C grep -Eq '^/[A-Za-z0-9._/+:-]+$'
 if [ "$argus_install_root" != /opt/argus ] && [ "\${ARGUS_INSTALL_FIXTURE:-0}" != 1 ]; then
   argus_die "ARGUS_INSTALL_ROOT is restricted to explicit fixtures"
 fi
+argus_state_path="$argus_install_root/management.state"
 
 case "\${ARGUS_INSTALL_INSPECT:-0}" in
   1)
@@ -358,7 +379,8 @@ argus_compatibility_date=$(printf '%s\\n' "$argus_manifest_line" | sed -n 's/.*"
 argus_fxembed_url=$(printf '%s\\n' "$argus_manifest_line" | sed -n 's/.*"fxembed":{"url":"\\([^"]*\\)","sha256".*/\\1/p')
 argus_wrapper_url=$(printf '%s\\n' "$argus_manifest_line" | sed -n 's/.*"wrapper":{"url":"\\([^"]*\\)","sha256":"[a-f0-9]*"}.*/\\1/p')
 argus_wrapper_sha=$(printf '%s\\n' "$argus_manifest_line" | sed -n 's/.*"wrapper":{"url":"[^"]*","sha256":"\\([a-f0-9]*\\)"}.*/\\1/p')
-[ -n "$argus_version" ] && [ -n "$argus_wrapper_url" ] && [ -n "$argus_wrapper_sha" ] ||
+argus_cli_image=$(printf '%s\\n' "$argus_manifest_line" | sed -n 's/.*"cli":{"reference":"\\([^"]*\\)","digest":"sha256:[a-f0-9]*"}.*/\\1/p')
+[ -n "$argus_version" ] && [ -n "$argus_wrapper_url" ] && [ -n "$argus_wrapper_sha" ] && [ -n "$argus_cli_image" ] ||
   argus_die "could not read verified manifest fields"
 
 argus_validate_calendar_date() {
@@ -480,7 +502,18 @@ argus_curl "$argus_wrapper_url" "$argus_tmp/argus" || argus_die "failed to downl
 printf '%s  %s\\n' "$argus_wrapper_sha" "$argus_tmp/argus" | sha256sum -c - >/dev/null 2>&1 ||
   argus_die "Argus wrapper checksum does not match the signed manifest"
 sh -n "$argus_tmp/argus" || argus_die "Argus wrapper is not valid POSIX shell"
-argus_is_wrapper() {
+argus_is_durable_wrapper() {
+  [ "$(sed -n '1p' "$1")" = '#!/bin/sh' ] &&
+    [ "$(sed -n '2p' "$1")" = '# argus-host-wrapper schema=1' ] &&
+    [ "$(sed -n '3p' "$1")" = '# generated-by=@argus/release' ] &&
+    [ "$(sed -n '4p' "$1")" = 'set -eu' ] &&
+    grep -Fqx "argus_state='$argus_state_path'" "$1" &&
+    grep -Fqx 'argus_state_error() {' "$1" &&
+    [ "$(grep -Ec '^argus_state=' "$1")" -eq 1 ] &&
+    [ "$(grep -Ec '^argus_version=' "$1")" -eq 0 ] &&
+    [ "$(grep -Ec '^argus_cli_image=' "$1")" -eq 0 ]
+}
+argus_is_legacy_wrapper() {
   [ "$(sed -n '1p' "$1")" = '#!/bin/sh' ] &&
     [ "$(sed -n '2p' "$1")" = '# argus-host-wrapper schema=1' ] &&
     [ "$(sed -n '3p' "$1")" = '# generated-by=@argus/release' ] &&
@@ -491,8 +524,8 @@ argus_is_wrapper() {
     [ "$(grep -Ec '^argus_cli_image=' "$1")" -eq 1 ] &&
     [ "$(grep -Ec -- "--env 'ARGUS_INSTALL_ROOT=/opt/argus'" "$1")" -ge 1 ]
 }
-argus_is_wrapper "$argus_tmp/argus" ||
-  argus_die "signed wrapper is not a recognizable Argus host command"
+argus_is_durable_wrapper "$argus_tmp/argus" ||
+  argus_die "signed wrapper is not a recognizable durable Argus host command"
 chmod 755 "$argus_tmp/argus"
 
 argus_as_root() {
@@ -658,25 +691,75 @@ if [ ! -d "$argus_target_dir" ]; then
     argus_as_root install -d -m 0755 "$argus_target_dir"
   fi
 fi
-
-if [ -L "$argus_target" ]; then
-  argus_die "refusing to replace symlink $argus_target"
-fi
-if [ -e "$argus_target" ]; then
-  argus_target_identity=$(stat -c '%d:%i:%s' "$argus_target" 2>/dev/null || stat -f '%d:%i:%z' "$argus_target" 2>/dev/null) ||
-    argus_die "could not inspect existing installation target"
-  if cmp -s "$argus_tmp/argus" "$argus_target"; then
-    argus_existing_exact=1
-  elif argus_is_wrapper "$argus_target" 2>/dev/null; then
-    argus_existing_exact=0
+if [ ! -d "$argus_install_root" ]; then
+  if [ -w "$(dirname "$argus_install_root")" ]; then
+    install -d -m 0755 "$argus_install_root"
   else
-    argus_die "refusing to replace unrelated file $argus_target"
+    argus_as_root install -d -m 0755 "$argus_install_root"
   fi
-else
-  argus_target_identity=absent
-  argus_existing_exact=0
 fi
+[ ! -L "$argus_install_root" ] || argus_die "refusing symlinked Argus installation root"
+[ ! -L "$argus_state_path" ] || argus_die "refusing symlinked management state target"
 
+argus_copy_as_owner() {
+  argus_copy_source=$1
+  argus_copy_destination=$2
+  argus_copy_mode=$3
+  if [ -w "$(dirname "$argus_copy_destination")" ]; then
+    install -m "$argus_copy_mode" "$argus_copy_source" "$argus_copy_destination"
+  else
+    argus_as_root install -m "$argus_copy_mode" "$argus_copy_source" "$argus_copy_destination"
+  fi
+}
+argus_move_as_owner() {
+  if [ -w "$(dirname "$2")" ]; then
+    mv -f -- "$1" "$2"
+  else
+    argus_as_root mv -f -- "$1" "$2"
+  fi
+}
+argus_remove_as_owner() {
+  if [ -w "$(dirname "$1")" ]; then
+    rm -f -- "$1"
+  else
+    argus_as_root rm -f -- "$1"
+  fi
+}
+argus_make_temp_as_owner() {
+  argus_temp_directory=$1
+  argus_temp_pattern=$2
+  if [ -w "$argus_temp_directory" ]; then
+    mktemp "$argus_temp_directory/$argus_temp_pattern"
+  else
+    argus_as_root mktemp "$argus_temp_directory/$argus_temp_pattern"
+  fi
+}
+argus_identity() {
+  stat -c '%d:%i:%s' "$1" 2>/dev/null || stat -f '%d:%i:%z' "$1" 2>/dev/null
+}
+argus_backup_as_owner() {
+  if [ -w "$(dirname "$2")" ]; then
+    cp -pP "$1" "$2"
+  else
+    argus_as_root cp -pP "$1" "$2"
+  fi
+}
+argus_restore_from_backup() {
+  argus_restore_backup=$1
+  argus_restore_destination=$2
+  argus_restore_pattern=$3
+  [ ! -L "$argus_restore_backup" ] || return 1
+  argus_restore_tmp=$(argus_make_temp_as_owner "$(dirname "$argus_restore_destination")" "$argus_restore_pattern") ||
+    return 1
+  if ! argus_backup_as_owner "$argus_restore_backup" "$argus_restore_tmp" ||
+    ! sync -f "$argus_restore_tmp" ||
+    ! argus_move_as_owner "$argus_restore_tmp" "$argus_restore_destination"
+  then
+    argus_remove_as_owner "$argus_restore_tmp" 2>/dev/null || true
+    return 1
+  fi
+  argus_restore_tmp=
+}
 argus_run_wrapper_version() {
   if [ "$argus_docker_mode" = root ]; then
     argus_as_root "$1" --version
@@ -685,75 +768,198 @@ argus_run_wrapper_version() {
   fi
 }
 
-if [ "$argus_existing_exact" -eq 0 ]; then
-  if [ -w "$argus_target_dir" ]; then
-    argus_target_tmp=$(mktemp "$argus_target_dir/.argus.tmp.XXXXXX")
-    install -m 0755 "$argus_tmp/argus" "$argus_target_tmp"
+if [ -L "$argus_target" ]; then
+  argus_die "refusing to replace symlink $argus_target"
+fi
+if [ -e "$argus_target" ]; then
+  argus_target_identity=$(argus_identity "$argus_target") ||
+    argus_die "could not inspect existing installation target"
+  if cmp -s "$argus_tmp/argus" "$argus_target"; then
+    argus_existing_exact=1
+  elif argus_is_legacy_wrapper "$argus_target" 2>/dev/null; then
+    argus_existing_exact=0
   else
-    argus_target_tmp=$(argus_as_root mktemp "$argus_target_dir/.argus.tmp.XXXXXX")
-    argus_as_root install -m 0755 "$argus_tmp/argus" "$argus_target_tmp"
+    argus_die "refusing to replace unrelated file $argus_target"
   fi
-  argus_temp_version=$(argus_run_wrapper_version "$argus_target_tmp") ||
-    argus_die "new Argus wrapper failed its version check; existing installation was preserved"
-  [ "$argus_temp_version" = "$argus_version" ] ||
-    argus_die "new Argus wrapper reported version $argus_temp_version, expected $argus_version; existing installation was preserved"
-  sync -f "$argus_target_tmp" ||
-    argus_die "could not durably sync the new Argus wrapper; existing installation was preserved"
-  [ ! -L "$argus_target" ] || argus_die "target became a symlink during installation"
-  if [ "$argus_target_identity" = absent ]; then
-    [ ! -e "$argus_target" ] || argus_die "installation target changed during installation"
-  else
-    [ "$(stat -c '%d:%i:%s' "$argus_target" 2>/dev/null || stat -f '%d:%i:%z' "$argus_target" 2>/dev/null || true)" = "$argus_target_identity" ] ||
-      argus_die "installation target changed during installation"
-    if [ -w "$argus_target_dir" ]; then
-      argus_backup_tmp=$(mktemp "$argus_target_dir/.argus.backup.XXXXXX")
-      install -m 0755 "$argus_target" "$argus_backup_tmp"
-    else
-      argus_backup_tmp=$(argus_as_root mktemp "$argus_target_dir/.argus.backup.XXXXXX")
-      argus_as_root install -m 0755 "$argus_target" "$argus_backup_tmp"
-    fi
-    sync -f "$argus_backup_tmp" ||
-      argus_die "could not durably preserve the existing Argus wrapper"
-  fi
-  if [ -w "$argus_target_dir" ]; then
-    mv -f -- "$argus_target_tmp" "$argus_target"
-  else
-    argus_as_root mv -f -- "$argus_target_tmp" "$argus_target"
-  fi
-  argus_target_tmp=
-  if ! sync -f "$argus_target" || ! sync -f "$argus_target_dir"; then
-    if [ -n "$argus_backup_tmp" ]; then
-      if [ -w "$argus_target_dir" ]; then
-        mv -f -- "$argus_backup_tmp" "$argus_target"
-      else
-        argus_as_root mv -f -- "$argus_backup_tmp" "$argus_target"
-      fi
-      argus_backup_tmp=
-    else
-      if [ -w "$argus_target_dir" ]; then
-        rm -f -- "$argus_target"
-      else
-        argus_as_root rm -f -- "$argus_target"
-      fi
-    fi
-    sync -f "$argus_target_dir" 2>/dev/null || true
-    argus_die "could not durably sync the Argus installation; previous state was restored"
-  fi
-  if [ -n "$argus_backup_tmp" ]; then
-    if [ -w "$argus_target_dir" ]; then
-      rm -f -- "$argus_backup_tmp"
-    else
-      argus_as_root rm -f -- "$argus_backup_tmp"
-    fi
-    argus_backup_tmp=
-    sync -f "$argus_target_dir"
-  fi
+else
+  argus_target_identity=absent
+  argus_existing_exact=0
+fi
+if [ -e "$argus_state_path" ]; then
+  argus_state_identity=$(argus_identity "$argus_state_path") ||
+    argus_die "could not inspect existing management state"
+else
+  argus_state_identity=absent
 fi
 
-argus_installed_version=$(argus_run_wrapper_version "$argus_target") ||
-  argus_die "installed Argus wrapper failed its version check"
-[ "$argus_installed_version" = "$argus_version" ] ||
-  argus_die "installed Argus wrapper reported version $argus_installed_version, expected $argus_version"
+printf 'schema=1\\nversion=%s\\ncli_image=%s\\n' "$argus_version" "$argus_cli_image" > "$argus_tmp/management.state"
+chmod 644 "$argus_tmp/management.state"
+sync -f "$argus_tmp/management.state" || argus_die "could not sync management state source"
+
+if [ "\${ARGUS_INSTALL_FIXTURE:-0}" = 1 ]; then
+  argus_fixture_state_path=\${ARGUS_INSTALL_FIXTURE_STATE_PATH:-}
+  [ -n "$argus_fixture_state_path" ] || argus_die "fixture management-state validation path is required"
+  [ "$(dirname "$argus_fixture_state_path")" = "$argus_install_root" ] ||
+    argus_die "fixture management-state validation path must be inside the installation root"
+  case "$argus_fixture_state_path" in
+    "$argus_install_root"/.management-state.*) ;;
+    *) argus_die "unsafe fixture management-state validation path" ;;
+  esac
+  [ ! -e "$argus_fixture_state_path" ] && [ ! -L "$argus_fixture_state_path" ] ||
+    argus_die "fixture management-state validation path already exists"
+  argus_state_tmp=$argus_fixture_state_path
+  (umask 077; set -C; : > "$argus_state_tmp") ||
+    argus_die "could not create fixture management-state validation file"
+else
+  argus_state_tmp=$(argus_make_temp_as_owner "$argus_install_root" '.management.state.tmp.XXXXXX') ||
+    argus_die "could not create temporary management state"
+fi
+argus_copy_as_owner "$argus_tmp/management.state" "$argus_state_tmp" 0644 ||
+  argus_die "could not write temporary management state"
+sync -f "$argus_state_tmp" ||
+  argus_die "could not durably sync temporary management state"
+
+if [ "$argus_existing_exact" -eq 0 ]; then
+  argus_target_tmp=$(argus_make_temp_as_owner "$argus_target_dir" '.argus.tmp.XXXXXX') ||
+    argus_die "could not create temporary Argus wrapper"
+  argus_wrapper_test_tmp=$argus_target_tmp
+else
+  argus_wrapper_test_tmp="$argus_tmp/argus-validation"
+fi
+sed "s|argus_state='$argus_state_path'|argus_state='$argus_state_tmp'|" "$argus_tmp/argus" > "$argus_wrapper_test_tmp" ||
+  argus_die "could not prepare temporary Argus wrapper validation"
+cmp -s "$argus_tmp/argus" "$argus_wrapper_test_tmp" &&
+  argus_die "signed durable wrapper does not expose its fixed management state path"
+chmod 755 "$argus_wrapper_test_tmp"
+sh -n "$argus_wrapper_test_tmp" || argus_die "temporary Argus wrapper is not valid POSIX shell"
+argus_temp_version=$(argus_run_wrapper_version "$argus_wrapper_test_tmp") ||
+  argus_die "new Argus wrapper failed its version check; existing installation was preserved"
+[ "$argus_temp_version" = "$argus_version" ] ||
+  argus_die "new Argus wrapper reported version $argus_temp_version, expected $argus_version; existing installation was preserved"
+if [ "$argus_wrapper_test_tmp" = "$argus_target_tmp" ]; then
+  argus_copy_as_owner "$argus_tmp/argus" "$argus_target_tmp" 0755 ||
+    argus_die "could not write temporary Argus wrapper"
+  sync -f "$argus_target_tmp" ||
+    argus_die "could not durably sync temporary Argus wrapper"
+else
+  rm -f -- "$argus_wrapper_test_tmp"
+fi
+argus_wrapper_test_tmp=
+
+if [ -e "$argus_state_path" ] &&
+  [ "$(stat -c '%a' "$argus_state_path" 2>/dev/null || stat -f '%Lp' "$argus_state_path" 2>/dev/null || true)" = 644 ] &&
+  cmp -s "$argus_tmp/management.state" "$argus_state_path"; then
+  argus_state_existing_exact=1
+  argus_remove_as_owner "$argus_state_tmp"
+  argus_state_tmp=
+else
+  argus_state_existing_exact=0
+fi
+
+if [ "$argus_existing_exact" -eq 0 ] && [ "$argus_target_identity" != absent ]; then
+  [ ! -L "$argus_target" ] &&
+    [ "$(argus_identity "$argus_target" 2>/dev/null || true)" = "$argus_target_identity" ] ||
+    argus_die "installation target changed before preservation"
+  argus_backup_tmp=$(argus_make_temp_as_owner "$argus_target_dir" '.argus.backup.XXXXXX') ||
+    argus_die "could not preserve the existing Argus wrapper"
+  argus_backup_as_owner "$argus_target" "$argus_backup_tmp" ||
+    argus_die "could not preserve the existing Argus wrapper"
+  [ ! -L "$argus_target" ] && [ ! -L "$argus_backup_tmp" ] &&
+    [ "$(argus_identity "$argus_target" 2>/dev/null || true)" = "$argus_target_identity" ] ||
+    argus_die "installation target changed during preservation"
+  sync -f "$argus_backup_tmp" || argus_die "could not durably preserve the existing Argus wrapper"
+fi
+if [ "$argus_state_existing_exact" -eq 0 ] && [ "$argus_state_identity" != absent ]; then
+  [ ! -L "$argus_state_path" ] &&
+    [ "$(argus_identity "$argus_state_path" 2>/dev/null || true)" = "$argus_state_identity" ] ||
+    argus_die "management state changed before preservation"
+  argus_state_backup_tmp=$(argus_make_temp_as_owner "$argus_install_root" '.management.state.backup.XXXXXX') ||
+    argus_die "could not preserve the existing management state"
+  argus_backup_as_owner "$argus_state_path" "$argus_state_backup_tmp" ||
+    argus_die "could not preserve the existing management state"
+  [ ! -L "$argus_state_path" ] && [ ! -L "$argus_state_backup_tmp" ] &&
+    [ "$(argus_identity "$argus_state_path" 2>/dev/null || true)" = "$argus_state_identity" ] ||
+    argus_die "management state changed during preservation"
+  sync -f "$argus_state_backup_tmp" || argus_die "could not durably preserve the existing management state"
+fi
+
+argus_restore_pair() {
+  argus_restore_failed=0
+  if [ -n "$argus_state_tmp" ]; then
+    if argus_remove_as_owner "$argus_state_tmp"; then
+      argus_state_tmp=
+    else
+      argus_restore_failed=1
+    fi
+  fi
+  if [ -n "$argus_state_backup_tmp" ]; then
+    if ! argus_restore_from_backup "$argus_state_backup_tmp" "$argus_state_path" '.management.state.restore.XXXXXX'; then
+      argus_restore_failed=1
+    fi
+  elif [ "$argus_state_existing_exact" -eq 0 ]; then
+    argus_remove_as_owner "$argus_state_path" || argus_restore_failed=1
+  fi
+  if [ -n "$argus_target_tmp" ]; then
+    if argus_remove_as_owner "$argus_target_tmp"; then
+      argus_target_tmp=
+    else
+      argus_restore_failed=1
+    fi
+  fi
+  if [ -n "$argus_backup_tmp" ]; then
+    if ! argus_restore_from_backup "$argus_backup_tmp" "$argus_target" '.argus.restore.XXXXXX'; then
+      argus_restore_failed=1
+    fi
+  elif [ "$argus_existing_exact" -eq 0 ]; then
+    argus_remove_as_owner "$argus_target" || argus_restore_failed=1
+  fi
+  sync -f "$argus_install_root" || argus_restore_failed=1
+  sync -f "$argus_target_dir" || argus_restore_failed=1
+  [ "$argus_restore_failed" -eq 0 ]
+}
+argus_promote_pair() {
+  [ ! -L "$argus_install_root" ] && [ ! -L "$argus_state_path" ] && [ ! -L "$argus_target" ] || return 1
+  if [ "$argus_state_identity" = absent ]; then
+    [ ! -e "$argus_state_path" ] || return 1
+  else
+    [ "$(argus_identity "$argus_state_path" 2>/dev/null || true)" = "$argus_state_identity" ] || return 1
+  fi
+  if [ "$argus_target_identity" = absent ]; then
+    [ ! -e "$argus_target" ] || return 1
+  else
+    [ "$(argus_identity "$argus_target" 2>/dev/null || true)" = "$argus_target_identity" ] || return 1
+  fi
+  if [ "$argus_state_existing_exact" -eq 0 ]; then
+    argus_move_as_owner "$argus_state_tmp" "$argus_state_path" || return 1
+    argus_state_tmp=
+    sync -f "$argus_state_path" || return 1
+    sync -f "$argus_install_root" || return 1
+  fi
+  if [ "$argus_existing_exact" -eq 0 ]; then
+    argus_move_as_owner "$argus_target_tmp" "$argus_target" || return 1
+    argus_target_tmp=
+    sync -f "$argus_target" || return 1
+    sync -f "$argus_target_dir" || return 1
+  fi
+  argus_installed_version=$(argus_run_wrapper_version "$argus_target") || return 1
+  [ "$argus_installed_version" = "$argus_version" ] || return 1
+  cmp -s "$argus_tmp/management.state" "$argus_state_path" || return 1
+  argus_installed_wrapper_sha=$(sha256sum "$argus_target" | awk '{print $1}') || return 1
+  [ "$argus_installed_wrapper_sha" = "$argus_wrapper_sha" ] || return 1
+  sync -f "$argus_install_root" || return 1
+  sync -f "$argus_target_dir" || return 1
+}
+if ! argus_promote_pair; then
+  if argus_restore_pair; then
+    argus_die "could not promote the Argus launcher and management state; previous state was restored"
+  fi
+  argus_recovery_backups="$argus_state_backup_tmp $argus_backup_tmp"
+  argus_state_backup_tmp=
+  argus_backup_tmp=
+  argus_die "could not restore the previous Argus launcher and management state; recovery backups were preserved at$argus_recovery_backups"
+fi
+if [ -n "$argus_backup_tmp" ]; then argus_remove_as_owner "$argus_backup_tmp"; argus_backup_tmp=; fi
+if [ -n "$argus_state_backup_tmp" ]; then argus_remove_as_owner "$argus_state_backup_tmp"; argus_state_backup_tmp=; fi
 if [ "$argus_docker_mode" = root ]; then
   printf '%s\\n' "Docker is usable only with root privileges in this session." >&2
   printf '%s\\n' "Run 'sudo argus onboard', or explicitly configure Docker socket access and start a new login session." >&2
