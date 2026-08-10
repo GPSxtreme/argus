@@ -1,7 +1,7 @@
 import {
-  isPinnedImageReference,
   type DeploymentPlan,
   type DeploymentStateV1,
+  isPinnedImageReference,
 } from "./contracts.js";
 import type { CommandExecutor } from "./executor.js";
 import { loadDeploymentState, saveDeploymentState } from "./files.js";
@@ -135,8 +135,16 @@ export const loadPersistedComposeEnvironment = async (
 const parseStatus = (stdout: string): DeploymentStatus["services"] => {
   if (!stdout.trim()) return [];
   try {
-    const parsed: unknown = JSON.parse(stdout);
-    const entries: unknown[] = Array.isArray(parsed) ? parsed : [parsed];
+    let entries: unknown[];
+    try {
+      const parsed: unknown = JSON.parse(stdout);
+      entries = Array.isArray(parsed) ? parsed : [parsed];
+    } catch {
+      entries = stdout
+        .split("\n")
+        .filter((line) => line.trim().length > 0)
+        .map((line) => JSON.parse(line) as unknown);
+    }
     return entries.flatMap((entry) => {
       if (!entry || typeof entry !== "object") return [];
       const value = entry as Record<string, unknown>;
