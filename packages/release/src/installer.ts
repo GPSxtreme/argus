@@ -735,7 +735,11 @@ argus_make_temp_as_owner() {
   fi
 }
 argus_identity() {
-  stat -c '%d:%i:%s' "$1" 2>/dev/null || stat -f '%d:%i:%z' "$1" 2>/dev/null
+  argus_identity_metadata=$(stat -c '%d:%i:%s:%a:%u:%g:%Y:%Z' "$1" 2>/dev/null ||
+    stat -f '%d:%i:%z:%Lp:%u:%g:%m:%c' "$1" 2>/dev/null) || return 1
+  argus_identity_sha=$(sha256sum "$1" | awk 'NR == 1 { print $1 }') || return 1
+  [ -n "$argus_identity_sha" ] || return 1
+  printf '%s:%s\\n' "$argus_identity_metadata" "$argus_identity_sha"
 }
 argus_backup_as_owner() {
   if [ -w "$(dirname "$2")" ]; then
@@ -765,6 +769,16 @@ argus_run_wrapper_version() {
     argus_as_root "$1" --version
   else
     "$1" --version
+  fi
+}
+argus_snapshot_matches() {
+  argus_snapshot_path=$1
+  argus_snapshot=$2
+  if [ "$argus_snapshot" = absent ]; then
+    [ ! -e "$argus_snapshot_path" ] && [ ! -L "$argus_snapshot_path" ]
+  else
+    [ ! -L "$argus_snapshot_path" ] &&
+      [ "$(argus_identity "$argus_snapshot_path" 2>/dev/null || true)" = "$argus_snapshot" ]
   fi
 }
 
@@ -847,6 +861,7 @@ fi
 argus_wrapper_test_tmp=
 
 if [ -e "$argus_state_path" ] &&
+  [ ! -L "$argus_state_path" ] &&
   [ "$(stat -c '%a' "$argus_state_path" 2>/dev/null || stat -f '%Lp' "$argus_state_path" 2>/dev/null || true)" = 644 ] &&
   cmp -s "$argus_tmp/management.state" "$argus_state_path"; then
   argus_state_existing_exact=1
@@ -883,8 +898,11 @@ if [ "$argus_state_existing_exact" -eq 0 ] && [ "$argus_state_identity" != absen
   sync -f "$argus_state_backup_tmp" || argus_die "could not durably preserve the existing management state"
 fi
 
+argus_state_promoted=0
+argus_target_promoted=0
 argus_restore_pair() {
   argus_restore_failed=0
+  [ ! -L "$argus_install_root" ] || return 1
   if [ -n "$argus_state_tmp" ]; then
     if argus_remove_as_owner "$argus_state_tmp"; then
       argus_state_tmp=
@@ -893,11 +911,23 @@ argus_restore_pair() {
     fi
   fi
   if [ -n "$argus_state_backup_tmp" ]; then
-    if ! argus_restore_from_backup "$argus_state_backup_tmp" "$argus_state_path" '.management.state.restore.XXXXXX'; then
+    if [ "$argus_state_promoted" -eq 0 ] &&
+      ! argus_snapshot_matches "$argus_state_path" "$argus_state_identity"
+    then
+      argus_restore_failed=1
+    elif [ "$argus_state_promoted" -eq 1 ] &&
+      { [ -L "$argus_state_path" ] || ! cmp -s "$argus_tmp/management.state" "$argus_state_path"; }
+    then
+      argus_restore_failed=1
+    elif [ "$argus_state_promoted" -eq 1 ] &&
+      ! argus_restore_from_backup "$argus_state_backup_tmp" "$argus_state_path" '.management.state.restore.XXXXXX'
+    then
       argus_restore_failed=1
     fi
-  elif [ "$argus_state_existing_exact" -eq 0 ]; then
-    argus_remove_as_owner "$argus_state_path" || argus_restore_failed=1
+  elif [ "$argus_state_promoted" -eq 1 ]; then
+    [ ! -L "$argus_state_path" ] &&
+      cmp -s "$argus_tmp/management.state" "$argus_state_path" &&
+      argus_remove_as_owner "$argus_state_path" || argus_restore_failed=1
   fi
   if [ -n "$argus_target_tmp" ]; then
     if argus_remove_as_owner "$argus_target_tmp"; then
@@ -907,47 +937,69 @@ argus_restore_pair() {
     fi
   fi
   if [ -n "$argus_backup_tmp" ]; then
-    if ! argus_restore_from_backup "$argus_backup_tmp" "$argus_target" '.argus.restore.XXXXXX'; then
+    if [ "$argus_target_promoted" -eq 0 ] &&
+      ! argus_snapshot_matches "$argus_target" "$argus_target_identity"
+    then
+      argus_restore_failed=1
+    elif [ "$argus_target_promoted" -eq 1 ] &&
+      { [ -L "$argus_target" ] || ! cmp -s "$argus_tmp/argus" "$argus_target"; }
+    then
+      argus_restore_failed=1
+    elif [ "$argus_target_promoted" -eq 1 ] &&
+      ! argus_restore_from_backup "$argus_backup_tmp" "$argus_target" '.argus.restore.XXXXXX'
+    then
       argus_restore_failed=1
     fi
-  elif [ "$argus_existing_exact" -eq 0 ]; then
-    argus_remove_as_owner "$argus_target" || argus_restore_failed=1
+  elif [ "$argus_target_promoted" -eq 1 ]; then
+    [ ! -L "$argus_target" ] &&
+      cmp -s "$argus_tmp/argus" "$argus_target" &&
+      argus_remove_as_owner "$argus_target" || argus_restore_failed=1
   fi
   sync -f "$argus_install_root" || argus_restore_failed=1
   sync -f "$argus_target_dir" || argus_restore_failed=1
   [ "$argus_restore_failed" -eq 0 ]
 }
 argus_promote_pair() {
-  [ ! -L "$argus_install_root" ] && [ ! -L "$argus_state_path" ] && [ ! -L "$argus_target" ] || return 1
-  if [ "$argus_state_identity" = absent ]; then
-    [ ! -e "$argus_state_path" ] || return 1
-  else
-    [ "$(argus_identity "$argus_state_path" 2>/dev/null || true)" = "$argus_state_identity" ] || return 1
-  fi
-  if [ "$argus_target_identity" = absent ]; then
-    [ ! -e "$argus_target" ] || return 1
-  else
-    [ "$(argus_identity "$argus_target" 2>/dev/null || true)" = "$argus_target_identity" ] || return 1
-  fi
+  argus_promoted_pair_is_safe() {
+    [ ! -L "$argus_install_root" ] && [ ! -L "$argus_state_path" ] && [ ! -L "$argus_target" ] &&
+      cmp -s "$argus_tmp/management.state" "$argus_state_path" &&
+      cmp -s "$argus_tmp/argus" "$argus_target"
+  }
+  [ ! -L "$argus_install_root" ] &&
+    argus_snapshot_matches "$argus_state_path" "$argus_state_identity" &&
+    argus_snapshot_matches "$argus_target" "$argus_target_identity" || return 1
   if [ "$argus_state_existing_exact" -eq 0 ]; then
+    [ ! -L "$argus_install_root" ] &&
+      argus_snapshot_matches "$argus_state_path" "$argus_state_identity" &&
+      argus_snapshot_matches "$argus_target" "$argus_target_identity" || return 1
     argus_move_as_owner "$argus_state_tmp" "$argus_state_path" || return 1
     argus_state_tmp=
+    argus_state_promoted=1
+    [ ! -L "$argus_install_root" ] && [ ! -L "$argus_state_path" ] &&
+      cmp -s "$argus_tmp/management.state" "$argus_state_path" || return 1
     sync -f "$argus_state_path" || return 1
     sync -f "$argus_install_root" || return 1
   fi
   if [ "$argus_existing_exact" -eq 0 ]; then
+    [ ! -L "$argus_install_root" ] && [ ! -L "$argus_state_path" ] &&
+      argus_snapshot_matches "$argus_target" "$argus_target_identity" || return 1
     argus_move_as_owner "$argus_target_tmp" "$argus_target" || return 1
     argus_target_tmp=
+    argus_target_promoted=1
+    argus_promoted_pair_is_safe || return 1
     sync -f "$argus_target" || return 1
     sync -f "$argus_target_dir" || return 1
   fi
+  argus_promoted_pair_is_safe || return 1
   argus_installed_version=$(argus_run_wrapper_version "$argus_target") || return 1
   [ "$argus_installed_version" = "$argus_version" ] || return 1
-  cmp -s "$argus_tmp/management.state" "$argus_state_path" || return 1
+  argus_promoted_pair_is_safe || return 1
   argus_installed_wrapper_sha=$(sha256sum "$argus_target" | awk '{print $1}') || return 1
   [ "$argus_installed_wrapper_sha" = "$argus_wrapper_sha" ] || return 1
+  argus_promoted_pair_is_safe || return 1
   sync -f "$argus_install_root" || return 1
   sync -f "$argus_target_dir" || return 1
+  argus_promoted_pair_is_safe || return 1
 }
 if ! argus_promote_pair; then
   if argus_restore_pair; then

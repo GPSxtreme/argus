@@ -144,6 +144,7 @@ exec /bin/sleep "$@"`,
         ARGUS_MANIFEST_URL: "https://example.com/release/manifest.json",
         ARGUS_EXPECTED_VERSION: "1.2.3",
         ARGUS_EXPECTED_WRAPPER_SHA256: "a".repeat(64),
+        ARGUS_EXPECTED_CLI_IMAGE: `ghcr.io/gpsxtreme/argus-cli@sha256:${"b".repeat(64)}`,
         ARGUS_SMOKE_ARTIFACT_DIR: join(directory, "artifacts"),
       },
     },
@@ -573,6 +574,7 @@ exit 42
           ARGUS_MANIFEST_URL: "https://example.com/release/manifest.json",
           ARGUS_EXPECTED_VERSION: "1.2.3",
           ARGUS_EXPECTED_WRAPPER_SHA256: "a".repeat(64),
+          ARGUS_EXPECTED_CLI_IMAGE: `ghcr.io/gpsxtreme/argus-cli@sha256:${"b".repeat(64)}`,
           ARGUS_SMOKE_ARTIFACT_DIR: artifacts,
           ...fixtureTimingEnvironment(),
         },
@@ -788,6 +790,7 @@ exit 42
             ARGUS_MANIFEST_URL: "https://example.com/release/manifest.json",
             ARGUS_EXPECTED_VERSION: "1.2.3",
             ARGUS_EXPECTED_WRAPPER_SHA256: "a".repeat(64),
+            ARGUS_EXPECTED_CLI_IMAGE: `ghcr.io/gpsxtreme/argus-cli@sha256:${"b".repeat(64)}`,
             ARGUS_SMOKE_ARTIFACT_DIR: artifacts,
             ...fixtureTimingEnvironment(),
           },
@@ -810,6 +813,7 @@ exit 42
       "ARGUS_MANIFEST_URL",
       "ARGUS_EXPECTED_VERSION",
       "ARGUS_EXPECTED_WRAPPER_SHA256",
+      "ARGUS_EXPECTED_CLI_IMAGE",
     ]) {
       expect(smoke).toContain(required);
     }
@@ -830,6 +834,7 @@ exit 42
     expect(smoke).toContain("argus_management_state=/opt/argus/management.state");
     expect(smoke).toContain("argus_management_state_mode");
     expect(smoke).toContain("schema=1");
+    expect(smoke).toContain('"$argus_management_cli_image" = "cli_image=$ARGUS_EXPECTED_CLI_IMAGE"');
     expect(smoke).toContain("management state has unexpected extra content");
     expect(smoke).toContain("second installation changed management state");
     expect(smoke).toContain("argus onboard --from");
@@ -912,6 +917,11 @@ exit 42
     expect(source).toContain("if: failure()");
     expect(source).toContain("installer.log");
     expect(source).toContain("wrapper.sha256");
+    expect(source).toMatch(
+      /cli_image: \$\{\{ steps\.candidate\.outputs\.cli_image \}\}/u,
+    );
+    expect(source).toContain("jq -er '.images.cli.reference' manifest.json");
+    expect(source).toContain('--env "ARGUS_EXPECTED_CLI_IMAGE=$CLI_IMAGE"');
     expect(source).toContain("compose.log");
     expect(source).toContain("doctor.json");
     expect(source).not.toMatch(

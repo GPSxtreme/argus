@@ -15,7 +15,8 @@ for argus_name in \
   ARGUS_INSTALLER_URL \
   ARGUS_MANIFEST_URL \
   ARGUS_EXPECTED_VERSION \
-  ARGUS_EXPECTED_WRAPPER_SHA256
+  ARGUS_EXPECTED_WRAPPER_SHA256 \
+  ARGUS_EXPECTED_CLI_IMAGE
 do
   argus_required "$argus_name"
 done
@@ -47,6 +48,9 @@ printf '%s\n' "$ARGUS_EXPECTED_VERSION" |
 printf '%s\n' "$ARGUS_EXPECTED_WRAPPER_SHA256" |
   grep -Eq '^[a-f0-9]{64}$' ||
   argus_die "ARGUS_EXPECTED_WRAPPER_SHA256 must be lowercase SHA-256"
+printf '%s\n' "$ARGUS_EXPECTED_CLI_IMAGE" |
+  grep -Eq '^[a-z0-9]+([._-][a-z0-9]+)*([/:][a-z0-9]+([._/-][a-z0-9]+)*)*@sha256:[a-f0-9]{64}$' ||
+  argus_die "ARGUS_EXPECTED_CLI_IMAGE must be digest pinned"
 
 for argus_command in curl expect jq openssl sha256sum timeout; do
   command -v "$argus_command" >/dev/null 2>&1 ||
@@ -446,6 +450,8 @@ argus_verify_management_state() {
     cli_image=*@sha256:[a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9]) ;;
     *) argus_die "management state has an invalid CLI image" ;;
   esac
+  [ "$argus_management_cli_image" = "cli_image=$ARGUS_EXPECTED_CLI_IMAGE" ] ||
+    argus_die "management state has the wrong CLI image"
 }
 
 ARGUS_INSTALL_INSPECT=0 sh "$argus_installer" >> "$argus_artifacts/installer.log" 2>&1
