@@ -65,6 +65,7 @@ Doctor creates the X source-smoke operation once and shares its single promise b
 - Disabled FxEmbed remains skipped.
 - When X smoke is healthy, FxEmbed is healthy with a stable code/message stating that the FxEmbed-backed X diagnostic completed.
 - When X smoke is unhealthy or times out, FxEmbed is unhealthy with a stable code/message stating that the FxEmbed-backed diagnostic failed; the original X check retains the precise source-smoke failure and recovery guidance.
+- When X smoke is skipped because no diagnostic target is configured, FxEmbed is also skipped rather than inventing an endpoint result.
 - Doctor never requests the bare FxEmbed base URL.
 
 Sharing one promise is required: Doctor must not create two diagnostic watches, duplicate provider traffic, or perform cleanup twice.
