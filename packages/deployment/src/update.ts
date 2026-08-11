@@ -1,7 +1,10 @@
 import { createHash } from "node:crypto";
 import { copyFile, mkdir, open, readFile, rename, stat } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
-import type { VerifiedReleaseManifest } from "@argus/release";
+import {
+  serializeReleaseManifestCanonical,
+  type VerifiedReleaseManifest,
+} from "@argus/release";
 import { z } from "zod";
 import {
   type DeploymentStateV1,
@@ -238,6 +241,20 @@ const assertVerifiedRelease = (release: VerifiedReleaseManifest): void => {
       "UPDATE_RELEASE_UNVERIFIED",
       "Argus updates require a verified supported release manifest.",
     );
+  }
+};
+
+const sameRelease = (
+  left: VerifiedReleaseManifest,
+  right: VerifiedReleaseManifest,
+): boolean => {
+  if (left.manifestSha256 !== right.manifestSha256) return false;
+  try {
+    return Buffer.from(serializeReleaseManifestCanonical(left.manifest)).equals(
+      Buffer.from(serializeReleaseManifestCanonical(right.manifest)),
+    );
+  } catch {
+    return false;
   }
 };
 
@@ -539,8 +556,7 @@ export const rollbackUpdate = async ({ root, executor, release }: RollbackUpdate
   if (
     !backup ||
     backup.state.schemaVersion < Number(release.manifest.minimumStateSchema) ||
-    release.manifestSha256 !== persisted.rollbackRelease.manifestSha256 ||
-    release.manifest.version !== persisted.rollbackRelease.manifest.version
+    !sameRelease(release, persisted.rollbackRelease)
   ) {
     throw new DeploymentError(
       "UPDATE_ROLLBACK_INCOMPATIBLE",
@@ -555,15 +571,15 @@ export const rollbackUpdate = async ({ root, executor, release }: RollbackUpdate
     await mkdir(dirname(destination), { recursive: true });
     await copyFile(confinedPath(backupRoot, file.relativePath), destination);
   }
-  const environment = environmentFor(backup.state, persisted.rollbackRelease);
+  const environment = environmentFor(backup.state, release);
   await command(root, executor, ["up", "-d"], environment, "Argus rollback restart failed.");
-  const report = await health(root, executor, backup.state, persisted.rollbackRelease);
+  const report = await health(root, executor, backup.state, release);
   if (!report.healthy) {
     throw new DeploymentError("UPDATE_ROLLBACK_VERIFY_FAILED", "Argus rollback health verification failed.", {
       recovery: "Run 'argus doctor --json' and preserve the existing backup for recovery.",
     });
   }
-  await saveDeploymentState(root, stateForRelease(backup.state, persisted.rollbackRelease));
+  await saveDeploymentState(root, stateForRelease(backup.state, release));
   await persist(root, { ...persisted, phase: "rolled_back" });
   return { version: backup.state.argusVersion, phase: "rolled_back", health: report };
 };

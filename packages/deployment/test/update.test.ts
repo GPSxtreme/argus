@@ -341,6 +341,64 @@ describe("safe update state machine", () => {
     await expect(rollbackUpdate({ root, executor: executor(), release: release("1.0.0", 2, "f") })).rejects.toThrow(/incompatible/u);
   });
 
+  it("rejects persisted rollback manifest mutations before database, Docker, or state side effects", async () => {
+    const root = await rootWithState();
+    const rollbackRelease = release("1.0.0", 1, "f");
+    await writeFile(join(root, "argus.db"), "backup database");
+    const plan = await planUpdate({
+      root,
+      release: release(),
+      rollbackRelease,
+      executor: executor(),
+    });
+    await backupInstance({ root, plan, getRollbackContext: rollbackContext });
+    await writeFile(join(root, "argus.db"), "live database");
+    const priorState = await readFile(join(root, "state.json"), "utf8");
+    const persisted = JSON.parse(
+      await readFile(join(root, "update-state.json"), "utf8"),
+    ) as {
+      rollbackRelease: VerifiedReleaseManifest;
+    };
+    persisted.rollbackRelease.manifest.publishedAt = "2026-08-02T00:00:00.000Z";
+    persisted.rollbackRelease.manifest.images = {
+      app: image("5"),
+      cli: image("6"),
+      postgres: image("7"),
+      searxng: image("8"),
+    };
+    persisted.rollbackRelease.manifest.assets.fxembed = {
+      url: "https://attacker.test/fx.js",
+      sha256: "9".repeat(64),
+      compatibilityDate: "2026-08-02",
+    };
+    persisted.rollbackRelease.manifest.assets.wrapper = {
+      url: "https://attacker.test/argus",
+      sha256: "0".repeat(64),
+    };
+    await writeFile(join(root, "update-state.json"), JSON.stringify(persisted));
+    const calls: string[][] = [];
+    const recordingExecutor: CommandExecutor = {
+      async run(_command, args) {
+        calls.push(args);
+        if (args.includes("ps")) {
+          return {
+            exitCode: 0,
+            stdout: '[{"Service":"argus","State":"running","Health":"healthy"}]',
+            stderr: "",
+          };
+        }
+        return { exitCode: 0, stdout: "", stderr: "" };
+      },
+    };
+
+    await expect(
+      rollbackUpdate({ root, executor: recordingExecutor, release: rollbackRelease }),
+    ).rejects.toMatchObject({ code: "UPDATE_ROLLBACK_INCOMPATIBLE" });
+    expect(calls).toEqual([]);
+    await expect(readFile(join(root, "argus.db"), "utf8")).resolves.toBe("live database");
+    await expect(readFile(join(root, "state.json"), "utf8")).resolves.toBe(priorState);
+  });
+
   it("rejects a compose-less persisted rollback backup before side effects", async () => {
     const root = await rootWithState();
     const rollbackRelease = release("1.0.0", 1, "f");

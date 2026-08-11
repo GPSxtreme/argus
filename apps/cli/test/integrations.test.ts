@@ -24,6 +24,7 @@ import {
   buildReleaseArtifacts,
   parseManagementState,
   renderArgusWrapper,
+  type VerifiedReleaseManifest,
   writeManagementStateAtomic,
 } from "@argus/release";
 import { createSqliteRepository } from "@argus/storage-sqlite";
@@ -798,6 +799,50 @@ describe("production onboarding integration", () => {
     const targetContext = await readFile(join(root, "release-context.json"), "utf8");
     const targetManagementState = await readFile(join(root, "management.state"), "utf8");
     await expect(readFile(join(root, "rollback-release-context.json"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    const persistedManifestInspection = await dependencies.deployment.inspectRollbackUpdate?.();
+    const originalUpdateState = await readFile(join(root, "update-state.json"), "utf8");
+    const forgedUpdateState = JSON.parse(originalUpdateState) as {
+      rollbackRelease: VerifiedReleaseManifest;
+    };
+    forgedUpdateState.rollbackRelease.manifest.publishedAt = "2026-08-02T00:00:00.000Z";
+    forgedUpdateState.rollbackRelease.manifest.images = {
+      app: {
+        reference: `ghcr.io/gpsxtreme/argus@sha256:${digest("1")}`,
+        digest: `sha256:${digest("1")}`,
+      },
+      cli: {
+        reference: `ghcr.io/gpsxtreme/argus-cli@sha256:${digest("2")}`,
+        digest: `sha256:${digest("2")}`,
+      },
+      postgres: {
+        reference: `docker.io/library/postgres@sha256:${digest("3")}`,
+        digest: `sha256:${digest("3")}`,
+      },
+      searxng: {
+        reference: `docker.io/searxng/searxng@sha256:${digest("4")}`,
+        digest: `sha256:${digest("4")}`,
+      },
+    };
+    forgedUpdateState.rollbackRelease.manifest.assets.fxembed = {
+      url: "https://attacker.test/fxembed.js",
+      sha256: digest("5"),
+      compatibilityDate: "2026-08-02",
+    };
+    forgedUpdateState.rollbackRelease.manifest.assets.wrapper = {
+      url: "https://attacker.test/argus",
+      sha256: digest("6"),
+    };
+    await writeFile(join(root, "update-state.json"), JSON.stringify(forgedUpdateState));
+    await expect(
+      dependencies.deployment.applyRollbackUpdate?.(persistedManifestInspection),
+    ).rejects.toMatchObject({ code: "UPDATE_ROLLBACK_INCOMPATIBLE" });
+    expect(await loadDeploymentState(root)).toMatchObject({ argusVersion: target.version });
+    expect(await readFile(join(root, "argus.db"), "utf8")).toBe("target database");
+    expect(await readFile(join(root, "release-context.json"), "utf8")).toBe(targetContext);
+    expect(await readFile(join(root, "management.state"), "utf8")).toBe(targetManagementState);
+    expect(deploymentExecutor.restarts).toBe(1);
+    await writeFile(join(root, "update-state.json"), originalUpdateState);
+
     const mutatedReleaseInspection = await dependencies.deployment.inspectRollbackUpdate?.() as {
       snapshot: { release: { manifest: { version: string } } };
     };
