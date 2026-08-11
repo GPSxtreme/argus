@@ -37,6 +37,24 @@ const executable = (path: string, contents: string): void => {
   chmodSync(path, 0o755);
 };
 
+const systemCommand = (command: string): string => {
+  const result = spawnSync("sh", ["-c", 'command -v "$1"', "sh", command], {
+    encoding: "utf8",
+  });
+  const path = result.stdout.trim();
+  if (result.status !== 0 || path === "" || !path.startsWith("/")) {
+    throw new Error(`Could not resolve required system command: ${command}`);
+  }
+  return path;
+};
+
+const dockerlessPath = (bin: string): string => {
+  for (const command of ["stat", "wc", "tr", "cmp", "grep"]) {
+    symlinkSync(systemCommand(command), join(bin, command));
+  }
+  return bin;
+};
+
 const shellQuote = (value: string): string =>
   `'${value.replaceAll("'", `'\\''`)}'`;
 
@@ -128,7 +146,10 @@ const createWrapperFixture = (
     signalRecord,
     environment: {
       ...process.env,
-      PATH: `${bin}:${process.env.PATH ?? ""}`,
+      PATH:
+        options.docker === false
+          ? dockerlessPath(bin)
+          : `${bin}:${process.env.PATH ?? ""}`,
       ARGUS_RECORD: record,
       ARGUS_READY: join(directory, "ready"),
       ARGUS_SIGNAL: signalRecord,
@@ -406,10 +427,7 @@ describe("renderArgusWrapper", () => {
     const missingDocker = createWrapperFixture({ docker: false, state: validState });
     const dockerResult = spawnSync(missingDocker.script, [], {
       encoding: "utf8",
-      env: {
-        ...missingDocker.environment,
-        PATH: `${join(missingDocker.directory, "bin")}:/usr/bin:/bin`,
-      },
+      env: missingDocker.environment,
     });
     expect(dockerResult.status).toBe(69);
     expect(dockerResult.stderr).toMatch(/Install Docker/u);
