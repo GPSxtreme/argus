@@ -1,7 +1,0 @@
-.git
-.worktrees
-node_modules
-**/dist
-coverage
-data
-.env*

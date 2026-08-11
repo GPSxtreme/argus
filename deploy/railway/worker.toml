@@ -1,6 +1,0 @@
-[build]
-dockerfilePath = "deploy/docker/Dockerfile"
-
-[deploy]
-restartPolicyType = "ON_FAILURE"
-startCommand = "ARGUS_ROLE=worker pnpm start"
