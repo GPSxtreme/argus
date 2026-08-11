@@ -5,6 +5,7 @@ import { renderInstaller } from "./installer.js";
 import { verifyReleaseManifestWithIdentity } from "./manifest.js";
 import { stableReleasePublicKey } from "./stable-trust-root.js";
 import { verifyReleaseDirectoryWithPublicKey } from "./verify-release-directory.js";
+import { renderArgusWrapper } from "./wrapper.js";
 
 const stableManifestUrl =
   "https://argus.gpsxtre.me/releases/stable/manifest.json";
@@ -118,6 +119,12 @@ const prepareBundle = async (
   );
   if (checksum(manifest) !== verified.release.manifestSha256) {
     throw new TypeError("Release manifest changed while it was being verified.");
+  }
+  const candidateWrapper = await readFile(join(releaseDirectory, "argus"));
+  if (!candidateWrapper.equals(Buffer.from(renderArgusWrapper()))) {
+    throw new TypeError(
+      "Candidate argus wrapper does not match the stable wrapper.",
+    );
   }
   const installer = Buffer.from(
     renderInstaller({

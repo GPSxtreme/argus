@@ -389,4 +389,3 @@ argus doctor --json
 ```
 
 Expected: the two launcher hashes match, version/state select the signed release, update is healthy, and the existing ingestion data remains intact. Never touch `ssh gpu` or unrelated `atlas-db`.
-

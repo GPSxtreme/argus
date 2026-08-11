@@ -22,6 +22,7 @@ import {
   buildReleaseArtifacts,
   type ReleaseManifestV1,
   type ReleaseImageInput,
+  renderArgusWrapper,
   renderInstaller,
   serializeReleaseManifestCanonical,
   verifyReleaseDirectory,
@@ -65,6 +66,7 @@ interface FixtureRelease {
 
 const createFixtureRelease = async (
   privateKeyPem = fixturePrivateKey,
+  wrapper = Buffer.from(renderArgusWrapper()),
 ): Promise<FixtureRelease> => {
   const root = await mkdtemp(join(tmpdir(), "argus-promote-stable-"));
   temporaryDirectories.push(root);
@@ -74,7 +76,6 @@ const createFixtureRelease = async (
   await mkdir(stable);
 
   const fxembed = Buffer.from("export default { fetch() {} };\n");
-  const wrapper = Buffer.from("#!/bin/sh\nexec true\n");
   const installer = Buffer.from("#!/bin/sh\n# immutable candidate\n");
   const fxembedLicense = Buffer.from("MIT\n");
   const fxembedProvenance = Buffer.from('{"revision":"fixture"}\n');
@@ -246,6 +247,22 @@ describe("promoteStableBundle", () => {
       "manifest.json",
       "manifest.sig",
     ]);
+  });
+
+  it("rejects a signed, hash-bound malformed wrapper before changing stable bundle bytes", async () => {
+    const fixture = await createFixtureRelease(
+      fixturePrivateKey,
+      Buffer.from("#!/bin/sh\nexec true\n"),
+    );
+    const prior = await stableBytes(fixture.stable);
+
+    await expect(
+      promoteStableBundle(fixture.release, fixture.stable, {
+        trustedPublicKeyPem: fixture.publicKeyPem,
+      }),
+    ).rejects.toThrow("Candidate argus wrapper does not match the stable wrapper.");
+
+    await expect(stableBytes(fixture.stable)).resolves.toEqual(prior);
   });
 
   it("promotes a bundle whose installer verifies with the root instead of its distinct candidate asset", async () => {
