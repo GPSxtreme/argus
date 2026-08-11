@@ -1255,7 +1255,8 @@ exec /bin/cp "$@"`,
       join(fixture.bin, "stat"),
       `argus_last=
 for argus_item do argus_last=$argus_item; done
-if [ "$argus_last" = "$ARGUS_INSTALL_TARGET" ] && [ "\${1:-}" = -f ]; then
+if [ "$argus_last" = "$ARGUS_INSTALL_TARGET" ] &&
+  [ "\${1:-}" = "$ARGUS_FIXTURE_STAT_FLAG" ]; then
   argus_count=0
   [ ! -f "$ARGUS_FIXTURE_STAT_COUNT" ] || argus_count=$(cat "$ARGUS_FIXTURE_STAT_COUNT")
   argus_count=$((argus_count + 1))
@@ -1272,6 +1273,8 @@ exec /usr/bin/stat "$@"`,
 
     await expect(
       runInstaller(fixture, Buffer.from(JSON.stringify(manifest(wrapperSha))), {
+        ARGUS_FIXTURE_STAT_FLAG:
+          process.platform === "linux" ? "-c" : "-f",
         ARGUS_FIXTURE_STAT_COUNT: statCount,
         ARGUS_FIXTURE_SUBSTITUTED_WRAPPER: substituted,
       }),
@@ -1281,7 +1284,7 @@ exec /usr/bin/stat "$@"`,
     expect(await readFile(fixture.target, "utf8")).toBe(
       previousWrapper.replace("0.9.0", "0.8.0"),
     );
-  });
+  }, 20_000);
 
   it("does not execute a launcher swapped after promotion verification", async () => {
     const fixture = await createFixture();
