@@ -254,6 +254,13 @@ interface LoadedSignedContext {
   bytes: Uint8Array;
 }
 
+declare const rollbackSnapshotBrand: unique symbol;
+export interface VerifiedRollbackSnapshot {
+  readonly release: VerifiedReleaseManifest;
+  readonly signedContext: Uint8Array;
+  readonly [rollbackSnapshotBrand]: true;
+}
+
 export interface ProductionOnboardingIntegrationOptions {
   root: string;
   executor: CommandExecutor;
@@ -276,11 +283,12 @@ export interface ReleaseCompositionOptions {
 export interface ProductionUpdateIntegration {
   fetchUpdateRelease(): Promise<VerifiedReleaseManifest>;
   fetchCurrentRelease(): Promise<VerifiedReleaseManifest>;
-  fetchRollbackRelease(): Promise<VerifiedReleaseManifest>;
+  fetchRollbackSnapshot(): Promise<VerifiedRollbackSnapshot>;
+  validateRollbackSnapshot(snapshot: unknown): VerifiedRollbackSnapshot;
   getRollbackContext(release: VerifiedReleaseManifest): Promise<Uint8Array>;
   stageCurrentRelease(release: VerifiedReleaseManifest): Promise<void>;
   promoteCurrentRelease(release: VerifiedReleaseManifest): Promise<void>;
-  promoteRollbackRelease(release: VerifiedReleaseManifest): Promise<void>;
+  promoteRollbackSnapshot(snapshot: VerifiedRollbackSnapshot): Promise<void>;
   promoteManagementRelease(release: VerifiedReleaseManifest): Promise<void>;
 }
 
@@ -621,6 +629,7 @@ export const createProductionUpdateIntegration = ({
 }: ProductionUpdateIntegrationOptions): ProductionUpdateIntegration => {
   const releaseFetcher = createReleaseFetcher(root, fetcher);
   const fetchedReleases = new Map<string, FetchedUpdateRelease>();
+  const rollbackSnapshots = new WeakMap<object, { contextSha256: string; releaseIdentity: string }>();
   const sameRelease = (
     left: VerifiedReleaseManifest,
     right: VerifiedReleaseManifest,
@@ -634,6 +643,10 @@ export const createProductionUpdateIntegration = ({
       return false;
     }
   };
+  const releaseIdentity = (release: VerifiedReleaseManifest): string =>
+    `${release.manifestSha256}:${Buffer.from(
+      serializeReleaseManifestCanonical(release.manifest),
+    ).toString("base64")}`;
   const contextFor = (fetched: FetchedUpdateRelease): PersistedReleaseContext => ({
     schemaVersion: 1,
     manifest: Buffer.from(fetched.manifestBytes).toString("base64"),
@@ -743,6 +756,58 @@ export const createProductionUpdateIntegration = ({
   const loadPersistedRollbackContext = async (): Promise<LoadedSignedContext> =>
     verifySignedContext(await loadRollbackReleaseContext(root));
 
+  const issueRollbackSnapshot = (
+    loaded: LoadedSignedContext,
+  ): VerifiedRollbackSnapshot => {
+    const signedContext = Uint8Array.from(loaded.bytes);
+    const snapshot = Object.freeze({
+      release: loaded.release,
+      signedContext,
+    }) as VerifiedRollbackSnapshot;
+    rollbackSnapshots.set(snapshot, {
+      contextSha256: sha256(signedContext),
+      releaseIdentity: releaseIdentity(loaded.release),
+    });
+    return snapshot;
+  };
+
+  const invalidRollbackSnapshot = (): DeploymentError =>
+    new DeploymentError(
+      "UPDATE_ROLLBACK_UNAVAILABLE",
+      "The verified rollback inspection snapshot is missing or invalid.",
+    );
+
+  const validateRollbackSnapshot = (
+    candidate: unknown,
+  ): VerifiedRollbackSnapshot => {
+    if (typeof candidate !== "object" || candidate === null) {
+      throw invalidRollbackSnapshot();
+    }
+    const record = rollbackSnapshots.get(candidate);
+    if (record === undefined) throw invalidRollbackSnapshot();
+    const snapshot = candidate as Partial<VerifiedRollbackSnapshot>;
+    if (!(snapshot.signedContext instanceof Uint8Array)) {
+      throw invalidRollbackSnapshot();
+    }
+    try {
+      if (sha256(snapshot.signedContext) !== record.contextSha256) {
+        throw invalidRollbackSnapshot();
+      }
+      const loaded = verifySignedContext(snapshot.signedContext);
+      if (
+        snapshot.release === undefined ||
+        !sameRelease(loaded.release, snapshot.release) ||
+        releaseIdentity(loaded.release) !== record.releaseIdentity
+      ) {
+        throw invalidRollbackSnapshot();
+      }
+      return issueRollbackSnapshot(loaded);
+    } catch (error) {
+      if (error instanceof DeploymentError) throw error;
+      throw invalidRollbackSnapshot();
+    }
+  };
+
   const stageCurrentRelease = async (release: VerifiedReleaseManifest): Promise<void> => {
     await atomicBytes(
       join(root, pendingReleaseContextFile),
@@ -799,25 +864,11 @@ export const createProductionUpdateIntegration = ({
     return current.bytes;
   };
 
-  const promoteRollbackRelease = async (
-    release: VerifiedReleaseManifest,
+  const promoteRollbackSnapshot = async (
+    snapshot: VerifiedRollbackSnapshot,
   ): Promise<void> => {
-    let rollback: LoadedSignedContext;
-    try {
-      rollback = await loadPersistedRollbackContext();
-    } catch {
-      throw new DeploymentError(
-        "UPDATE_ROLLBACK_UNAVAILABLE",
-        "No persisted signed rollback release is available for promotion.",
-      );
-    }
-    if (!sameRelease(rollback.release, release)) {
-      throw new DeploymentError(
-        "UPDATE_ROLLBACK_UNAVAILABLE",
-        "The persisted signed rollback release does not match the selected rollback release.",
-      );
-    }
-    await atomicBytes(join(root, releaseContextFile), rollback.bytes, 0o644);
+    const rollback = validateRollbackSnapshot(snapshot);
+    await atomicBytes(join(root, releaseContextFile), rollback.signedContext, 0o644);
   };
 
   const promoteManagementRelease = async (
@@ -891,9 +942,9 @@ export const createProductionUpdateIntegration = ({
     }
   };
 
-  const fetchRollback = async (): Promise<VerifiedReleaseManifest> => {
+  const fetchRollbackSnapshot = async (): Promise<VerifiedRollbackSnapshot> => {
     try {
-      return (await loadPersistedRollbackContext()).release;
+      return issueRollbackSnapshot(await loadPersistedRollbackContext());
     } catch {
       throw new DeploymentError("UPDATE_ROLLBACK_UNAVAILABLE", "No persisted signed rollback release is available.");
     }
@@ -902,11 +953,12 @@ export const createProductionUpdateIntegration = ({
   return {
     fetchUpdateRelease: fetchVerified,
     fetchCurrentRelease: fetchCurrent,
-    fetchRollbackRelease: fetchRollback,
+    fetchRollbackSnapshot,
+    validateRollbackSnapshot,
     getRollbackContext,
     stageCurrentRelease,
     promoteCurrentRelease,
-    promoteRollbackRelease,
+    promoteRollbackSnapshot,
     promoteManagementRelease,
   };
 };

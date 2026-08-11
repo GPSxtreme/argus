@@ -216,8 +216,12 @@ const answers: OnboardingAnswersV1 = {
 
 class DeploymentExecutor implements CommandExecutor {
   running = false;
+  restarts = 0;
   async run(_command: string, args: string[]) {
-    if (args.includes("up")) this.running = true;
+    if (args.includes("up")) {
+      this.running = true;
+      this.restarts += 1;
+    }
     if (args.at(-1) === "json") {
       return {
         exitCode: 0,
@@ -595,11 +599,12 @@ describe("production onboarding integration", () => {
       updateIntegration: expect.objectContaining({
         fetchUpdateRelease: expect.any(Function),
         fetchCurrentRelease: expect.any(Function),
-        fetchRollbackRelease: expect.any(Function),
+        fetchRollbackSnapshot: expect.any(Function),
+        validateRollbackSnapshot: expect.any(Function),
         getRollbackContext: expect.any(Function),
         stageCurrentRelease: expect.any(Function),
         promoteCurrentRelease: expect.any(Function),
-        promoteRollbackRelease: expect.any(Function),
+        promoteRollbackSnapshot: expect.any(Function),
         promoteManagementRelease: expect.any(Function),
       }),
     });
@@ -735,7 +740,7 @@ describe("production onboarding integration", () => {
     expect(await readFile(join(root, "release-context.json"), "utf8")).toBe(contextFor(releaseA));
   });
 
-  it("returns the runtime, signed context, and management state to the prior release after an update, no-op retry, and successful CLI rollback", async () => {
+  it("holds verified rollback bytes across confirmation and rejects mutated inspection material before side effects", async () => {
     const root = await mkdtemp(join(tmpdir(), "argus-update-rollback-lifecycle-"));
     const launcherDirectory = await mkdtemp(join(tmpdir(), "argus-immutable-launcher-"));
     const launcher = join(launcherDirectory, "argus");
@@ -750,6 +755,7 @@ describe("production onboarding integration", () => {
     const launcherBytes = Buffer.from(renderArgusWrapper());
     await writeFile(launcher, launcherBytes, { mode: 0o755 });
     await writeFile(join(root, "release-context.json"), currentContext);
+    await writeFile(join(root, "argus.db"), "prior database");
     await writeFile(
       join(root, "management.state"),
       `schema=1\nversion=${current.version}\ncli_image=ghcr.io/gpsxtreme/argus-cli@sha256:${digest("b")}\n`,
@@ -770,9 +776,10 @@ describe("production onboarding integration", () => {
         return new Response(Uint8Array.from(bytes).buffer);
       },
     });
+    const deploymentExecutor = new DeploymentExecutor();
     const dependencies = createNodeCliDependencies({
       root,
-      executor: new DeploymentExecutor(),
+      executor: deploymentExecutor,
       prompt: {
         async confirm() { return true; },
         async select() { return ""; },
@@ -787,14 +794,45 @@ describe("production onboarding integration", () => {
 
     await createProgram(dependencies).parseAsync(["node", "argus", "update", "--yes"]);
     await createProgram(dependencies).parseAsync(["node", "argus", "update", "--yes"]);
+    await writeFile(join(root, "argus.db"), "target database");
+    const targetContext = await readFile(join(root, "release-context.json"), "utf8");
+    const targetManagementState = await readFile(join(root, "management.state"), "utf8");
     await expect(readFile(join(root, "rollback-release-context.json"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
-    await createProgram(dependencies).parseAsync([
-      "node",
-      "argus",
-      "update",
-      "--rollback",
-      "--yes",
-    ]);
+    const mutatedReleaseInspection = await dependencies.deployment.inspectRollbackUpdate?.() as {
+      snapshot: { release: { manifest: { version: string } } };
+    };
+    mutatedReleaseInspection.snapshot.release.manifest.version = "forged";
+    await expect(
+      dependencies.deployment.applyRollbackUpdate?.(mutatedReleaseInspection),
+    ).rejects.toMatchObject({ code: "UPDATE_ROLLBACK_UNAVAILABLE" });
+    expect(await loadDeploymentState(root)).toMatchObject({ argusVersion: target.version });
+    expect(await readFile(join(root, "argus.db"), "utf8")).toBe("target database");
+    expect(await readFile(join(root, "release-context.json"), "utf8")).toBe(targetContext);
+    expect(await readFile(join(root, "management.state"), "utf8")).toBe(targetManagementState);
+    expect(deploymentExecutor.restarts).toBe(1);
+
+    const invalidInspection = await dependencies.deployment.inspectRollbackUpdate?.() as {
+      snapshot: { signedContext: Uint8Array };
+    };
+    invalidInspection.snapshot.signedContext[0] =
+      (invalidInspection.snapshot.signedContext[0] ?? 0) ^ 0xff;
+    await expect(
+      dependencies.deployment.applyRollbackUpdate?.(invalidInspection),
+    ).rejects.toMatchObject({ code: "UPDATE_ROLLBACK_UNAVAILABLE" });
+    expect(await loadDeploymentState(root)).toMatchObject({ argusVersion: target.version });
+    expect(await readFile(join(root, "argus.db"), "utf8")).toBe("target database");
+    expect(await readFile(join(root, "release-context.json"), "utf8")).toBe(targetContext);
+    expect(await readFile(join(root, "management.state"), "utf8")).toBe(targetManagementState);
+    expect(deploymentExecutor.restarts).toBe(1);
+
+    const heldInspection = await dependencies.deployment.inspectRollbackUpdate?.();
+    const persistedUpdate = JSON.parse(
+      await readFile(join(root, "update-state.json"), "utf8"),
+    ) as { backup: { signedContext: { relativePath: string } } };
+    await unlink(join(root, persistedUpdate.backup.signedContext.relativePath));
+    await expect(
+      dependencies.deployment.applyRollbackUpdate?.(heldInspection),
+    ).resolves.toMatchObject({ phase: "rolled_back" });
 
     expect(await loadDeploymentState(root)).toMatchObject({
       argusVersion: current.version,
@@ -807,6 +845,8 @@ describe("production onboarding integration", () => {
       version: current.version,
       cliImage: `ghcr.io/gpsxtreme/argus-cli@sha256:${digest("b")}`,
     });
+    expect(await readFile(join(root, "argus.db"), "utf8")).toBe("prior database");
+    expect(deploymentExecutor.restarts).toBe(2);
     expect(await readFile(launcher)).toStrictEqual(launcherBytes);
   });
 
@@ -881,8 +921,8 @@ describe("production onboarding integration", () => {
     ).rejects.toMatchObject({ exitCode: 1 });
 
     expect(await readFile(join(root, "update-state.json"), "utf8")).toBe(durableUpdateState);
-    await expect(signed.fetchRollbackRelease()).resolves.toMatchObject({
-      manifest: { version: releaseA.version },
+    await expect(signed.fetchRollbackSnapshot()).resolves.toMatchObject({
+      release: { manifest: { version: releaseA.version } },
     });
   });
 
@@ -970,8 +1010,8 @@ describe("production onboarding integration", () => {
       version: target.version,
       cliImage: `ghcr.io/gpsxtreme/argus-cli@sha256:${digest("f")}`,
     });
-    await expect(updateIntegration.fetchRollbackRelease()).resolves.toMatchObject({
-      manifest: { version: current.version },
+    await expect(updateIntegration.fetchRollbackSnapshot()).resolves.toMatchObject({
+      release: { manifest: { version: current.version } },
     });
   });
 
@@ -1007,6 +1047,7 @@ describe("production onboarding integration", () => {
     });
     const targetRelease = await signed.fetchUpdateRelease();
     const currentRelease = await signed.fetchCurrentRelease();
+    const rollbackSnapshot = {} as Awaited<ReturnType<typeof signed.fetchRollbackSnapshot>>;
     const events: string[] = [];
     const dependencies = createNodeCliDependencies({
       root,
@@ -1033,14 +1074,15 @@ describe("production onboarding integration", () => {
       updateIntegration: {
         async fetchUpdateRelease() { return targetRelease; },
         async fetchCurrentRelease() { return currentRelease; },
-        async fetchRollbackRelease() { return currentRelease; },
+        async fetchRollbackSnapshot() { return rollbackSnapshot; },
+        validateRollbackSnapshot() { return rollbackSnapshot; },
         async getRollbackContext() {
           events.push("get-rollback-context");
           return Buffer.from(context);
         },
         async stageCurrentRelease() { events.push("stage-release-context"); },
         async promoteCurrentRelease() { events.push("promote-release-context"); },
-        async promoteRollbackRelease() { events.push("promote-rollback-context"); },
+        async promoteRollbackSnapshot() { events.push("promote-rollback-context"); },
         async promoteManagementRelease() { events.push("promote-management-state"); },
       },
       version: "test",
@@ -1146,7 +1188,8 @@ describe("production onboarding integration", () => {
     const updateIntegration = {
       fetchUpdateRelease: () => signed.fetchUpdateRelease(),
       fetchCurrentRelease: () => signed.fetchCurrentRelease(),
-      fetchRollbackRelease: () => signed.fetchRollbackRelease(),
+      fetchRollbackSnapshot: () => signed.fetchRollbackSnapshot(),
+      validateRollbackSnapshot: (snapshot: unknown) => signed.validateRollbackSnapshot(snapshot),
       getRollbackContext: (release: Awaited<ReturnType<typeof signed.fetchCurrentRelease>>) => signed.getRollbackContext(release),
       stageCurrentRelease: (release: Awaited<ReturnType<typeof signed.fetchUpdateRelease>>) => signed.stageCurrentRelease(release),
       async promoteCurrentRelease(release: Awaited<ReturnType<typeof signed.fetchUpdateRelease>>) {
@@ -1156,8 +1199,10 @@ describe("production onboarding integration", () => {
           "Signed release context promotion failed after completion.",
         );
       },
-      async promoteRollbackRelease(release: Awaited<ReturnType<typeof signed.fetchCurrentRelease>>) {
-        await signed.promoteRollbackRelease(release);
+      async promoteRollbackSnapshot(
+        snapshot: Parameters<typeof signed.promoteRollbackSnapshot>[0],
+      ) {
+        await signed.promoteRollbackSnapshot(snapshot);
       },
       async promoteManagementRelease(release: Awaited<ReturnType<typeof signed.fetchUpdateRelease>>) {
         managementPromotionCalled = true;

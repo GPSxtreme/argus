@@ -39,7 +39,6 @@ import {
   stopDeployment,
   type UpdatePlan,
 } from "@argus/deployment";
-import type { VerifiedReleaseManifest } from "@argus/release";
 import { targetsFromConfig } from "@argus/scheduler";
 import { Command, CommanderError } from "commander";
 import { parse } from "yaml";
@@ -1371,17 +1370,17 @@ const createDeploymentAdapter = (
       if (updateIntegration === undefined) {
         throw new DeploymentError("RELEASE_MANIFEST_REQUIRED", "A verified signed rollback release is required.");
       }
-      return { release: await updateIntegration.fetchRollbackRelease() };
+      return { snapshot: await updateIntegration.fetchRollbackSnapshot() };
     },
     async applyRollbackUpdate(inspection) {
       if (updateIntegration === undefined) {
         throw new DeploymentError("RELEASE_MANIFEST_REQUIRED", "A verified signed rollback release is required.");
       }
-      const rollback = inspection as { release?: unknown };
-      if (!rollback.release) {
-        throw new DeploymentError("UPDATE_ROLLBACK_UNAVAILABLE", "No verified rollback release was selected.");
-      }
-      const release = rollback.release as VerifiedReleaseManifest;
+      const rollback = inspection as { snapshot?: unknown };
+      const snapshot = updateIntegration.validateRollbackSnapshot(
+        rollback.snapshot,
+      );
+      const release = snapshot.release;
       const applied = await rollbackUpdate({ root, executor, release });
       if (!applied.health.healthy) {
         throw new DeploymentError(
@@ -1390,7 +1389,7 @@ const createDeploymentAdapter = (
           { recovery: "Run 'argus doctor --json' and preserve the existing backup for recovery." },
         );
       }
-      await updateIntegration.promoteRollbackRelease(release);
+      await updateIntegration.promoteRollbackSnapshot(snapshot);
       await updateIntegration.promoteManagementRelease(release);
       return applied;
     },
