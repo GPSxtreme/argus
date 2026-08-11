@@ -445,9 +445,10 @@ describe("GitHub workflow toolchain", () => {
       'argus onboard --from /opt/argus/.vps-smoke-onboard.yaml --yes --json',
     );
     expect(harness).toContain('argus doctor --json');
+    expect(harness).toContain('.data.healthy == true');
+    expect(harness).not.toContain('--network argus_argus-private');
     expect(harness).toContain('argus status --json');
     expect(harness).toContain('changes == []');
-    expect(harness).toContain('format=json');
     expect(harness).toContain('controlled-web-page');
     expect(harness).toContain('8788');
     expect(fixture.deployment?.root).toBe('/opt/argus');

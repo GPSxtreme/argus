@@ -1,7 +1,12 @@
 import type { DiagnosticReport } from "./contracts.js";
 import type { CommandExecutor } from "./executor.js";
 import { loadPersistedComposeEnvironment } from "./reconciler.js";
-import { repairSearxng, type SearxngFetcher } from "./searxng.js";
+import {
+  checkManagedSearxngHealth,
+  checkSearxngHealth,
+  repairSearxng,
+  type SearxngFetcher,
+} from "./searxng.js";
 
 type Component =
   | "docker"
@@ -244,7 +249,6 @@ export interface DoctorContext {
   sources: Partial<Record<Source, boolean>>;
   diagnosticTargetIds?: Partial<Record<Source, string>>;
   searxngEndpoint?: string;
-  fxembedEndpoint?: string;
   fetcher?: SearxngFetcher;
   checkTimeoutMs?: number;
   aggregateTimeoutMs?: number;
@@ -492,68 +496,50 @@ const smokeCheck = async (
   );
 };
 
-const endpointCheck = async (
-  component: "searxng" | "fxembed",
-  endpoint: string | undefined,
+const searxngCheck = async (
   context: DoctorContext,
+  requestTimeoutMs: number,
   signal: AbortSignal,
 ): Promise<Check> => {
-  if (context.managed[component] === "disabled") {
+  if (context.managed.searxng === "disabled") {
     return skipped(
-      component,
-      `${component.toUpperCase()}_DISABLED`,
-      `${component} is disabled.`,
+      "searxng",
+      "SEARXNG_DISABLED",
+      "searxng is disabled.",
     );
   }
-  if (!endpoint) {
+  if (!context.searxngEndpoint) {
     return unhealthy(
-      component,
-      `${component.toUpperCase()}_ENDPOINT_UNAVAILABLE`,
-      `${component} endpoint is unavailable.`,
+      "searxng",
+      "SEARXNG_ENDPOINT_UNAVAILABLE",
+      "searxng endpoint is unavailable.",
     );
   }
-  try {
-    const url =
-      component === "searxng"
-        ? new URL(
-            `/search?q=argus&format=json`,
-            endpoint,
-          )
-        : new URL(endpoint);
-    const response = await (context.fetcher ?? fetch)(url, {
-      ...(component === "searxng"
-        ? { headers: { accept: "application/json" } }
-        : {}),
-      signal,
-    });
-    if (component === "searxng") {
-      const body = (await response.json()) as { results?: unknown };
-      return response.ok && Array.isArray(body.results)
-        ? healthy(
-            component,
-            "SEARXNG_HEALTHY",
-            "SearXNG is serving JSON search results.",
-          )
-        : unhealthy(
-            component,
-            "SEARXNG_HEALTHCHECK_FAILED",
-            "SearXNG did not return a valid JSON search response.",
-          );
-    }
-    return response.ok
-      ? healthy(component, "FXEMBED_HEALTHY", "FxEmbed endpoint is reachable.")
-      : unhealthy(
-          component,
-          "FXEMBED_HEALTHCHECK_FAILED",
-          "FxEmbed endpoint did not accept a health request.",
+  const health =
+    context.managed.searxng === "managed"
+      ? await checkManagedSearxngHealth({
+          root: context.root,
+          executor: context.executor,
+          endpoint: context.searxngEndpoint,
+          requestTimeoutMs,
+          signal,
+        })
+      : await checkSearxngHealth(
+          context.searxngEndpoint,
+          context.fetcher ?? fetch,
+          { requestTimeoutMs, signal },
         );
-  } catch {
-    return unhealthy(
-      component,
-      `${component.toUpperCase()}_HEALTHCHECK_FAILED`,
-      `${component === "searxng" ? "SearXNG did not return a valid JSON search response." : "FxEmbed endpoint did not accept a health request."}`,
-    );
-  }
+  return health.healthy
+    ? healthy(
+        "searxng",
+        "SEARXNG_HEALTHY",
+        "SearXNG is serving JSON search results.",
+      )
+    : unhealthy(
+        "searxng",
+        "SEARXNG_HEALTHCHECK_FAILED",
+        "SearXNG did not return a valid JSON search response.",
+      );
 };
 
 /** Runs independent, abortable, secret-safe service and source diagnostics. */
@@ -568,6 +554,11 @@ export const runDoctor = async (
   );
   const aggregate = bounded(context.aggregateTimeoutMs, 15_000, 60_000);
   const aggregateController = new AbortController();
+  let xSmokePromise: Promise<Check> | undefined;
+  const xSmoke = (signal: AbortSignal): Promise<Check> => {
+    xSmokePromise ??= smokeCheck("x", context, signal);
+    return xSmokePromise;
+  };
 
   const checks: Array<
     [
@@ -732,13 +723,36 @@ export const runDoctor = async (
     ],
     [
       "searxng",
-      (signal) =>
-        endpointCheck("searxng", context.searxngEndpoint, context, signal),
+      (signal) => searxngCheck(context, perCheck, signal),
     ],
     [
       "fxembed",
-      (signal) =>
-        endpointCheck("fxembed", context.fxembedEndpoint, context, signal),
+      async (signal) => {
+        if (context.managed.fxembed === "disabled") {
+          return skipped("fxembed", "FXEMBED_DISABLED", "fxembed is disabled.");
+        }
+        const x = await xSmoke(signal);
+        if (x.status === "healthy") {
+          return healthy(
+            "fxembed",
+            "FXEMBED_HEALTHY",
+            "FxEmbed is covered by the X source diagnostic.",
+          );
+        }
+        if (x.status === "skipped") {
+          return skipped(
+            "fxembed",
+            "FXEMBED_DIAGNOSTIC_SKIPPED",
+            "FxEmbed diagnostic was skipped because X source diagnostics are skipped.",
+          );
+        }
+        return unhealthy(
+          "fxembed",
+          "FXEMBED_X_SMOKE_FAILED",
+          "FxEmbed could not be diagnosed because the X source smoke check failed.",
+        );
+      },
+      true,
     ],
     [
       "telegram",
@@ -746,7 +760,7 @@ export const runDoctor = async (
       true,
     ],
     ["web", (signal) => smokeCheck("web", context, signal), true],
-    ["x", (signal) => smokeCheck("x", context, signal), true],
+    ["x", (signal) => xSmoke(signal), true],
   ];
 
   const results = new Map<Component, Check>();
@@ -907,7 +921,6 @@ export const repairService = async (
       ...(context.searxngEndpoint === undefined
         ? {}
         : { endpoint: context.searxngEndpoint }),
-      ...(context.fetcher === undefined ? {} : { fetcher: context.fetcher }),
       ...(context.checkTimeoutMs === undefined
         ? {}
         : { requestTimeoutMs: context.checkTimeoutMs }),

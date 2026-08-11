@@ -37,13 +37,21 @@ export type SearxngFetcher = (
 
 export interface SearxngHealthOptions {
   requestTimeoutMs?: number;
+  signal?: AbortSignal;
+}
+
+export interface ManagedSearxngHealthContext {
+  root: string;
+  executor: CommandExecutor;
+  endpoint?: string;
+  requestTimeoutMs?: number;
+  signal?: AbortSignal;
 }
 
 export interface SearxngRepairContext {
   root: string;
   executor: CommandExecutor;
   endpoint?: string;
-  fetcher?: SearxngFetcher;
   sleep?: (milliseconds: number) => Promise<void>;
   attempts?: number;
   requestTimeoutMs?: number;
@@ -57,11 +65,21 @@ export const renderSearxngSettings = (): string => managedSettings;
 export const checkSearxngHealth = async (
   endpoint: string,
   fetcher: SearxngFetcher = fetch,
-  { requestTimeoutMs = 5_000 }: SearxngHealthOptions = {},
+  { requestTimeoutMs = 5_000, signal }: SearxngHealthOptions = {},
 ): Promise<SearxngHealth> => {
   const controller = new AbortController();
   const timeout = Math.min(Math.max(1, requestTimeoutMs), 5_000);
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let rejectParentAbort: ((reason?: unknown) => void) | undefined;
+  const parentAborted = new Promise<never>((_resolve, reject) => {
+    rejectParentAbort = reject;
+  });
+  const parentAbort = () => {
+    controller.abort(signal?.reason);
+    rejectParentAbort?.(signal?.reason);
+  };
+  if (signal?.aborted) parentAbort();
+  else signal?.addEventListener("abort", parentAbort, { once: true });
   try {
     const response = await Promise.race([
       (async () => {
@@ -77,6 +95,7 @@ export const checkSearxngHealth = async (
           reject(new Error("SearXNG health request timed out."));
         }, timeout);
       }),
+      parentAborted,
     ]);
     if (!response.response.ok) return unhealthyHealth();
     const { body } = response;
@@ -86,6 +105,71 @@ export const checkSearxngHealth = async (
     return unhealthyHealth();
   } finally {
     if (timer !== undefined) clearTimeout(timer);
+    signal?.removeEventListener("abort", parentAbort);
+  }
+};
+
+const managedProbe = `const endpoint = new URL("/search", process.argv[1]);
+endpoint.searchParams.set("q", "argus");
+endpoint.searchParams.set("format", "json");
+const response = await fetch(endpoint, { headers: { accept: "application/json" } });
+if (!response.ok) process.exit(1);
+const body = await response.json();
+if (!Array.isArray(body.results)) process.exit(1);`;
+
+/** Checks managed SearXNG from the Argus runtime network. */
+export const checkManagedSearxngHealth = async (
+  context: ManagedSearxngHealthContext,
+): Promise<SearxngHealth> => {
+  const unhealthy = { healthy: false, resultCount: 0 };
+  try {
+    if (context.signal?.aborted) return unhealthy;
+    const environment = await loadPersistedComposeEnvironment(context);
+    const timeoutMs = boundedComposeTimeout(context.requestTimeoutMs ?? 5_000);
+    const configured = await context.executor.run(
+      "docker",
+      ["compose", "-p", "argus", "config"],
+      {
+        cwd: context.root,
+        env: environment,
+        timeoutMs,
+        ...(context.signal === undefined ? {} : { signal: context.signal }),
+      },
+    );
+    if (
+      context.signal?.aborted ||
+      configured.exitCode !== 0 ||
+      configured.timedOut
+    ) {
+      return unhealthy;
+    }
+    const probe = await context.executor.run(
+      "docker",
+      [
+        "compose",
+        "-p",
+        "argus",
+        "exec",
+        "-T",
+        "argus",
+        "node",
+        "--input-type=module",
+        "-e",
+        managedProbe,
+        context.endpoint ?? "http://searxng:8080",
+      ],
+      {
+        cwd: context.root,
+        env: environment,
+        timeoutMs,
+        ...(context.signal === undefined ? {} : { signal: context.signal }),
+      },
+    );
+    return probe.exitCode === 0 && !probe.timedOut
+      ? { healthy: true, resultCount: 0 }
+      : unhealthy;
+  } catch {
+    return unhealthy;
   }
 };
 
@@ -156,7 +240,6 @@ export const repairSearxng = async ({
   root,
   executor,
   endpoint = "http://searxng:8080",
-  fetcher = fetch,
   sleep = wait,
   attempts = 3,
   requestTimeoutMs,
@@ -205,7 +288,7 @@ export const repairSearxng = async ({
       return diagnostic(false, "SEARXNG_RECREATE_TIMEOUT", "Managed SearXNG recreation timed out.");
     }
     if (recreated.exitCode === 0) {
-      return await waitForSearxng(endpoint, fetcher, sleep, attempts, requestTimeoutMs);
+      return await waitForSearxng(root, executor, endpoint, sleep, attempts, requestTimeoutMs);
     }
   } catch {
     // Command output and errors may contain credentials; report only the stable diagnostic below.
@@ -214,8 +297,9 @@ export const repairSearxng = async ({
 };
 
 const waitForSearxng = async (
+  root: string,
+  executor: CommandExecutor,
   endpoint: string,
-  fetcher: SearxngFetcher,
   sleep: (milliseconds: number) => Promise<void>,
   attempts: number,
   requestTimeoutMs: number | undefined,
@@ -225,11 +309,12 @@ const waitForSearxng = async (
     if (attempt > 0) await sleep(100 * 2 ** (attempt - 1));
     if (
       (
-        await checkSearxngHealth(
+        await checkManagedSearxngHealth({
+          root,
+          executor,
           endpoint,
-          fetcher,
-          requestTimeoutMs === undefined ? {} : { requestTimeoutMs },
-        )
+          ...(requestTimeoutMs === undefined ? {} : { requestTimeoutMs }),
+        })
       ).healthy
     ) {
       return diagnostic(true, "SEARXNG_HEALTHY", "Managed SearXNG is serving JSON search results.");

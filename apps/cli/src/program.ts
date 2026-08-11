@@ -1155,7 +1155,6 @@ const createDeploymentAdapter = (
       }),
     );
     const searxngEndpoint = config.sources.web.searchEndpoint;
-    const fxembedEndpoint = config.sources.x.endpoint;
     const token = config.api.token;
     if (!token) {
       throw new DeploymentError(
@@ -1196,7 +1195,6 @@ const createDeploymentAdapter = (
       },
       diagnosticTargetIds,
       ...(searxngEndpoint === undefined ? {} : { searxngEndpoint }),
-      ...(fxembedEndpoint === undefined ? {} : { fxembedEndpoint }),
     };
   };
   const lifecycle = {
