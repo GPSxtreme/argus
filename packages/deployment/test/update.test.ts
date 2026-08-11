@@ -7,6 +7,7 @@ import { type CommandExecutor, saveDeploymentState } from "../src/index.js";
 import {
   applyUpdate,
   backupInstance,
+  finalizeUpdate,
   loadRollbackReleaseContext,
   planUpdate,
   rollbackUpdate,
@@ -129,11 +130,87 @@ describe("safe update state machine", () => {
     expect(await readFile(join(backup.path, "argus.db"), "utf8")).toBe("db");
     expect(await readFile(join(backup.path, "argus.db-wal"), "utf8")).toBe("wal");
     expect(await readFile(join(backup.path, "argus.db-shm"), "utf8")).toBe("shm");
-    await expect(applyUpdate({ root, plan, executor: executor(), getRollbackContext: rollbackContext })).resolves.toMatchObject({
+    const applied = await applyUpdate({ root, plan, executor: executor(), getRollbackContext: rollbackContext });
+    await expect(finalizeUpdate({ root, plan, applied })).resolves.toMatchObject({
       version: "2.0.0",
       health: { healthy: true },
       phase: "verified",
     });
+  });
+
+  it("leaves a healthy update at the restart phase until its durable promotions finalize", async () => {
+    const root = await rootWithState();
+    const plan = await planUpdate({
+      root,
+      release: release(),
+      rollbackRelease: release("1.0.0", 1, "f"),
+      executor: executor(),
+    });
+
+    const applied = await applyUpdate({ root, plan, executor: executor(), getRollbackContext: rollbackContext });
+
+    await expect(readFile(join(root, "update-state.json"), "utf8")).resolves.toContain(
+      '"phase": "restarted"',
+    );
+    await finalizeUpdate({ root, plan, applied });
+    await expect(readFile(join(root, "update-state.json"), "utf8")).resolves.toContain(
+      '"phase": "verified"',
+    );
+  });
+
+  it("refuses finalization when the durable transaction or deployed target no longer matches the plan", async () => {
+    const root = await rootWithState();
+    const plan = await planUpdate({
+      root,
+      release: release(),
+      rollbackRelease: release("1.0.0", 1, "f"),
+      executor: executor(),
+    });
+    const applied = await applyUpdate({ root, plan, executor: executor(), getRollbackContext: rollbackContext });
+    const restartState = await readFile(join(root, "update-state.json"), "utf8");
+    const persisted = JSON.parse(restartState) as {
+      rollbackRelease: VerifiedReleaseManifest;
+      backup: { state: { argusVersion: string } };
+    };
+
+    persisted.rollbackRelease.manifest.version = "forged";
+    await writeFile(join(root, "update-state.json"), JSON.stringify(persisted));
+    await expect(finalizeUpdate({ root, plan, applied })).rejects.toMatchObject({
+      code: "UPDATE_FINALIZATION_UNAVAILABLE",
+    });
+
+    await writeFile(join(root, "update-state.json"), restartState);
+    await saveDeploymentState(root, plan.previousState);
+    await expect(finalizeUpdate({ root, plan, applied })).rejects.toMatchObject({
+      code: "UPDATE_FINALIZATION_UNAVAILABLE",
+    });
+    await expect(readFile(join(root, "update-state.json"), "utf8")).resolves.toBe(restartState);
+  });
+
+  it("keeps a completed rollback transaction terminal during a later healthy no-op", async () => {
+    const root = await rootWithState();
+    const rollbackRelease = release("1.0.0", 1, "f");
+    const failedPlan = await planUpdate({
+      root,
+      release: release(),
+      rollbackRelease,
+      executor: executor(),
+    });
+    await backupInstance({ root, plan: failedPlan, getRollbackContext: rollbackContext });
+    await rollbackUpdate({ root, executor: executor(), release: rollbackRelease });
+    const recoveryPlan = await planUpdate({
+      root,
+      release: rollbackRelease,
+      rollbackRelease,
+      executor: executor(),
+    });
+    const applied = await applyUpdate({ root, plan: recoveryPlan, executor: executor() });
+
+    await finalizeUpdate({ root, plan: recoveryPlan, applied });
+
+    await expect(readFile(join(root, "update-state.json"), "utf8")).resolves.toContain(
+      '"phase": "rolled_back"',
+    );
   });
 
   it("commits the signed rollback context with the durable backup before image pulls", async () => {
@@ -280,7 +357,8 @@ describe("safe update state machine", () => {
       },
     };
 
-    await expect(applyUpdate({ root, plan, executor: composeV239Executor, getRollbackContext: rollbackContext })).resolves.toMatchObject({
+    const applied = await applyUpdate({ root, plan, executor: composeV239Executor, getRollbackContext: rollbackContext });
+    await expect(finalizeUpdate({ root, plan, applied })).resolves.toMatchObject({
       version: "2.0.0",
       phase: "verified",
       health: {

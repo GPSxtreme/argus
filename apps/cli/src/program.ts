@@ -23,6 +23,7 @@ import {
   type CommandExecutor,
   createArgusDoctorApi,
   DeploymentError,
+  finalizeUpdate,
   type DiagnosticReport,
   getDeploymentStatus,
   inspectHost,
@@ -1316,11 +1317,19 @@ const createDeploymentAdapter = (
           { recovery: "Install Argus through the signed release channel, then retry the update." },
         );
       }
-      const [release, rollbackRelease] = await Promise.all([
+      const [release, currentReleaseInspection] = await Promise.all([
         updateIntegration.fetchUpdateRelease(),
-        updateIntegration.fetchCurrentRelease(),
+        updateIntegration.inspectCurrentRelease(),
       ]);
-      return planUpdate({ root, release, rollbackRelease, executor });
+      return {
+        ...(await planUpdate({
+          root,
+          release,
+          rollbackRelease: currentReleaseInspection.release,
+          executor,
+        })),
+        currentReleaseInspection,
+      };
     },
     async applyUpdate(inspection) {
       if (updateIntegration === undefined) {
@@ -1329,7 +1338,23 @@ const createDeploymentAdapter = (
           "A verified release manifest is required before Argus can apply an update.",
         );
       }
-      const plan = inspection as UpdatePlan;
+      const plan = inspection as UpdatePlan & { currentReleaseInspection?: unknown };
+      const currentReleaseInspection = updateIntegration.validateCurrentReleaseInspection(
+        plan.currentReleaseInspection,
+        plan.rollbackRelease,
+      );
+      if (!plan.noop && currentReleaseInspection.recovery !== "none") {
+        const recoveryPlan = await planUpdate({
+          root,
+          release: currentReleaseInspection.release,
+          rollbackRelease: currentReleaseInspection.release,
+          executor,
+        });
+        const recovered = await applyUpdate({ root, plan: recoveryPlan, executor });
+        await updateIntegration.reconcileCurrentRelease(currentReleaseInspection);
+        await updateIntegration.promoteManagementRelease(currentReleaseInspection.release);
+        await finalizeUpdate({ root, plan: recoveryPlan, applied: recovered });
+      }
       if (!plan.noop) {
         await updateIntegration.stageCurrentRelease(plan.release);
       }
@@ -1347,13 +1372,15 @@ const createDeploymentAdapter = (
           { recovery: "Run 'argus doctor --json' before retrying the update." },
         );
       }
-      if (!plan.noop) {
+      if (plan.noop) {
+        await updateIntegration.reconcileCurrentRelease(currentReleaseInspection);
+      } else {
         await updateIntegration.promoteCurrentRelease(plan.release);
       }
       await updateIntegration.promoteManagementRelease(
-        plan.noop ? plan.rollbackRelease : plan.release,
+        plan.noop ? currentReleaseInspection.release : plan.release,
       );
-      return applied;
+      return finalizeUpdate({ root, plan, applied });
     },
     async verifyUpdate(applied) {
       const result = applied as { health?: { healthy?: unknown } } | undefined;

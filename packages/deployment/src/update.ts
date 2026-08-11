@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { copyFile, mkdir, open, readFile, rename, stat } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import {
   serializeReleaseManifestCanonical,
   type VerifiedReleaseManifest,
@@ -45,6 +46,11 @@ export interface UpdateResult {
   health: UpdateHealthReport;
 }
 
+export interface AppliedUpdate {
+  version: string;
+  health: UpdateHealthReport;
+}
+
 export interface InstanceBackup {
   path: string;
   state: DeploymentStateV1;
@@ -76,6 +82,12 @@ export interface ApplyUpdateInput {
   plan: UpdatePlan;
   executor: CommandExecutor;
   getRollbackContext?: () => Promise<Uint8Array>;
+}
+
+export interface FinalizeUpdateInput {
+  root: string;
+  plan: UpdatePlan;
+  applied: AppliedUpdate;
 }
 
 export interface BackupInstanceInput {
@@ -495,7 +507,7 @@ export const loadRollbackReleaseContext = async (root: string): Promise<Uint8Arr
   }
 };
 
-export const applyUpdate = async ({ root, plan, executor, getRollbackContext }: ApplyUpdateInput): Promise<UpdateResult> => {
+export const applyUpdate = async ({ root, plan, executor, getRollbackContext }: ApplyUpdateInput): Promise<AppliedUpdate> => {
   assertVerifiedRelease(plan.release);
   assertVerifiedRelease(plan.rollbackRelease);
   assertCompatible(plan.previousState, plan.release);
@@ -507,7 +519,7 @@ export const applyUpdate = async ({ root, plan, executor, getRollbackContext }: 
         recovery: "Run 'argus doctor --json' before retrying the update.",
       });
     }
-    return { version: plan.currentVersion, phase: "verified", health: report };
+    return { version: plan.currentVersion, health: report };
   }
   const backup = await backupInstance({
     root,
@@ -544,9 +556,78 @@ export const applyUpdate = async ({ root, plan, executor, getRollbackContext }: 
     ...stateForRelease(plan.previousState, plan.release),
     updatedAt: new Date().toISOString(),
   });
-  persisted = { ...persisted, phase: "verified" };
-  await persist(root, persisted);
-  return { version: plan.targetVersion, phase: "verified", health: report };
+  return { version: plan.targetVersion, health: report };
+};
+
+const finalizationUnavailable = (): DeploymentError =>
+  new DeploymentError(
+    "UPDATE_FINALIZATION_UNAVAILABLE",
+    "Argus cannot finalize an update whose durable transaction no longer matches the verified plan.",
+    { recovery: "Inspect the persisted update state before retrying the update." },
+  );
+
+const matchingFinalizationTransaction = (
+  persisted: PersistedUpdate,
+  plan: UpdatePlan,
+): boolean =>
+  persisted.phase === "restarted" &&
+  persisted.plan.currentVersion === plan.currentVersion &&
+  persisted.plan.targetVersion === plan.targetVersion &&
+  sameRelease(persisted.release, plan.release) &&
+  sameRelease(persisted.rollbackRelease, plan.rollbackRelease) &&
+  isDeepStrictEqual(persisted.previousState, plan.previousState) &&
+  isDeepStrictEqual(persisted.backup.state, plan.previousState);
+
+const matchingRecoveredFinalizationTransaction = (
+  persisted: PersistedUpdate,
+  plan: UpdatePlan,
+): boolean =>
+  persisted.phase === "restarted" &&
+  persisted.plan.targetVersion === plan.targetVersion &&
+  sameRelease(persisted.release, plan.release) &&
+  isDeepStrictEqual(persisted.previousState, persisted.backup.state);
+
+export const finalizeUpdate = async ({ root, plan, applied }: FinalizeUpdateInput): Promise<UpdateResult> => {
+  if (!applied.health.healthy) {
+    throw new DeploymentError(
+      "UPDATE_HEALTHCHECK_FAILED",
+      "Argus update health verification failed.",
+      { recovery: "Run 'argus doctor --json' before retrying the update." },
+    );
+  }
+  const current = await loadDeploymentState(root);
+  if (current === undefined || !releaseMatchesCurrent(current, plan.release)) {
+    throw finalizationUnavailable();
+  }
+  const path = updateStatePath(root);
+  const exists = await stat(path).then(() => true).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return false;
+    throw error;
+  });
+  if (!exists) {
+    if (plan.noop) return { version: applied.version, phase: "verified", health: applied.health };
+    throw finalizationUnavailable();
+  }
+  const persisted = await loadPersisted(root);
+  if (
+    plan.noop &&
+    ((persisted.phase === "verified" && sameRelease(persisted.release, plan.release)) ||
+      (persisted.phase === "rolled_back" && sameRelease(persisted.rollbackRelease, plan.release)))
+  ) {
+    return { version: applied.version, phase: "verified", health: applied.health };
+  }
+  const matchesPlan = plan.noop
+    ? matchingRecoveredFinalizationTransaction(persisted, plan)
+    : matchingFinalizationTransaction(persisted, plan);
+  if (!matchesPlan) throw finalizationUnavailable();
+  try {
+    assertRollbackMatchesCurrent(persisted.backup.state, persisted.rollbackRelease);
+    await loadRollbackReleaseContext(root);
+  } catch {
+    throw finalizationUnavailable();
+  }
+  await persist(root, { ...persisted, phase: "verified" });
+  return { version: applied.version, phase: "verified", health: applied.health };
 };
 
 export const rollbackUpdate = async ({ root, executor, release }: RollbackUpdateInput): Promise<UpdateResult> => {
