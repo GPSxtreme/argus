@@ -7,9 +7,29 @@ import { afterEach, describe, expect, it } from "vitest";
 const repositoryRoot = resolve(import.meta.dirname, "../../..");
 const policy = join(repositoryRoot, "scripts/ci/assert-stable-bundle-change.mjs");
 const temporaryRepositories: string[] = [];
+const gitLocalEnvironmentVariables = execFileSync(
+  "git",
+  ["rev-parse", "--local-env-vars"],
+  { cwd: repositoryRoot, encoding: "utf8" },
+)
+  .trim()
+  .split("\n")
+  .filter(Boolean);
+
+const withoutGitRepositoryState = (): NodeJS.ProcessEnv => {
+  const environment = { ...process.env };
+  for (const name of gitLocalEnvironmentVariables) {
+    delete environment[name];
+  }
+  return environment;
+};
 
 const git = (directory: string, arguments_: readonly string[]): string =>
-  execFileSync("git", arguments_, { cwd: directory, encoding: "utf8" });
+  execFileSync("git", arguments_, {
+    cwd: directory,
+    encoding: "utf8",
+    env: withoutGitRepositoryState(),
+  });
 
 const createRepository = (): { directory: string; base: string } => {
   const directory = mkdtempSync(join(tmpdir(), "argus-stable-bundle-policy-"));
@@ -38,7 +58,35 @@ const runPolicy = (directory: string, base: string, head: string) =>
   spawnSync(process.execPath, [policy, base, head], {
     cwd: directory,
     encoding: "utf8",
+    env: withoutGitRepositoryState(),
   });
+
+const withInheritedGitRepositoryState = <Result>(
+  directory: string,
+  run: () => Result,
+): Result => {
+  const inheritedEnvironment = {
+    GIT_DIR: join(directory, ".git"),
+    GIT_INDEX_FILE: join(directory, ".git", "index"),
+    GIT_WORK_TREE: directory,
+  };
+  const previousEnvironment = new Map(
+    Object.keys(inheritedEnvironment).map((name) => [name, process.env[name]]),
+  );
+
+  Object.assign(process.env, inheritedEnvironment);
+  try {
+    return run();
+  } finally {
+    for (const [name, value] of previousEnvironment) {
+      if (value === undefined) {
+        delete process.env[name];
+      } else {
+        process.env[name] = value;
+      }
+    }
+  }
+};
 
 afterEach(() => {
   for (const directory of temporaryRepositories.splice(0)) {
@@ -47,6 +95,20 @@ afterEach(() => {
 });
 
 describe("stable bundle change policy", () => {
+  it("ignores inherited Git repository state when creating and checking fixture commits", () => {
+    const ambient = createRepository();
+
+    const result = withInheritedGitRepositoryState(ambient.directory, () => {
+      const { directory, base } = createRepository();
+      const head = commit(directory, { "apps/web/app/page.tsx": "export {};\n" });
+      return runPolicy(directory, base, head);
+    });
+
+    expect(result.status).toBe(0);
+    expect(git(ambient.directory, ["rev-parse", "HEAD"]).trim()).toBe(ambient.base);
+    expect(git(ambient.directory, ["status", "--porcelain"])).toBe("");
+  });
+
   it("allows unrelated changes when the stable bundle is untouched", () => {
     const { directory, base } = createRepository();
     const head = commit(directory, { "apps/web/app/page.tsx": "export {};\n" });
