@@ -30,6 +30,7 @@ export function renderInstaller(options: InstallerOptions): string {
   const publicKey = canonicalEd25519PublicKey(options.publicKeyPem);
 
   return `#!/bin/sh
+argus_install_main() {
 set -eu
 
 # Generated Argus stable installer. The embedded Ed25519 key is the trust root.
@@ -1081,5 +1082,7 @@ if [ "$argus_docker_mode" = root ]; then
   printf '%s\\n' "Argus did not modify user groups." >&2
 fi
 printf '%s\\n' "argus onboard"
+}
+argus_install_main "$@"
 `;
 }

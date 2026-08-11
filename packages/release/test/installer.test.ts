@@ -395,7 +395,11 @@ describe("renderInstaller", () => {
       publicKeyPem,
     });
 
-    expect(installer).toMatch(/^#!\/bin\/sh\nset -eu\n/);
+    expect(installer).toMatch(
+      /^#!\/bin\/sh\nargus_install_main\(\) \{\nset -eu\n/,
+    );
+    expect(installer).toMatch(/\n\}\nargus_install_main "\$@"\n$/);
+    expect(installer.match(/^argus_install_main "\$@"$/gmu)).toHaveLength(1);
     expect(installer).toContain(publicKeyPem.trim());
     expect(installer).toContain("openssl pkeyutl -verify");
     expect(installer).toContain("IFS= read -r argus_answer <&3");
@@ -414,6 +418,48 @@ describe("renderInstaller", () => {
     expect(installer).not.toContain("eval ");
     expect(installer).not.toContain(". /etc/os-release");
     expect(installer).toContain("argus onboard");
+  });
+
+  it("executes no installer body commands until the complete stream parses", async () => {
+    const fixture = await createFixture();
+    const marker = join(fixture.root, "installer-body-executed");
+    await command(
+      join(fixture.bin, "uname"),
+      `printf touched > "$ARGUS_FIXTURE_PARSE_MARKER"
+printf '%s\\n' x86_64`,
+    );
+    const installer = await readFile(fixture.installer, "utf8");
+    const cutTokens = [
+      "argus_install_docker() {",
+      "argus_capture_snapshot() {",
+      'argus_recovery_backups="',
+    ];
+
+    for (const [index, token] of cutTokens.entries()) {
+      const cut = installer.indexOf(token);
+      expect(cut).toBeGreaterThan(0);
+      const truncated = join(fixture.root, `truncated-${index}.sh`);
+      await writeFile(truncated, installer.slice(0, cut + token.length));
+
+      await expect(
+        execute("sh", [truncated], {
+          env: {
+            ...process.env,
+            PATH: `${fixture.bin}:/opt/homebrew/bin:/usr/bin:/bin`,
+            ARGUS_INSTALL_INSPECT: "1",
+            ARGUS_INSTALL_FIXTURE: "1",
+            ARGUS_INSTALL_OS_RELEASE: fixture.osRelease,
+            ARGUS_INSTALL_TARGET: fixture.target,
+            ARGUS_INSTALL_ROOT: fixture.installRoot,
+            ARGUS_INSTALL_FIXTURE_STATE_PATH: fixture.validationState,
+            ARGUS_INSTALL_LOCK: join(fixture.root, "installer.lock"),
+            ARGUS_INSTALL_DOCKER: "0",
+            ARGUS_FIXTURE_PARSE_MARKER: marker,
+          },
+        }),
+      ).rejects.toMatchObject({ code: expect.any(Number) });
+      await expect(readFile(marker)).rejects.toMatchObject({ code: "ENOENT" });
+    }
   });
 
   it.each([
