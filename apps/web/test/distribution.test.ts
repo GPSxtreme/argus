@@ -6,20 +6,26 @@ import { describe, expect, it } from "vitest";
 import { GET as getInstaller } from "../app/install.sh/route";
 import { GET as getSkill } from "../app/skill/SKILL.md/route";
 import { GET as getArchive } from "../app/skill/argus-skill.zip/route";
-import { installerOptions, skillRoot } from "../lib/distribution";
+import { canonicalManifestUrl, installerOptions, skillRoot } from "../lib/distribution";
+import { releasePublicKey } from "../lib/release-public-key";
 
-const stableAsset = (name: "install.sh") =>
-  path.resolve(process.cwd(), "apps/web/public/releases/stable", name);
+const expectedManifestUrl = "https://argus.gpsxtre.me/releases/stable/manifest.json";
+const expectedPublicKey = `-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAX5aHXYBKV+lpb4/k61gstTYs+u5gvFyno7/LCJ1zXRw=
+-----END PUBLIC KEY-----`;
 
 describe("distribution routes", () => {
-  it("serves the pinned stable installer with shell and cache headers", async () => {
-    const stableInstaller = await readFile(stableAsset("install.sh"));
+  it("renders the canonical installer before a stable bundle is promoted", async () => {
     const response = await getInstaller();
+    const text = await response.text();
 
     expect(response.headers.get("content-type")).toBe("text/x-shellscript; charset=utf-8");
     expect(response.headers.get("cache-control")).toBe("public, max-age=300, stale-while-revalidate=3600");
-    expect(Buffer.from(await response.arrayBuffer())).toEqual(stableInstaller);
-    expect(stableInstaller).not.toEqual(Buffer.from(renderInstaller(installerOptions)));
+    expect(canonicalManifestUrl).toBe(expectedManifestUrl);
+    expect(releasePublicKey).toBe(expectedPublicKey);
+    expect(text).toBe(renderInstaller(installerOptions));
+    expect(text).toContain(expectedManifestUrl);
+    expect(text).toContain(expectedPublicKey);
   });
 
   it("serves the repository Agent Skill entry file without a duplicate copy", async () => {
