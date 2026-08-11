@@ -85,6 +85,37 @@ const context = (overrides: Partial<DoctorContext> = {}): DoctorContext => ({
   ...overrides,
 });
 
+const persistComposeInputs = async (root: string): Promise<void> => {
+  await saveDeploymentState(root, {
+    schemaVersion: 1,
+    argusVersion: "0.2.0",
+    composeProject: "argus",
+    configHash: "config-v1",
+    services: {
+      argus: {
+        image: `ghcr.io/gpsxtreme/argus@sha256:${"a".repeat(64)}`,
+        healthy: true,
+      },
+      searxng: {
+        image: `docker.io/searxng/searxng@sha256:${"b".repeat(64)}`,
+        healthy: true,
+      },
+    },
+    compose: {
+      version: "0.2.0",
+      apiPort: 8788,
+      storage: "sqlite",
+      searxng: true,
+      images: {
+        argus: `ghcr.io/gpsxtreme/argus@sha256:${"a".repeat(64)}`,
+        postgres: `docker.io/library/postgres@sha256:${"c".repeat(64)}`,
+        searxng: `docker.io/searxng/searxng@sha256:${"b".repeat(64)}`,
+      },
+    },
+    updatedAt: "2026-08-01T00:00:00.000Z",
+  });
+};
+
 afterEach(async () => {
   vi.useRealTimers();
   await Promise.all(
@@ -93,6 +124,203 @@ afterEach(async () => {
 });
 
 describe("deployment doctor", () => {
+  it("uses managed SearXNG runtime diagnostics without a host fetch", async () => {
+    const root = await mkdtemp(join(tmpdir(), "argus-doctor-"));
+    roots.push(root);
+    await persistComposeInputs(root);
+    const calls: string[][] = [];
+    const report = await runDoctor(
+      context({
+        root,
+        managed: { searxng: "managed", fxembed: "disabled" },
+        searxngEndpoint: "http://searxng:8080",
+        executor: {
+          run: async (_file, args) => {
+            calls.push(args);
+            return result();
+          },
+        },
+        fetcher: async () => {
+          throw new Error("managed SearXNG must not use a host fetch");
+        },
+      }),
+    );
+
+    expect(report.checks).toContainEqual(
+      expect.objectContaining({
+        component: "searxng",
+        status: "healthy",
+        code: "SEARXNG_HEALTHY",
+      }),
+    );
+    expect(calls).toContainEqual(
+      expect.arrayContaining([
+        "compose",
+        "-p",
+        "argus",
+        "exec",
+        "-T",
+        "argus",
+        "node",
+        "--input-type=module",
+        expect.stringContaining("Array.isArray(body.results)"),
+        "http://searxng:8080",
+      ]),
+    );
+  });
+
+  it("uses the configured host endpoint for external SearXNG", async () => {
+    const fetched: URL[] = [];
+    const report = await runDoctor(
+      context({
+        managed: { searxng: "external", fxembed: "disabled" },
+        searxngEndpoint: "https://search.example.test/base",
+        fetcher: async (input) => {
+          fetched.push(new URL(String(input)));
+          return new Response(JSON.stringify({ results: [] }), { status: 200 });
+        },
+      }),
+    );
+
+    expect(report.checks).toContainEqual(
+      expect.objectContaining({ component: "searxng", code: "SEARXNG_HEALTHY" }),
+    );
+    expect(fetched).toEqual([
+      new URL("https://search.example.test/search?q=argus&format=json"),
+    ]);
+  });
+
+  it("reports managed SearXNG runtime failures without command output", async () => {
+    const root = await mkdtemp(join(tmpdir(), "argus-doctor-"));
+    roots.push(root);
+    await persistComposeInputs(root);
+    const report = await runDoctor(
+      context({
+        root,
+        managed: { searxng: "managed", fxembed: "disabled" },
+        searxngEndpoint: "http://searxng:8080",
+        executor: {
+          run: async (_file, args) =>
+            args.includes("node") && args.some((value) => value.includes("Array.isArray(body.results)"))
+              ? result(1, "runtime-secret")
+              : result(),
+        },
+        fetcher: async () => {
+          throw new Error("managed SearXNG must not use a host fetch");
+        },
+      }),
+    );
+
+    expect(report.checks).toContainEqual(
+      expect.objectContaining({
+        component: "searxng",
+        status: "unhealthy",
+        code: "SEARXNG_HEALTHCHECK_FAILED",
+      }),
+    );
+    expect(JSON.stringify(report)).not.toContain("runtime-secret");
+  });
+
+  it.each(["managed", "external"] as const)(
+    "maps a single X smoke to FxEmbed-backed %s diagnostics",
+    async (fxembed) => {
+      const api: DoctorArgusApi = {
+        ...context().api,
+        createSmokeWatch: vi.fn(context().api.createSmokeWatch),
+        removeSmokeWatch: vi.fn(context().api.removeSmokeWatch),
+      };
+      const report = await runDoctor(
+        context({
+          api,
+          managed: { searxng: "disabled", fxembed },
+          sources: { x: true },
+          diagnosticTargetIds: { x: "configured-x-target" },
+          fetcher: async () => {
+            throw new Error("FxEmbed base URL must not be fetched");
+          },
+        }),
+      );
+
+      expect(api.createSmokeWatch).toHaveBeenCalledTimes(1);
+      expect(api.removeSmokeWatch).toHaveBeenCalledTimes(1);
+      expect(report.checks).toEqual(expect.arrayContaining([
+        expect.objectContaining({ component: "x", status: "healthy", code: "SOURCE_SMOKE_HEALTHY" }),
+        expect.objectContaining({ component: "fxembed", status: "healthy", code: "FXEMBED_HEALTHY" }),
+      ]));
+    },
+  );
+
+  it("maps a failed single X smoke to the FxEmbed diagnostic", async () => {
+    const api: DoctorArgusApi = {
+      ...context().api,
+      createSmokeWatch: vi.fn(context().api.createSmokeWatch),
+      pollRecords: async () => {
+        throw new Error("smoke failure");
+      },
+      removeSmokeWatch: vi.fn(context().api.removeSmokeWatch),
+    };
+    const report = await runDoctor(
+      context({
+        api,
+        managed: { searxng: "disabled", fxembed: "managed" },
+        sources: { x: true },
+        diagnosticTargetIds: { x: "configured-x-target" },
+      }),
+    );
+
+    expect(report.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ component: "x", code: "SOURCE_SMOKE_FAILED" }),
+      expect.objectContaining({ component: "fxembed", status: "unhealthy", code: "FXEMBED_X_SMOKE_FAILED" }),
+    ]));
+    expect(api.createSmokeWatch).toHaveBeenCalledTimes(1);
+    expect(api.removeSmokeWatch).toHaveBeenCalledTimes(1);
+  });
+
+  it("maps a skipped X smoke to a skipped FxEmbed diagnostic", async () => {
+    const api: DoctorArgusApi = {
+      ...context().api,
+      createSmokeWatch: vi.fn(context().api.createSmokeWatch),
+    };
+    const report = await runDoctor(
+      context({
+        api,
+        managed: { searxng: "disabled", fxembed: "external" },
+        sources: { x: true },
+        diagnosticTargetIds: {},
+      }),
+    );
+
+    expect(report.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ component: "x", status: "skipped" }),
+      expect.objectContaining({
+        component: "fxembed",
+        status: "skipped",
+        code: "FXEMBED_DIAGNOSTIC_SKIPPED",
+      }),
+    ]));
+    expect(api.createSmokeWatch).not.toHaveBeenCalled();
+  });
+
+  it("keeps disabled FxEmbed skipped without an extra X watch", async () => {
+    const api: DoctorArgusApi = {
+      ...context().api,
+      createSmokeWatch: vi.fn(context().api.createSmokeWatch),
+    };
+    const report = await runDoctor(
+      context({
+        api,
+        managed: { searxng: "disabled", fxembed: "disabled" },
+        sources: { x: true },
+        diagnosticTargetIds: { x: "configured-x-target" },
+      }),
+    );
+
+    expect(api.createSmokeWatch).toHaveBeenCalledTimes(1);
+    expect(report.checks).toContainEqual(
+      expect.objectContaining({ component: "fxembed", status: "skipped", code: "FXEMBED_DISABLED" }),
+    );
+  });
+
   it("skips disabled components and enabled sources without a configured target", async () => {
     const report = await runDoctor(
       context({
@@ -767,7 +995,6 @@ describe("deployment doctor", () => {
       context({
         managed: { searxng: "managed", fxembed: "managed" },
         searxngEndpoint: "https://search.test",
-        fxembedEndpoint: "https://fx.test",
         fetcher: async () => new Response(null, { status: 503 }),
         sources: { telegram: true, web: true, x: true },
         diagnosticTargetIds: {},

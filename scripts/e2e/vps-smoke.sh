@@ -169,7 +169,6 @@ argus_vps_first=$argus_vps_work/onboard-first.log
 argus_vps_second=$argus_vps_work/onboard-second.log
 argus_vps_doctor=$argus_vps_work/doctor.json
 argus_vps_status_json=$argus_vps_work/status.json
-argus_vps_searxng=$argus_vps_work/searxng.json
 argus_vps_token="argus_vps_$(openssl rand -hex 24)"
 argus_vps_headers=
 
@@ -415,15 +414,6 @@ while :; do
     argus_vps_die "controlled Web page was not ingested"
   sleep 2
 done
-
-argus_vps_cli_image=$argus_vps_management_cli_image
-docker run --rm --network argus_argus-private \
-  --entrypoint node "$argus_vps_cli_image" \
-  --input-type=module \
-  --eval \
-  'const response = await fetch("http://searxng:8080/search?q=argus&format=json"); if (!response.ok) process.exit(1); const body = await response.json(); if (!Array.isArray(body.results)) process.exit(1); process.stdout.write(JSON.stringify(body));' \
-  > "$argus_vps_searxng"
-jq -e '.results | type == "array"' "$argus_vps_searxng" >/dev/null
 
 docker ps \
   --filter label=com.docker.compose.project=argus \
