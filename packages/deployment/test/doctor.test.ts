@@ -620,6 +620,103 @@ describe("deployment doctor", () => {
     );
   });
 
+  it("cancels a running managed SearXNG config command at the aggregate deadline", async () => {
+    const root = await mkdtemp(join(tmpdir(), "argus-doctor-"));
+    roots.push(root);
+    await persistComposeInputs(root);
+    const signals: AbortSignal[] = [];
+    const report = await runDoctor(
+      context({
+        root,
+        managed: { searxng: "managed", fxembed: "disabled" },
+        searxngEndpoint: "http://searxng:8080",
+        sources: {},
+        aggregateTimeoutMs: 20,
+        checkTimeoutMs: 100,
+        cleanupGraceMs: 10,
+        executor: {
+          run: async (_file, args, options) => {
+            if (args.includes("config")) {
+              if (options?.signal) signals.push(options.signal);
+              return await new Promise(() => undefined);
+            }
+            return result();
+          },
+        },
+      }),
+    );
+
+    expect(report.checks).toContainEqual(
+      expect.objectContaining({ component: "searxng", code: "DIAGNOSTIC_TIMEOUT" }),
+    );
+    expect(signals).toHaveLength(1);
+    expect(signals[0]?.aborted).toBe(true);
+  });
+
+  it("does not start a managed SearXNG exec after aggregate abort", async () => {
+    const root = await mkdtemp(join(tmpdir(), "argus-doctor-"));
+    roots.push(root);
+    await persistComposeInputs(root);
+    let releaseConfig: (() => void) | undefined;
+    const blockedConfig = new Promise<void>((resolve) => {
+      releaseConfig = resolve;
+    });
+    let probeCalls = 0;
+    const report = await runDoctor(
+      context({
+        root,
+        managed: { searxng: "managed", fxembed: "disabled" },
+        searxngEndpoint: "http://searxng:8080",
+        sources: {},
+        aggregateTimeoutMs: 20,
+        checkTimeoutMs: 100,
+        cleanupGraceMs: 10,
+        executor: {
+          run: async (_file, args, options) => {
+            if (args.includes("config") && options?.signal) {
+              await blockedConfig;
+              return result();
+            }
+            if (args.some((value) => value.includes("Array.isArray(body.results)"))) {
+              probeCalls += 1;
+            }
+            return result();
+          },
+        },
+      }),
+    );
+
+    expect(report.checks).toContainEqual(
+      expect.objectContaining({ component: "searxng", code: "DIAGNOSTIC_TIMEOUT" }),
+    );
+    releaseConfig?.();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(probeCalls).toBe(0);
+  });
+
+  it("aborts the external SearXNG fetch at the aggregate deadline", async () => {
+    let fetchSignal: AbortSignal | undefined;
+    const report = await runDoctor(
+      context({
+        managed: { searxng: "external", fxembed: "disabled" },
+        searxngEndpoint: "https://search.example.test",
+        sources: {},
+        aggregateTimeoutMs: 20,
+        checkTimeoutMs: 100,
+        cleanupGraceMs: 10,
+        fetcher: async (_input, init) => {
+          fetchSignal = init?.signal ?? undefined;
+          return await new Promise(() => undefined);
+        },
+      }),
+    );
+
+    expect(report.checks).toContainEqual(
+      expect.objectContaining({ component: "searxng", code: "DIAGNOSTIC_TIMEOUT" }),
+    );
+    expect(fetchSignal?.aborted).toBe(true);
+  });
+
   it("aborts aggregate work, awaits cleanup, and has no mutations after return", async () => {
     vi.useFakeTimers();
     const mutations: string[] = [];

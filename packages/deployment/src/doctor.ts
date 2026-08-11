@@ -499,6 +499,7 @@ const smokeCheck = async (
 const searxngCheck = async (
   context: DoctorContext,
   requestTimeoutMs: number,
+  signal: AbortSignal,
 ): Promise<Check> => {
   if (context.managed.searxng === "disabled") {
     return skipped(
@@ -521,11 +522,12 @@ const searxngCheck = async (
           executor: context.executor,
           endpoint: context.searxngEndpoint,
           requestTimeoutMs,
+          signal,
         })
       : await checkSearxngHealth(
           context.searxngEndpoint,
           context.fetcher ?? fetch,
-          { requestTimeoutMs },
+          { requestTimeoutMs, signal },
         );
   return health.healthy
     ? healthy(
@@ -721,7 +723,7 @@ export const runDoctor = async (
     ],
     [
       "searxng",
-      () => searxngCheck(context, perCheck),
+      (signal) => searxngCheck(context, perCheck, signal),
     ],
     [
       "fxembed",

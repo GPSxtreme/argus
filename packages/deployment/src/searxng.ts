@@ -37,6 +37,7 @@ export type SearxngFetcher = (
 
 export interface SearxngHealthOptions {
   requestTimeoutMs?: number;
+  signal?: AbortSignal;
 }
 
 export interface ManagedSearxngHealthContext {
@@ -44,6 +45,7 @@ export interface ManagedSearxngHealthContext {
   executor: CommandExecutor;
   endpoint?: string;
   requestTimeoutMs?: number;
+  signal?: AbortSignal;
 }
 
 export interface SearxngRepairContext {
@@ -63,11 +65,21 @@ export const renderSearxngSettings = (): string => managedSettings;
 export const checkSearxngHealth = async (
   endpoint: string,
   fetcher: SearxngFetcher = fetch,
-  { requestTimeoutMs = 5_000 }: SearxngHealthOptions = {},
+  { requestTimeoutMs = 5_000, signal }: SearxngHealthOptions = {},
 ): Promise<SearxngHealth> => {
   const controller = new AbortController();
   const timeout = Math.min(Math.max(1, requestTimeoutMs), 5_000);
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let rejectParentAbort: ((reason?: unknown) => void) | undefined;
+  const parentAborted = new Promise<never>((_resolve, reject) => {
+    rejectParentAbort = reject;
+  });
+  const parentAbort = () => {
+    controller.abort(signal?.reason);
+    rejectParentAbort?.(signal?.reason);
+  };
+  if (signal?.aborted) parentAbort();
+  else signal?.addEventListener("abort", parentAbort, { once: true });
   try {
     const response = await Promise.race([
       (async () => {
@@ -83,6 +95,7 @@ export const checkSearxngHealth = async (
           reject(new Error("SearXNG health request timed out."));
         }, timeout);
       }),
+      parentAborted,
     ]);
     if (!response.response.ok) return unhealthyHealth();
     const { body } = response;
@@ -92,6 +105,7 @@ export const checkSearxngHealth = async (
     return unhealthyHealth();
   } finally {
     if (timer !== undefined) clearTimeout(timer);
+    signal?.removeEventListener("abort", parentAbort);
   }
 };
 
@@ -109,14 +123,26 @@ export const checkManagedSearxngHealth = async (
 ): Promise<SearxngHealth> => {
   const unhealthy = { healthy: false, resultCount: 0 };
   try {
+    if (context.signal?.aborted) return unhealthy;
     const environment = await loadPersistedComposeEnvironment(context);
     const timeoutMs = boundedComposeTimeout(context.requestTimeoutMs ?? 5_000);
     const configured = await context.executor.run(
       "docker",
       ["compose", "-p", "argus", "config"],
-      { cwd: context.root, env: environment, timeoutMs },
+      {
+        cwd: context.root,
+        env: environment,
+        timeoutMs,
+        ...(context.signal === undefined ? {} : { signal: context.signal }),
+      },
     );
-    if (configured.exitCode !== 0 || configured.timedOut) return unhealthy;
+    if (
+      context.signal?.aborted ||
+      configured.exitCode !== 0 ||
+      configured.timedOut
+    ) {
+      return unhealthy;
+    }
     const probe = await context.executor.run(
       "docker",
       [
@@ -132,7 +158,12 @@ export const checkManagedSearxngHealth = async (
         managedProbe,
         context.endpoint ?? "http://searxng:8080",
       ],
-      { cwd: context.root, env: environment, timeoutMs },
+      {
+        cwd: context.root,
+        env: environment,
+        timeoutMs,
+        ...(context.signal === undefined ? {} : { signal: context.signal }),
+      },
     );
     return probe.exitCode === 0 && !probe.timedOut
       ? { healthy: true, resultCount: 0 }
