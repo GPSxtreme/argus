@@ -17,14 +17,15 @@ export interface StableBundlePromotion {
 }
 
 export interface StableBundlePromotionOptions {
-  /** Injectable filesystem boundary for promotion failure recovery tests. */
+  /** Injectable filesystem boundary for promotion verification and recovery tests. */
   io?: StableBundleIO;
   /** Explicit root for controlled key rotation or isolated verification tests. */
   trustedPublicKeyPem?: string;
 }
 
-/** Injectable filesystem boundary for exercising promotion failure recovery. */
+/** Injectable filesystem boundary for exercising promotion verification and recovery. */
 export interface StableBundleIO {
+  readFile(path: string): Promise<Buffer>;
   mkdir(directory: string): Promise<void>;
   writeFileAndSync(path: string, bytes: Uint8Array, mode: number): Promise<void>;
   syncDirectory(directory: string): Promise<void>;
@@ -40,6 +41,9 @@ const isMissing = (error: unknown): boolean =>
   error.code === "ENOENT";
 
 const nodeStableBundleIO: StableBundleIO = {
+  async readFile(path) {
+    return readFile(path);
+  },
   async mkdir(directory) {
     await mkdir(directory, { mode: 0o700 });
   },
@@ -107,6 +111,7 @@ interface PreparedBundle {
 const prepareBundle = async (
   releaseDirectory: string,
   trustedPublicKeyPem: string,
+  io: Pick<StableBundleIO, "readFile">,
 ): Promise<PreparedBundle> => {
   const [manifest, signature] = await Promise.all([
     readFile(join(releaseDirectory, "manifest.json")),
@@ -120,8 +125,12 @@ const prepareBundle = async (
   if (checksum(manifest) !== verified.release.manifestSha256) {
     throw new TypeError("Release manifest changed while it was being verified.");
   }
-  const candidateWrapper = await readFile(join(releaseDirectory, "argus"));
-  if (!candidateWrapper.equals(Buffer.from(renderArgusWrapper()))) {
+  const candidateWrapper = await io.readFile(join(releaseDirectory, "argus"));
+  if (checksum(candidateWrapper) !== verified.release.manifest.assets.wrapper.sha256) {
+    throw new TypeError("Signed checksum mismatch for argus.");
+  }
+  const canonicalWrapper = Buffer.from(renderArgusWrapper());
+  if (!candidateWrapper.equals(canonicalWrapper)) {
     throw new TypeError(
       "Candidate argus wrapper does not match the stable wrapper.",
     );
@@ -167,6 +176,7 @@ export const promoteStableBundle = async (
   const prepared = await prepareBundle(
     release,
     options.trustedPublicKeyPem ?? stableReleasePublicKey,
+    io,
   );
   if (!(await io.directoryExists(parent))) {
     throw new TypeError(`Stable bundle parent directory does not exist: ${parent}`);

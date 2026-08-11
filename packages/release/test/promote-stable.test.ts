@@ -265,6 +265,30 @@ describe("promoteStableBundle", () => {
     await expect(stableBytes(fixture.stable)).resolves.toEqual(prior);
   });
 
+  it("rejects an argus replacement after verification before changing stable bundle bytes", async () => {
+    const fixture = await createFixtureRelease(
+      fixturePrivateKey,
+      Buffer.from("#!/bin/sh\nexec true\n"),
+    );
+    const prior = await stableBytes(fixture.stable);
+    const wrapperPath = join(fixture.release, "argus");
+    const replacementIO = createStableBundleIO({
+      async readFile(path: string): Promise<Buffer> {
+        if (path === wrapperPath) return Buffer.from(renderArgusWrapper());
+        return readFile(path);
+      },
+    });
+
+    await expect(
+      promoteStableBundle(fixture.release, fixture.stable, {
+        io: replacementIO,
+        trustedPublicKeyPem: fixture.publicKeyPem,
+      }),
+    ).rejects.toThrow("Signed checksum mismatch for argus.");
+
+    await expect(stableBytes(fixture.stable)).resolves.toEqual(prior);
+  });
+
   it("promotes a bundle whose installer verifies with the root instead of its distinct candidate asset", async () => {
     const fixture = await createCrossSignedFixture();
 
