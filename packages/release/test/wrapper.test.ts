@@ -2,19 +2,18 @@ import { spawn, spawnSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { MANAGEMENT_WRAPPER_REQUIREMENTS } from "@argus/contracts";
-import {
-  renderArgusWrapper,
-  type ArgusWrapperOptions,
-} from "../src/wrapper.js";
+import { renderArgusWrapper } from "../src/wrapper.js";
 
 const repositoryRoot = resolve(import.meta.dirname, "../../..");
 const tsxCli = resolve(repositoryRoot, "node_modules/tsx/dist/cli.mjs");
@@ -23,10 +22,8 @@ const wrapperExporter = resolve(
   "scripts/release/export-wrapper.ts",
 );
 const digest = "a".repeat(64);
-const fixture: ArgusWrapperOptions = {
-  version: "1.2.3-rc.1+build.7",
-  cliImageDigest: `ghcr.io/gpsxtreme/argus-cli@sha256:${digest}`,
-};
+const cliImage = `ghcr.io/gpsxtreme/argus-cli@sha256:${digest}`;
+const validState = `schema=1\nversion=1.2.3-rc.1+build.7\ncli_image=${cliImage}\n`;
 const temporaryDirectories: string[] = [];
 
 const temporaryDirectory = (): string => {
@@ -38,6 +35,24 @@ const temporaryDirectory = (): string => {
 const executable = (path: string, contents: string): void => {
   writeFileSync(path, contents, { mode: 0o755 });
   chmodSync(path, 0o755);
+};
+
+const systemCommand = (command: string): string => {
+  const result = spawnSync("sh", ["-c", 'command -v "$1"', "sh", command], {
+    encoding: "utf8",
+  });
+  const path = result.stdout.trim();
+  if (result.status !== 0 || path === "" || !path.startsWith("/")) {
+    throw new Error(`Could not resolve required system command: ${command}`);
+  }
+  return path;
+};
+
+const dockerlessPath = (bin: string): string => {
+  for (const command of ["stat", "wc", "tr", "cmp", "grep"]) {
+    symlinkSync(systemCommand(command), join(bin, command));
+  }
+  return bin;
 };
 
 const shellQuote = (value: string): string =>
@@ -65,24 +80,52 @@ const runWrapperExporter = (
     encoding: "utf8",
   });
 
+/* This is a test-only textual fixture, not a runtime override: production bytes
+ * always name the shared fixed state path. It lets an executable fixture use a
+ * disposable state file without adding an environment-controlled behavior. */
+const renderFixtureWrapper = (stateFile: string, socket = "/var/run/docker.sock"): string => {
+  if (!stateFile.startsWith(tmpdir())) {
+    throw new Error("Fixture state must be inside the system temporary directory.");
+  }
+  return renderArgusWrapper()
+    .replaceAll(MANAGEMENT_WRAPPER_REQUIREMENTS.stateFile, stateFile)
+    .replaceAll("/var/run/docker.sock", socket);
+};
+
 interface WrapperFixture {
   directory: string;
   script: string;
+  stateFile: string;
   record: string;
   signalRecord: string;
   environment: NodeJS.ProcessEnv;
 }
 
 const createWrapperFixture = (
-  options: { arch?: string; docker?: boolean; signal?: boolean } = {},
+  options: {
+    arch?: string;
+    docker?: boolean;
+    signal?: boolean;
+    socket?: string;
+    state?: string;
+  } = {},
 ): WrapperFixture => {
   const directory = temporaryDirectory();
   const bin = join(directory, "bin");
   const script = join(directory, "argus");
+  const stateFile = join(directory, "management.state");
   const record = join(directory, "docker.argv");
   const signalRecord = join(directory, "docker.signal");
-  spawnSync("mkdir", ["-p", bin]);
-  writeFileSync(script, renderArgusWrapper(fixture), { mode: 0o755 });
+  mkdirSync(bin);
+  if (options.state !== undefined) {
+    writeFileSync(stateFile, options.state, { mode: 0o644 });
+    chmodSync(stateFile, 0o644);
+  }
+  writeFileSync(
+    script,
+    renderFixtureWrapper(stateFile, options.socket),
+    { mode: 0o755 },
+  );
   executable(
     join(bin, "uname"),
     `#!/bin/sh\nprintf '%s\\n' '${options.arch ?? "x86_64"}'\n`,
@@ -98,11 +141,15 @@ const createWrapperFixture = (
   return {
     directory,
     script,
+    stateFile,
     record,
     signalRecord,
     environment: {
       ...process.env,
-      PATH: `${bin}:${process.env.PATH ?? ""}`,
+      PATH:
+        options.docker === false
+          ? dockerlessPath(bin)
+          : `${bin}:${process.env.PATH ?? ""}`,
       ARGUS_RECORD: record,
       ARGUS_READY: join(directory, "ready"),
       ARGUS_SIGNAL: signalRecord,
@@ -123,9 +170,9 @@ afterEach(() => {
 });
 
 describe("renderArgusWrapper", () => {
-  it("renders deterministic POSIX shell with the exact shared management boundary", () => {
-    const first = renderArgusWrapper(fixture);
-    const second = renderArgusWrapper({ ...fixture });
+  it("renders immutable launcher bytes from the shared state contract", () => {
+    const first = renderArgusWrapper();
+    const second = renderArgusWrapper();
 
     expect(first).toBe(second);
     expect(first.split("\n").slice(0, 4)).toEqual([
@@ -134,48 +181,69 @@ describe("renderArgusWrapper", () => {
       "# generated-by=@argus/release",
       "set -eu",
     ]);
-    expect(first.endsWith("\n")).toBe(true);
+    expect(first).toContain(MANAGEMENT_WRAPPER_REQUIREMENTS.stateFile);
+    expect(first).not.toContain(cliImage);
+    expect(first).not.toContain("1.2.3-rc.1+build.7");
     expect(first).not.toMatch(/:latest\b/u);
     expect(first).not.toContain("$HOME");
     expect(first).not.toContain("$(pwd)");
     expect(first).not.toContain("--env-file");
-    expect(first).toContain("--network host");
-    for (const mount of MANAGEMENT_WRAPPER_REQUIREMENTS.mounts) {
-      expect(first).toContain(`--volume ${shellQuote(mount)}`);
-    }
-    for (const environment of MANAGEMENT_WRAPPER_REQUIREMENTS.environment) {
-      if (environment.includes("=")) {
-        expect(first).toContain(`--env ${shellQuote(environment)}`);
-      } else {
-        expect(first).toContain(`--env "${environment}=`);
-      }
-    }
-    expect(first).toContain("--cap-drop ALL");
-    expect(first).toContain("--security-opt no-new-privileges");
-    expect(first).toContain("--read-only");
-    expect(first).toContain("--tmpfs '/tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777'");
-    expect(first).toMatch(/if \[ -t 1 \]; then/u);
-    expect(first).not.toMatch(/\[ -t 0 \]/u);
-    expect(first).toMatch(
-      /\bexec docker '--config' '\/opt\/argus\/\.docker' run\b/u,
-    );
+    expect(spawnSync("sh", ["-n"], { input: first }).status).toBe(0);
   });
 
-  it("rejects invalid SemVer and every unpinned, tagged, or credentialed image", () => {
-    for (const version of ["v1.2.3", "01.2.3", "1.2", "1.2.3-alpha.01"]) {
-      expect(() => renderArgusWrapper({ ...fixture, version })).toThrow(
-        /SemVer/u,
-      );
-    }
-    for (const cliImageDigest of [
-      "ghcr.io/gpsxtreme/argus-cli:1.2.3",
-      "ghcr.io/gpsxtreme/argus-cli:latest",
-      `user:secret@ghcr.io/gpsxtreme/argus-cli@sha256:${digest}`,
-      `ghcr.io/gpsxtreme/argus-cli@sha256:${"A".repeat(64)}`,
-    ]) {
-      expect(() =>
-        renderArgusWrapper({ ...fixture, cliImageDigest }),
-      ).toThrow(/digest-pinned/u);
+  it.each([
+    ["missing terminal newline", validState.slice(0, -1)],
+    ["extra key", `${validState}extra=x\n`],
+    ["reordered keys", `version=1.2.3-rc.1+build.7\nschema=1\ncli_image=${cliImage}\n`],
+    ["duplicate key", `schema=1\nversion=1.2.3-rc.1+build.7\nversion=1.2.3-rc.1+build.7\ncli_image=${cliImage}\n`],
+    ["missing key", "schema=1\nversion=1.2.3-rc.1+build.7\n"],
+    ["CRLF", validState.replaceAll("\n", "\r\n")],
+    ["blank line", `schema=1\n\nversion=1.2.3-rc.1+build.7\ncli_image=${cliImage}\n`],
+    ["leading whitespace", ` schema=1\nversion=1.2.3-rc.1+build.7\ncli_image=${cliImage}\n`],
+    ["trailing whitespace", `schema=1\nversion=1.2.3-rc.1+build.7 \ncli_image=${cliImage}\n`],
+    ["unnormalized SemVer", `schema=1\nversion=01.2.3\ncli_image=${cliImage}\n`],
+    ["uppercase digest", `schema=1\nversion=1.2.3\ncli_image=ghcr.io/gpsxtreme/argus-cli@sha256:${"A".repeat(64)}\n`],
+    ["credentials", `schema=1\nversion=1.2.3\ncli_image=user:secret@ghcr.io/gpsxtreme/argus-cli@sha256:${digest}\n`],
+    ["tag without digest", "schema=1\nversion=1.2.3\ncli_image=ghcr.io/gpsxtreme/argus-cli:1.2.3\n"],
+    ["OCI image longer than 255 bytes", `schema=1\nversion=1.2.3\ncli_image=registry.example.com/${"a".repeat(190)}@sha256:${digest}\n`],
+    ["NUL byte", validState.replace("version", "ver\u0000sion")],
+    ["wrong schema", `schema=2\nversion=1.2.3\ncli_image=${cliImage}\n`],
+    ["oversize input", `${validState}${"x".repeat(MANAGEMENT_WRAPPER_REQUIREMENTS.maximumStateBytes)}`],
+    ["shell injection", `schema=1\nversion=$(touch nope)\ncli_image=${cliImage}\n`],
+  ])("rejects hostile %s state before Docker runs", (_name, state) => {
+    const harness = createWrapperFixture({ state });
+    const result = spawnSync(harness.script, ["status"], {
+      encoding: "utf8",
+      env: harness.environment,
+    });
+
+    expect(result.status).toBe(65);
+    expect(result.stderr).toContain("management state");
+    expect(existsSync(harness.record)).toBe(false);
+    expect(existsSync(join(harness.directory, "nope"))).toBe(false);
+  });
+
+  it("rejects missing, symlinked, non-regular, and wrong-mode state before Docker runs", () => {
+    const missing = createWrapperFixture();
+    const symlinked = createWrapperFixture({ state: validState });
+    const nonRegular = createWrapperFixture({ state: validState });
+    const wrongMode = createWrapperFixture({ state: validState });
+    const symlinkTarget = join(symlinked.directory, "state-target");
+    writeFileSync(symlinkTarget, validState, { mode: 0o644 });
+    rmSync(symlinked.stateFile);
+    symlinkSync(symlinkTarget, symlinked.stateFile);
+    rmSync(nonRegular.stateFile);
+    mkdirSync(nonRegular.stateFile);
+    chmodSync(wrongMode.stateFile, 0o600);
+
+    for (const harness of [missing, symlinked, nonRegular, wrongMode]) {
+      const result = spawnSync(harness.script, ["status"], {
+        encoding: "utf8",
+        env: harness.environment,
+      });
+      expect(result.status).toBe(65);
+      expect(result.stderr).toContain("management state");
+      expect(existsSync(harness.record)).toBe(false);
     }
   });
 
@@ -183,8 +251,15 @@ describe("renderArgusWrapper", () => {
     ["x86_64", "amd64"],
     ["aarch64", "arm64"],
   ])("normalizes %s and preserves hostile argv exactly", (arch, normalized) => {
-    const harness = createWrapperFixture({ arch });
-    const input = ["status", "space value", "*.yaml", "line one\nline two", "'; touch nope"];
+    const harness = createWrapperFixture({ arch, state: validState });
+    const input = [
+      "status",
+      "space value",
+      "",
+      "*.yaml",
+      "line one\nline two",
+      "'; touch nope",
+    ];
     const result = spawnSync(harness.script, input, {
       encoding: "utf8",
       env: harness.environment,
@@ -194,16 +269,25 @@ describe("renderArgusWrapper", () => {
     expect(existsSync(join(harness.directory, "nope"))).toBe(false);
     const arguments_ = recordedArguments(harness.record);
     expect(arguments_).toContain(`ARGUS_HOST_ARCH=${normalized}`);
-    expect(arguments_).toContain(`ARGUS_VERSION=${fixture.version}`);
+    expect(arguments_).toContain("ARGUS_VERSION=1.2.3-rc.1+build.7");
     expect(arguments_).toContain("DOCKER_CONFIG=/opt/argus/.docker");
-    expect(arguments_).toContain(fixture.cliImageDigest);
+    expect(arguments_).toContain(cliImage);
     expect(arguments_.slice(0, 3)).toEqual([
       "--config",
       "/opt/argus/.docker",
       "run",
     ]);
     expect(arguments_.slice(-input.length)).toEqual(input);
-    expect(arguments_.filter((value) => value === "--volume")).toHaveLength(4);
+    expect(arguments_.filter((value) => value === "--volume")).toHaveLength(
+      MANAGEMENT_WRAPPER_REQUIREMENTS.mounts.length,
+    );
+    expect(
+      arguments_
+        .flatMap((value, index) =>
+          arguments_[index - 1] === "--volume" ? [value] : [],
+        )
+        .sort(),
+    ).toEqual([...MANAGEMENT_WRAPPER_REQUIREMENTS.mounts].sort());
     expect(
       arguments_
         .flatMap((value, index) =>
@@ -213,16 +297,27 @@ describe("renderArgusWrapper", () => {
     ).toEqual([
       `ARGUS_HOST_ARCH=${normalized}`,
       "ARGUS_INSTALL_ROOT=/opt/argus",
-      `ARGUS_VERSION=${fixture.version}`,
+      "ARGUS_VERSION=1.2.3-rc.1+build.7",
       "DOCKER_CONFIG=/opt/argus/.docker",
     ]);
+    expect(arguments_).toEqual(expect.arrayContaining([
+      "--network",
+      "host",
+      "--cap-drop",
+      "ALL",
+      "--security-opt",
+      "no-new-privileges",
+      "--read-only",
+      "--tmpfs",
+      "/tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777",
+    ]));
     expect(arguments_.join("\n")).not.toMatch(
       /(?:\/Users\/|\/home\/|\.ssh|--env-file)/u,
     );
   });
 
   it("preserves the Docker exit code", () => {
-    const harness = createWrapperFixture();
+    const harness = createWrapperFixture({ state: validState });
     const result = spawnSync(harness.script, ["doctor"], {
       env: { ...harness.environment, FAKE_DOCKER_EXIT: "37" },
     });
@@ -232,7 +327,7 @@ describe("renderArgusWrapper", () => {
   it.skipIf(spawnSync("sh", ["-c", "command -v script"]).status !== 0)(
     "adds -t exactly when stdout is a TTY, independent of stdin",
     () => {
-      const harness = createWrapperFixture();
+      const harness = createWrapperFixture({ state: validState });
       const wrapperCommand = `${shellQuote(harness.script)} status`;
 
       const ttyResult = runInPty(wrapperCommand, harness.environment);
@@ -264,7 +359,7 @@ describe("renderArgusWrapper", () => {
   );
 
   it("execs Docker so TERM reaches the Docker process", async () => {
-    const harness = createWrapperFixture({ signal: true });
+    const harness = createWrapperFixture({ signal: true, state: validState });
     const child = spawn(harness.script, ["status"], {
       env: harness.environment,
       stdio: "ignore",
@@ -295,11 +390,12 @@ describe("renderArgusWrapper", () => {
   });
 
   it("prints an exact safely quoted invocation in inspect mode without running Docker", () => {
-    const harness = createWrapperFixture();
+    const harness = createWrapperFixture({ state: validState });
     const input = [
       "config",
       "show",
       "space value",
+      "",
       "*.yaml",
       "line\nvalue",
       "single'quote",
@@ -327,66 +423,70 @@ describe("renderArgusWrapper", () => {
     expect(recordedArguments(harness.record).slice(-input.length)).toEqual(input);
   });
 
-  it("fails actionably when Docker or the host architecture is unavailable", () => {
-    const missingDocker = createWrapperFixture({ docker: false });
+  it("fails actionably when Docker, its socket, or the host architecture is unavailable", () => {
+    const missingDocker = createWrapperFixture({ docker: false, state: validState });
     const dockerResult = spawnSync(missingDocker.script, [], {
       encoding: "utf8",
-      env: {
-        ...missingDocker.environment,
-        PATH: join(missingDocker.directory, "bin"),
-      },
+      env: missingDocker.environment,
     });
-    expect(dockerResult.status).not.toBe(0);
+    expect(dockerResult.status).toBe(69);
     expect(dockerResult.stderr).toMatch(/Install Docker/u);
 
-    const unsupported = createWrapperFixture({ arch: "riscv64" });
+    const missingSocket = createWrapperFixture({
+      socket: join(temporaryDirectory(), "missing.sock"),
+      state: validState,
+    });
+    const socketResult = spawnSync(missingSocket.script, [], {
+      encoding: "utf8",
+      env: missingSocket.environment,
+    });
+    expect(socketResult.status).toBe(69);
+    expect(socketResult.stderr).toMatch(/socket is unavailable/u);
+    expect(existsSync(missingSocket.record)).toBe(false);
+
+    const unsupported = createWrapperFixture({
+      arch: "riscv64",
+      state: validState,
+    });
     const archResult = spawnSync(unsupported.script, [], {
       encoding: "utf8",
       env: unsupported.environment,
     });
-    expect(archResult.status).not.toBe(0);
+    expect(archResult.status).toBe(64);
     expect(archResult.stderr).toMatch(/x86_64.*aarch64/u);
   });
 
-  it("exports fixture bytes to clean stdout and passes shell syntax", () => {
-    const result = runWrapperExporter(["--fixture"]);
+  it("exports immutable bytes to clean stdout and accepts only an output path", () => {
+    const result = runWrapperExporter([]);
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
-    expect(result.stdout).toBe(renderArgusWrapper({
-      version: "0.1.0",
-      cliImageDigest: `ghcr.io/gpsxtreme/argus-cli@sha256:${"0".repeat(64)}`,
-    }));
-    const shellCheck = spawnSync("sh", ["-n"], { input: result.stdout });
-    expect(shellCheck.status).toBe(0);
-  });
+    expect(result.stdout).toBe(renderArgusWrapper());
+    expect(spawnSync("sh", ["-n"], { input: result.stdout }).status).toBe(0);
 
-  it("rejects incomplete, unknown, and duplicate exporter arguments without writing", () => {
     for (const arguments_ of [
-      [],
-      ["--unknown"],
-      ["--fixture", "--version", "1.2.3"],
-      ["--fixture", "--fixture"],
+      ["--fixture"],
       ["--version", "1.2.3"],
+      ["--cli-image", cliImage],
+      ["--unknown"],
+      ["--output"],
+      ["--output", "one", "--output", "two"],
     ]) {
-      const result = runWrapperExporter(arguments_);
-      expect(result.status).not.toBe(0);
-      expect(result.stdout).toBe("");
-      expect(result.stderr).toContain("Usage:");
+      const rejected = runWrapperExporter(arguments_);
+      expect(rejected.status).not.toBe(0);
+      expect(rejected.stdout).toBe("");
+      expect(rejected.stderr).toContain("Usage:");
     }
   });
 
-  it("writes only when an explicit output path is provided", () => {
+  it("writes immutable bytes only when an explicit output path is provided", () => {
     const directory = temporaryDirectory();
     const output = join(directory, "bin", "argus");
-    const result = runWrapperExporter(["--fixture", "--output", output]);
+    const result = runWrapperExporter(["--output", output]);
 
     expect(result.status).toBe(0);
     expect(result.stdout).toBe("");
     expect(result.stderr).toBe("");
-    expect(readFileSync(output, "utf8")).toBe(renderArgusWrapper({
-      version: "0.1.0",
-      cliImageDigest: `ghcr.io/gpsxtreme/argus-cli@sha256:${"0".repeat(64)}`,
-    }));
+    expect(readFileSync(output, "utf8")).toBe(renderArgusWrapper());
     expect(readFileSync(output).subarray(0, 2).toString()).toBe("#!");
   });
 });

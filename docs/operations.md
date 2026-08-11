@@ -19,6 +19,9 @@ The resulting instance lives in `/opt/argus`:
 - `compose.yaml` is owned and reconciled by the Argus CLI.
 - `state.json` records the verified release and deployment state.
 - `release-context.json` retains the exact signed release used for rollback.
+- `management.state` selects the signed management CLI for the immutable
+  `/usr/local/bin/argus` launcher. It is strict data, not a configuration file;
+  do not edit it.
 - `secrets.env` contains runtime credentials and must remain mode `0600`.
 - `backups/` contains update backups. Argus never deletes them automatically.
 - `.docker/config.json` stores the mode `0600` GHCR credential while Argus
@@ -79,6 +82,14 @@ stops services. It backs up the current instance, runs storage migrations,
 starts the candidate, and verifies health. A failed update restores the
 previous verified release; keep `/opt/argus/backups` until you have separately
 validated the new version.
+
+Existing installations with the legacy version-pinned wrapper need one final
+signed installer run to bootstrap the immutable launcher and
+`/opt/argus/management.state`. After that one-time transition, `argus update`
+advances the verified management state only; it does not replace
+`/usr/local/bin/argus`. The launcher fails closed before Docker runs when that
+state is missing or malformed. Rerun the signed installer to repair it rather
+than editing the file by hand.
 
 ## Choosing a topology
 
@@ -184,6 +195,50 @@ pnpm argus config apply /app/argus.yaml
 
 Invalid files never replace the current snapshot. Reapplying identical content
 is a no-op. Runtime services should all mount the same config revision.
+
+## Stable release promotion and rollback
+
+Stable delivery is one checked-in bundle, not three independently deployable
+files:
+
+- `apps/web/public/releases/stable/install.sh`
+- `apps/web/public/releases/stable/manifest.json`
+- `apps/web/public/releases/stable/manifest.sig`
+
+After the signed release workflow has published its immutable release, download
+its `stable-promotion-input` artifact so those eight verified release files are
+in `dist/release`. Render the new stable bundle only with the release tooling:
+
+```sh
+pnpm tsx scripts/release/promote-stable.ts dist/release apps/web/public/releases/stable
+git diff -- apps/web/public/releases/stable
+```
+
+For a new release, the diff must contain changes to exactly `install.sh`,
+`manifest.json`, and `manifest.sig` in that directory. The promotion command
+first verifies the manifest signature against Argus's canonical stable
+Ed25519 trust root. It embeds that same successfully verified root in the
+stable installer and verifies the hash-bound candidate `release-public.pem`
+alongside every other signed candidate asset; it then writes those three stable
+members as one staged directory swap. Do not use an immutable GitHub release
+`install.sh` at the stable URL: it is bound to that release's immutable manifest
+URL, not the stable manifest URL.
+
+Before committing, run the release verification and the clean-host installer
+smoke described below against the verified candidate. Keep the promotion
+focused, review it, and deploy it through the normal path. The pinned v0.1.13
+bundle remains its recognized legacy wrapper
+contract; do not regenerate it from the current durable launcher. The next
+promotion carries the verified durable wrapper from its candidate artifact.
+Push and pull-request CI enforce the same rule: if any stable bundle member
+changes, all and only those three paths may change under the stable directory;
+unrelated repository files may be included in the same commit.
+
+If verification, promotion, or deployment fails, retain or restore the prior
+complete bundle. Never repair production by changing one bundle member. Roll
+back a deployed promotion by reverting its complete promotion commit, then
+verify the restored three-file diff and public bytes; do not hand-edit or
+selectively revert `install.sh`, `manifest.json`, or `manifest.sig`.
 
 ## Installer smoke
 

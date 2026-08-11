@@ -27,11 +27,11 @@ describe("stable release artifacts", () => {
     expect(verify(null, manifest, releasePublicKey, signature)).toBe(true);
   });
 
-  it("pins the site-served installer bytes and its trust chain inputs", () => {
+  it("pins the canonical installer bytes and its trust chain inputs", () => {
     const bytes = renderInstaller(installerOptions);
     expect(
       createHash("sha256").update(bytes).digest("hex"),
-    ).toBe("91e3559f37084926fa30676f44e1da392e12da68d81530abeb9686f585e01080");
+    ).toBe("ad692b12af0d85c6d91e9e695b0d6ebe9b8c6697304d58c1823b28e8b8782c18");
     expect(bytes).toContain(canonicalManifestUrl);
     expect(bytes).toContain(releasePublicKey);
   });

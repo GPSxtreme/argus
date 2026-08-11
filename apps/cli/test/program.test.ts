@@ -1,8 +1,8 @@
-import { describe, expect, it } from "vitest";
 import { DeploymentError } from "@argus/deployment";
+import { describe, expect, it } from "vitest";
 import {
-  createProgram,
   type CliDependencies,
+  createProgram,
   type DeploymentCliAdapter,
 } from "../src/program.js";
 

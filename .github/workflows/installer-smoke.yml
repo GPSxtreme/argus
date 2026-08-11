@@ -28,6 +28,7 @@ jobs:
       manifest_url: ${{ steps.candidate.outputs.manifest_url }}
       version: ${{ steps.candidate.outputs.version }}
       wrapper_sha256: ${{ steps.candidate.outputs.wrapper_sha256 }}
+      cli_image: ${{ steps.candidate.outputs.cli_image }}
       source_ref: ${{ steps.candidate.outputs.source_ref }}
     steps:
       - name: Check out trusted resolver
@@ -128,8 +129,10 @@ jobs:
           test "$(jq -er '.version' manifest.json)" = "$version"
           wrapper_sha256="$(jq -er '.assets.wrapper.sha256' manifest.json)"
           [[ "$wrapper_sha256" =~ ^[a-f0-9]{64}$ ]]
-          printf 'installer_url=%s\nmanifest_url=%s\nversion=%s\nwrapper_sha256=%s\nsource_ref=%s\n' \
-            "$installer_asset_url" "${base}/manifest.json" "$version" "$wrapper_sha256" \
+          cli_image="$(jq -er '.images.cli.reference' manifest.json)"
+          [[ "$cli_image" =~ ^[a-z0-9]+([._-][a-z0-9]+)*([/:][a-z0-9]+([._/-][a-z0-9]+)*)*@sha256:[a-f0-9]{64}$ ]]
+          printf 'installer_url=%s\nmanifest_url=%s\nversion=%s\nwrapper_sha256=%s\ncli_image=%s\nsource_ref=%s\n' \
+            "$installer_asset_url" "${base}/manifest.json" "$version" "$wrapper_sha256" "$cli_image" \
             "$source_ref" \
             >> "$GITHUB_OUTPUT"
 
@@ -292,6 +295,7 @@ jobs:
           MANIFEST_URL: ${{ needs.candidate.outputs.manifest_url }}
           EXPECTED_VERSION: ${{ needs.candidate.outputs.version }}
           WRAPPER_SHA256: ${{ needs.candidate.outputs.wrapper_sha256 }}
+          CLI_IMAGE: ${{ needs.candidate.outputs.cli_image }}
           ARGUS_GITHUB_TOKEN: ${{ github.token }}
           ARGUS_GITHUB_USER: ${{ github.actor }}
         shell: bash
@@ -314,6 +318,7 @@ jobs:
             --env "ARGUS_MANIFEST_URL=$MANIFEST_URL" \
             --env "ARGUS_EXPECTED_VERSION=$EXPECTED_VERSION" \
             --env "ARGUS_EXPECTED_WRAPPER_SHA256=$WRAPPER_SHA256" \
+            --env "ARGUS_EXPECTED_CLI_IMAGE=$CLI_IMAGE" \
             --env "ARGUS_INSTALL_DOCKER=$install_docker" \
             --env "ARGUS_SMOKE_ARTIFACT_DIR=/artifacts" \
             "$CONTAINER" /workspace/trusted-smoke/scripts/e2e/installer-smoke.sh

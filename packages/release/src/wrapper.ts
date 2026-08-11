@@ -1,29 +1,9 @@
-import {
-  isPinnedImageReference,
-  MANAGEMENT_WRAPPER_REQUIREMENTS,
-} from "@argus/contracts";
-
-const normalizedVersionPattern =
-  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
-
-export interface ArgusWrapperOptions {
-  version: string;
-  /**
-   * The complete credential-free CLI image reference, including its digest.
-   *
-   * The name is retained from the public renderer contract; a bare digest is
-   * intentionally insufficient because the wrapper must not invent a registry.
-   */
-  cliImageDigest: string;
-}
+import { MANAGEMENT_WRAPPER_REQUIREMENTS } from "@argus/contracts";
 
 const shellLiteral = (value: string): string =>
   `'${value.replaceAll("'", `'\\''`)}'`;
 
-const dockerArguments = (
-  image: string,
-  includeTty: boolean,
-): readonly string[] => [
+const dockerArguments = (includeTty: boolean): readonly string[] => [
   "--config",
   MANAGEMENT_WRAPPER_REQUIREMENTS.dockerConfig,
   "run",
@@ -51,11 +31,10 @@ const dockerArguments = (
   "ARGUS_VERSION=$argus_version",
   "--env",
   `DOCKER_CONFIG=${MANAGEMENT_WRAPPER_REQUIREMENTS.dockerConfig}`,
-  image,
 ];
 
-const renderDockerCommand = (image: string, includeTty: boolean): string => {
-  const arguments_ = dockerArguments(image, includeTty);
+const renderDockerCommand = (includeTty: boolean): string => {
+  const arguments_ = dockerArguments(includeTty);
   return [
     "exec docker",
     ...arguments_.map((argument) => {
@@ -68,33 +47,69 @@ const renderDockerCommand = (image: string, includeTty: boolean): string => {
       }
       return shellLiteral(argument);
     }),
+    '"$argus_cli_image"',
     '"$@"',
   ].join(" ");
 };
 
-export function renderArgusWrapper(options: ArgusWrapperOptions): string {
-  if (!normalizedVersionPattern.test(options.version)) {
-    throw new TypeError("Argus wrapper version must be full normalized SemVer.");
-  }
-  if (!isPinnedImageReference(options.cliImageDigest)) {
-    throw new TypeError(
-      "Argus CLI image must be a credential-free digest-pinned reference.",
-    );
-  }
-
-  const commandWithoutTty = renderDockerCommand(
-    options.cliImageDigest,
-    false,
-  );
-  const commandWithTty = renderDockerCommand(options.cliImageDigest, true);
+export function renderArgusWrapper(): string {
+  const commandWithoutTty = renderDockerCommand(false);
+  const commandWithTty = renderDockerCommand(true);
 
   return `#!/bin/sh
 # argus-host-wrapper schema=1
 # generated-by=@argus/release
 set -eu
 
-argus_version=${shellLiteral(options.version)}
-argus_cli_image=${shellLiteral(options.cliImageDigest)}
+argus_state_error() {
+  printf '%s\\n' 'Argus management state is missing or invalid. Rerun the signed installer.' >&2
+  exit 65
+}
+
+argus_state=${shellLiteral(MANAGEMENT_WRAPPER_REQUIREMENTS.stateFile)}
+[ -f "$argus_state" ] && [ ! -L "$argus_state" ] || argus_state_error
+argus_state_mode=$(stat -c '%a' "$argus_state" 2>/dev/null || stat -f '%Lp' "$argus_state" 2>/dev/null || true)
+[ "$argus_state_mode" = 644 ] || argus_state_error
+[ "$(wc -c < "$argus_state")" -le ${MANAGEMENT_WRAPPER_REQUIREMENTS.maximumStateBytes} ] || argus_state_error
+if ! LC_ALL=C tr -d '\\000' < "$argus_state" | cmp -s - "$argus_state"; then
+  argus_state_error
+fi
+exec 3< "$argus_state" || argus_state_error
+IFS= read -r argus_schema <&3 || argus_state_error
+IFS= read -r argus_version <&3 || argus_state_error
+IFS= read -r argus_cli_image <&3 || argus_state_error
+argus_extra=''
+if IFS= read -r argus_extra <&3 || [ -n "$argus_extra" ]; then
+  argus_state_error
+fi
+exec 3<&-
+
+[ "$argus_schema" = 'schema=${MANAGEMENT_WRAPPER_REQUIREMENTS.stateSchema}' ] || argus_state_error
+case "$argus_version" in
+  version=*) argus_version=\${argus_version#version=} ;;
+  *) argus_state_error ;;
+esac
+case "$argus_cli_image" in
+  cli_image=*) argus_cli_image=\${argus_cli_image#cli_image=} ;;
+  *) argus_state_error ;;
+esac
+if ! printf '%s\\n' "$argus_version" | LC_ALL=C grep -Eq '^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(\\.(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?(\\+[0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*)?$'; then
+  argus_state_error
+fi
+if ! printf '%s\\n' "$argus_cli_image" | LC_ALL=C grep -Eq '^(localhost(:[0-9]{1,5})?|[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(:[0-9]{1,5})?|[a-z0-9]([a-z0-9-]*[a-z0-9])?:[0-9]{1,5})/[a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)*@sha256:[a-f0-9]{64}$'; then
+  argus_state_error
+fi
+[ "$(printf '%s' "$argus_cli_image" | LC_ALL=C wc -c | tr -d ' ')" -le 255 ] || argus_state_error
+argus_registry=\${argus_cli_image%%/*}
+case "$argus_registry" in
+  *:*)
+    argus_port=\${argus_registry##*:}
+    case "$argus_port" in
+      0*|*[!0-9]*|'') argus_state_error ;;
+    esac
+    [ "$argus_port" -le 65535 ] 2>/dev/null || argus_state_error
+    ;;
+esac
 
 case "$(uname -m 2>/dev/null || true)" in
   x86_64|amd64) argus_host_arch=amd64 ;;

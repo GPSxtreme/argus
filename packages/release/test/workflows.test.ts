@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   mkdirSync,
   mkdtempSync,
@@ -13,6 +13,8 @@ import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
 interface WorkflowStep {
+  env?: Record<string, string>;
+  if?: string;
   name?: string;
   uses?: string;
   run?: string;
@@ -24,6 +26,7 @@ interface Workflow {
     string,
     {
       env?: Record<string, string>;
+      outputs?: Record<string, string>;
       "runs-on"?: string;
       steps?: WorkflowStep[];
     }
@@ -220,6 +223,31 @@ describe("GitHub workflow toolchain", () => {
     expect(workflow).toContain("ARGUS_REQUIRE_EXPECT_TESTS=1 pnpm test");
   });
 
+  it("enforces complete stable bundle changes on both pull requests and pushes", () => {
+    const workflow = parse(
+      readFileSync(repositoryFile(".github/workflows/ci.yml"), "utf8"),
+    ) as Workflow;
+    const steps = workflow.jobs.verify?.steps ?? [];
+    const checkout = steps.find((step) =>
+      step.uses?.startsWith("actions/checkout@"),
+    );
+    const policy = steps.find(
+      (step) => step.name === "Enforce stable release bundle change set",
+    );
+
+    expect(checkout?.with?.["fetch-depth"]).toBe(0);
+    expect(policy).toMatchObject({
+      if: "github.event_name == 'pull_request' || github.event.deleted == false",
+      env: {
+        BASE_SHA:
+          "$" + "{{ github.event.pull_request.base.sha || github.event.before }}",
+      },
+    });
+    expect(policy?.run).toContain(
+      "node scripts/ci/assert-stable-bundle-change.mjs",
+    );
+  });
+
   it("uses the integrity-pinned packageManager as the only pnpm setup version source", () => {
     const rootManifest = JSON.parse(
       readFileSync(repositoryFile("package.json"), "utf8"),
@@ -354,6 +382,44 @@ describe("GitHub workflow toolchain", () => {
     expect(publish?.with?.overwrite_files).toBe(false);
   });
 
+  it("exports every verified release input needed for one stable-bundle promotion", () => {
+    const workflow = parse(
+      readFileSync(repositoryFile(".github/workflows/release.yml"), "utf8"),
+    ) as Workflow;
+    const steps = workflow.jobs.release?.steps ?? [];
+    const verificationIndex = steps.findIndex(
+      (step) => step.name === "Build and verify signed assets",
+    );
+    const promotionArtifactIndex = steps.findIndex(
+      (step) => step.name === "Upload verified stable-promotion input",
+    );
+    const publishIndex = steps.findIndex(
+      (step) => step.name === "Publish immutable GitHub Release",
+    );
+    const promotionArtifact = steps[promotionArtifactIndex];
+
+    expect(promotionArtifact?.uses).toBe(
+      "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+    );
+    expect(promotionArtifact?.with).toEqual({
+      name: "stable-promotion-input",
+      path: [
+        "dist/release/manifest.json",
+        "dist/release/manifest.sig",
+        "dist/release/release-public.pem",
+        "dist/release/argus",
+        "dist/release/install.sh",
+        "dist/release/fxembed.js",
+        "dist/release/FXEMBED-LICENSE.md",
+        "dist/release/fxembed-provenance.json",
+      ].join("\n"),
+      "if-no-files-found": "error",
+    });
+    expect(verificationIndex).toBeGreaterThanOrEqual(0);
+    expect(promotionArtifactIndex).toBeGreaterThan(verificationIndex);
+    expect(publishIndex).toBeGreaterThan(promotionArtifactIndex);
+  });
+
   it("defines a clean-VPS smoke using an immutable signed candidate", () => {
     const harness = readFileSync(
       repositoryFile("scripts/e2e/vps-smoke.sh"),
@@ -387,9 +453,43 @@ describe("GitHub workflow toolchain", () => {
     expect(fixture.deployment?.root).toBe('/opt/argus');
     expect(fixture.managed?.searxng).toBe('managed');
     expect(workflow.jobs.vps_smoke?.['runs-on']).toBe('ubuntu-24.04');
+    expect(workflow.jobs.candidate?.outputs).toMatchObject({
+      acceptance_mode: '$' + '{{ steps.release.outputs.acceptance_mode }}',
+      installer_sha256: '$' + '{{ steps.release.outputs.installer_sha256 }}',
+      update_manifest_asset_url:
+        '$' + '{{ steps.release.outputs.update_manifest_asset_url }}',
+      update_version: '$' + '{{ steps.release.outputs.update_version }}',
+      update_manifest_sha256:
+        '$' + '{{ steps.release.outputs.update_manifest_sha256 }}',
+    });
+    expect(
+      workflow.jobs.vps_smoke?.steps?.find(
+        (step) => step.name === "Verify clean VPS onboarding and operation",
+      )?.env,
+    ).toMatchObject({
+      ARGUS_EXPECTED_INSTALLER_SHA256:
+        '$' + '{{ needs.candidate.outputs.installer_sha256 }}',
+      ARGUS_VPS_SMOKE_MODE:
+        '$' + '{{ needs.candidate.outputs.acceptance_mode }}',
+      ARGUS_UPDATE_MANIFEST_ASSET_URL:
+        '$' + '{{ needs.candidate.outputs.update_manifest_asset_url }}',
+      ARGUS_UPDATE_EXPECTED_VERSION:
+        '$' + '{{ needs.candidate.outputs.update_version }}',
+      ARGUS_UPDATE_MANIFEST_SHA256:
+        '$' + '{{ needs.candidate.outputs.update_manifest_sha256 }}',
+    });
     expect(JSON.stringify(workflow)).toContain('ubuntu:24.04');
     expect(JSON.stringify(workflow)).toContain('debian:13');
     expect(JSON.stringify(workflow)).toContain('"ARGUS_VPS_E2E":"1"');
+    expect(JSON.stringify(workflow)).toContain(
+      "release-acceptance-policy.ts",
+    );
+    expect(JSON.stringify(workflow)).toContain("manifest.sig");
+    expect(JSON.stringify(workflow)).toContain("release-public.pem");
+    expect(JSON.stringify(workflow)).toContain("verify-release");
+    expect(harness).toContain("ARGUS_VPS_SMOKE_MODE");
+    expect(harness).toContain("ARGUS_EXPECTED_INSTALLER_SHA256");
+    expect(harness).toContain("scripts/e2e/verify-sha256.sh");
     expect(operations).toContain('/opt/argus');
     expect(operations).toContain('secrets.env');
     expect(operations).toContain('0600');

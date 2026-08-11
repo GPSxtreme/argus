@@ -1,4 +1,8 @@
 import {
+  constants as fsConstants,
+  readFileSync,
+} from "node:fs";
+import {
   chmod,
   lstat,
   mkdir,
@@ -8,43 +12,39 @@ import {
   stat,
   unlink,
 } from "node:fs/promises";
-import {
-  constants as fsConstants,
-  readFileSync,
-} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import {
+  type ArgusConfig,
   loadConfig,
   resolveConfigPath,
-  type ArgusConfig,
 } from "@argus/config";
 import {
+  applyUpdate,
+  type CommandExecutor,
   createArgusDoctorApi,
   DeploymentError,
+  finalizeUpdate,
+  type DiagnosticReport,
   getDeploymentStatus,
   inspectHost,
   loadDeploymentState,
+  type OnboardingAnswersV1,
   onboardingAnswersSchema,
-  repairService,
-  applyUpdate,
   planUpdate,
-  rollbackUpdate,
+  repairService,
   restartDeployment,
+  rollbackUpdate,
   runDoctor,
   MANAGEMENT_WRAPPER_REQUIREMENTS as SHARED_MANAGEMENT_WRAPPER_REQUIREMENTS,
   startDeployment,
   stopDeployment,
-  type DiagnosticReport,
-  type OnboardingAnswersV1,
-  type CommandExecutor,
   type UpdatePlan,
 } from "@argus/deployment";
-import type { ProductionUpdateIntegration } from "./integrations.js";
-import type { VerifiedReleaseManifest } from "@argus/release";
 import { targetsFromConfig } from "@argus/scheduler";
 import { Command, CommanderError } from "commander";
 import { parse } from "yaml";
 import { z } from "zod";
+import type { ProductionUpdateIntegration } from "./integrations.js";
 import {
   CliExitError,
   type CliIO,
@@ -1317,11 +1317,19 @@ const createDeploymentAdapter = (
           { recovery: "Install Argus through the signed release channel, then retry the update." },
         );
       }
-      const [release, rollbackRelease] = await Promise.all([
+      const [release, currentReleaseInspection] = await Promise.all([
         updateIntegration.fetchUpdateRelease(),
-        updateIntegration.fetchRollbackRelease(),
+        updateIntegration.inspectCurrentRelease(),
       ]);
-      return planUpdate({ root, release, rollbackRelease, executor });
+      return {
+        ...(await planUpdate({
+          root,
+          release,
+          rollbackRelease: currentReleaseInspection.release,
+          executor,
+        })),
+        currentReleaseInspection,
+      };
     },
     async applyUpdate(inspection) {
       if (updateIntegration === undefined) {
@@ -1330,9 +1338,33 @@ const createDeploymentAdapter = (
           "A verified release manifest is required before Argus can apply an update.",
         );
       }
-      const plan = inspection as UpdatePlan;
-      await updateIntegration.stageCurrentRelease(plan.release);
-      const applied = await applyUpdate({ root, plan, executor });
+      const plan = inspection as UpdatePlan & { currentReleaseInspection?: unknown };
+      const currentReleaseInspection = updateIntegration.validateCurrentReleaseInspection(
+        plan.currentReleaseInspection,
+        plan.rollbackRelease,
+      );
+      if (!plan.noop && currentReleaseInspection.recovery !== "none") {
+        const recoveryPlan = await planUpdate({
+          root,
+          release: currentReleaseInspection.release,
+          rollbackRelease: currentReleaseInspection.release,
+          executor,
+        });
+        const recovered = await applyUpdate({ root, plan: recoveryPlan, executor });
+        await updateIntegration.reconcileCurrentRelease(currentReleaseInspection);
+        await updateIntegration.promoteManagementRelease(currentReleaseInspection.release);
+        await finalizeUpdate({ root, plan: recoveryPlan, applied: recovered });
+      }
+      if (!plan.noop) {
+        await updateIntegration.stageCurrentRelease(plan.release);
+      }
+      const applied = await applyUpdate({
+        root,
+        plan,
+        executor,
+        getRollbackContext: () =>
+          updateIntegration.getRollbackContext(plan.rollbackRelease),
+      });
       if (!applied.health.healthy) {
         throw new DeploymentError(
           "UPDATE_HEALTHCHECK_FAILED",
@@ -1340,8 +1372,15 @@ const createDeploymentAdapter = (
           { recovery: "Run 'argus doctor --json' before retrying the update." },
         );
       }
-      await updateIntegration.promoteCurrentRelease(plan.release);
-      return applied;
+      if (plan.noop) {
+        await updateIntegration.reconcileCurrentRelease(currentReleaseInspection);
+      } else {
+        await updateIntegration.promoteCurrentRelease(plan.release);
+      }
+      await updateIntegration.promoteManagementRelease(
+        plan.noop ? currentReleaseInspection.release : plan.release,
+      );
+      return finalizeUpdate({ root, plan, applied });
     },
     async verifyUpdate(applied) {
       const result = applied as { health?: { healthy?: unknown } } | undefined;
@@ -1358,14 +1397,28 @@ const createDeploymentAdapter = (
       if (updateIntegration === undefined) {
         throw new DeploymentError("RELEASE_MANIFEST_REQUIRED", "A verified signed rollback release is required.");
       }
-      return { release: await updateIntegration.fetchRollbackRelease() };
+      return { snapshot: await updateIntegration.fetchRollbackSnapshot() };
     },
     async applyRollbackUpdate(inspection) {
-      const rollback = inspection as { release?: unknown };
-      if (!rollback.release) {
-        throw new DeploymentError("UPDATE_ROLLBACK_UNAVAILABLE", "No verified rollback release was selected.");
+      if (updateIntegration === undefined) {
+        throw new DeploymentError("RELEASE_MANIFEST_REQUIRED", "A verified signed rollback release is required.");
       }
-      return rollbackUpdate({ root, executor, release: rollback.release as VerifiedReleaseManifest });
+      const rollback = inspection as { snapshot?: unknown };
+      const snapshot = updateIntegration.validateRollbackSnapshot(
+        rollback.snapshot,
+      );
+      const release = snapshot.release;
+      const applied = await rollbackUpdate({ root, executor, release });
+      if (!applied.health.healthy) {
+        throw new DeploymentError(
+          "UPDATE_ROLLBACK_VERIFY_FAILED",
+          "Argus rollback health verification failed.",
+          { recovery: "Run 'argus doctor --json' and preserve the existing backup for recovery." },
+        );
+      }
+      await updateIntegration.promoteRollbackSnapshot(snapshot);
+      await updateIntegration.promoteManagementRelease(release);
+      return applied;
     },
     async inspectOnboarding(answers, secrets) {
       const state = await loadDeploymentState(root);

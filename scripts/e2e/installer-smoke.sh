@@ -15,7 +15,8 @@ for argus_name in \
   ARGUS_INSTALLER_URL \
   ARGUS_MANIFEST_URL \
   ARGUS_EXPECTED_VERSION \
-  ARGUS_EXPECTED_WRAPPER_SHA256
+  ARGUS_EXPECTED_WRAPPER_SHA256 \
+  ARGUS_EXPECTED_CLI_IMAGE
 do
   argus_required "$argus_name"
 done
@@ -47,6 +48,9 @@ printf '%s\n' "$ARGUS_EXPECTED_VERSION" |
 printf '%s\n' "$ARGUS_EXPECTED_WRAPPER_SHA256" |
   grep -Eq '^[a-f0-9]{64}$' ||
   argus_die "ARGUS_EXPECTED_WRAPPER_SHA256 must be lowercase SHA-256"
+printf '%s\n' "$ARGUS_EXPECTED_CLI_IMAGE" |
+  grep -Eq '^[a-z0-9]+([._-][a-z0-9]+)*([/:][a-z0-9]+([._/-][a-z0-9]+)*)*@sha256:[a-f0-9]{64}$' ||
+  argus_die "ARGUS_EXPECTED_CLI_IMAGE must be digest pinned"
 
 for argus_command in curl expect jq openssl sha256sum timeout; do
   command -v "$argus_command" >/dev/null 2>&1 ||
@@ -66,6 +70,7 @@ argus_artifacts=${ARGUS_SMOKE_ARTIFACT_DIR:-/tmp/argus-installer-smoke}
 argus_work=$(mktemp -d "${TMPDIR:-/tmp}/argus-installer-smoke.XXXXXX")
 argus_installer=$argus_work/install.sh
 argus_first_wrapper=$argus_work/argus.first
+argus_first_management_state=$argus_work/management.state.first
 argus_answers=/opt/argus/.installer-smoke-onboard.yaml
 argus_expect=$argus_work/onboard.exp
 argus_doctor=$argus_work/doctor.json
@@ -415,12 +420,48 @@ grep -Fx "  target: /usr/local/bin/argus" "$argus_inspection" >/dev/null ||
 grep -Fx "No files were downloaded or changed." "$argus_inspection" >/dev/null ||
   argus_die "installer inspection did not confirm a mutation-free plan"
 
+argus_management_state=/opt/argus/management.state
+argus_verify_management_state() {
+  [ -f "$argus_management_state" ] && [ ! -L "$argus_management_state" ] ||
+    argus_die "management state is missing or unsafe"
+  argus_management_state_mode=$(stat -c '%a' "$argus_management_state") ||
+    argus_die "could not inspect management state mode"
+  [ "$argus_management_state_mode" = 644 ] ||
+    argus_die "management state mode is not 0644"
+  [ "$(wc -c < "$argus_management_state" | tr -d ' ')" -le 1024 ] ||
+    argus_die "management state is oversized"
+  exec 3< "$argus_management_state" || argus_die "could not read management state"
+  IFS= read -r argus_management_schema <&3 || argus_die "management state is incomplete"
+  IFS= read -r argus_management_version <&3 || argus_die "management state is incomplete"
+  IFS= read -r argus_management_cli_image <&3 || argus_die "management state is incomplete"
+  argus_management_extra=
+  if IFS= read -r argus_management_extra <&3 || [ -n "$argus_management_extra" ]; then
+    argus_die "management state has unexpected extra content"
+  fi
+  exec 3<&-
+  [ "$argus_management_schema" = schema=1 ] || argus_die "management state has the wrong schema"
+  case "$argus_management_version" in
+    version=*) argus_management_version=${argus_management_version#version=} ;;
+    *) argus_die "management state has no version" ;;
+  esac
+  [ "$argus_management_version" = "$ARGUS_EXPECTED_VERSION" ] ||
+    argus_die "management state has the wrong release version"
+  case "$argus_management_cli_image" in
+    cli_image=*@sha256:[a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9]) ;;
+    *) argus_die "management state has an invalid CLI image" ;;
+  esac
+  [ "$argus_management_cli_image" = "cli_image=$ARGUS_EXPECTED_CLI_IMAGE" ] ||
+    argus_die "management state has the wrong CLI image"
+}
+
 ARGUS_INSTALL_INSPECT=0 sh "$argus_installer" >> "$argus_artifacts/installer.log" 2>&1
 printf '%s  %s\n' "$ARGUS_EXPECTED_WRAPPER_SHA256" /usr/local/bin/argus |
   sha256sum --check --strict
 [ "$(/usr/local/bin/argus --version)" = "$ARGUS_EXPECTED_VERSION" ] ||
   argus_die "first installation reported the wrong release version"
 cp /usr/local/bin/argus "$argus_first_wrapper"
+argus_verify_management_state
+cp "$argus_management_state" "$argus_first_management_state"
 
 ARGUS_INSTALL_INSPECT=0 sh "$argus_installer" >> "$argus_artifacts/installer.log" 2>&1
 printf '%s  %s\n' "$ARGUS_EXPECTED_WRAPPER_SHA256" /usr/local/bin/argus |
@@ -429,6 +470,9 @@ cmp -s "$argus_first_wrapper" /usr/local/bin/argus ||
   argus_die "second installation changed the exact signed wrapper"
 [ "$(/usr/local/bin/argus --version)" = "$ARGUS_EXPECTED_VERSION" ] ||
   argus_die "second installation reported the wrong release version"
+argus_verify_management_state
+cmp -s "$argus_first_management_state" "$argus_management_state" ||
+  argus_die "second installation changed management state"
 printf '%s  %s\n' "$ARGUS_EXPECTED_WRAPPER_SHA256" /usr/local/bin/argus \
   > "$argus_artifacts/wrapper.sha256"
 

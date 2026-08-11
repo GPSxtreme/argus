@@ -1,10 +1,35 @@
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  open,
+  readdir,
+  readFile,
+  rename,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApp } from "@argus/app";
 import { validateConfig } from "@argus/config";
-import { type CommandExecutor, type OnboardingAnswersV1, saveDeploymentState } from "@argus/deployment";
-import { buildReleaseArtifacts } from "@argus/release";
+import {
+  applyUpdate,
+  type CommandExecutor,
+  DeploymentError,
+  loadDeploymentState,
+  type OnboardingAnswersV1,
+  planUpdate,
+  saveDeploymentState,
+} from "@argus/deployment";
+import {
+  buildReleaseArtifacts,
+  parseManagementState,
+  renderArgusWrapper,
+  type VerifiedReleaseManifest,
+  verifyReleaseManifestWithIdentity,
+  writeManagementStateAtomic,
+} from "@argus/release";
 import { createSqliteRepository } from "@argus/storage-sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -13,7 +38,28 @@ import {
   createProductionUpdateIntegration,
   createReleaseComposition,
 } from "../src/integrations.js";
-import { createNodeCliDependencies } from "../src/program.js";
+import { createNodeCliDependencies, createProgram } from "../src/program.js";
+
+const updateEventCapture = vi.hoisted(() => ({
+  events: undefined as string[] | undefined,
+}));
+
+vi.mock("@argus/deployment", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@argus/deployment")>();
+  return {
+    ...actual,
+    applyUpdate: async (input: Parameters<typeof actual.applyUpdate>[0]) => {
+      if (!input.plan.noop) updateEventCapture.events?.push("backup");
+      const result = await actual.applyUpdate(input);
+      if (!input.plan.noop) updateEventCapture.events?.push("save-deployment-state");
+      return result;
+    },
+    finalizeUpdate: async (input: Parameters<typeof actual.finalizeUpdate>[0]) => {
+      updateEventCapture.events?.push("verified");
+      return actual.finalizeUpdate(input);
+    },
+  };
+});
 
 const repositories: Awaited<ReturnType<typeof createSqliteRepository>>[] = [];
 afterEach(() => {
@@ -178,8 +224,12 @@ const answers: OnboardingAnswersV1 = {
 
 class DeploymentExecutor implements CommandExecutor {
   running = false;
+  restarts = 0;
   async run(_command: string, args: string[]) {
-    if (args.includes("up")) this.running = true;
+    if (args.includes("up")) {
+      this.running = true;
+      this.restarts += 1;
+    }
     if (args.at(-1) === "json") {
       return {
         exitCode: 0,
@@ -201,11 +251,13 @@ class DeploymentExecutor implements CommandExecutor {
 const releaseFixture = ({
   version = "1.2.3",
   appMarker = "a",
+  cliMarker = "b",
   fxembedMarker = "default",
   releaseBaseUrl = `https://release.example/v${version}`,
 }: {
   version?: string;
   appMarker?: string;
+  cliMarker?: string;
   fxembedMarker?: string;
   releaseBaseUrl?: string;
 } = {}) => {
@@ -216,7 +268,7 @@ const releaseFixture = ({
     sourceDateEpoch: "1785580200",
     images: [
       { name: "app", reference: `ghcr.io/gpsxtreme/argus@sha256:${digest(appMarker)}` },
-      { name: "cli", reference: `ghcr.io/gpsxtreme/argus-cli@sha256:${digest("b")}` },
+      { name: "cli", reference: `ghcr.io/gpsxtreme/argus-cli@sha256:${digest(cliMarker)}` },
       { name: "searxng", reference: `docker.io/searxng/searxng@sha256:${digest("c")}` },
       { name: "postgres", reference: `docker.io/library/postgres@sha256:${digest("d")}` },
     ],
@@ -262,6 +314,53 @@ const saveManagedState = async (
     },
     updatedAt: "2026-08-01T00:00:00.000Z",
   });
+};
+
+const releaseContextFor = (fixture: ReturnType<typeof releaseFixture>): string =>
+  JSON.stringify({
+    schemaVersion: 1,
+    manifest: Buffer.from(fixture.manifestBytes).toString("base64"),
+    signature: Buffer.from(fixture.signature).toString("base64"),
+    fxembed: Buffer.from(fixture.fxembed).toString("base64"),
+  });
+
+const preparePendingRecovery = async (
+  root: string,
+  current: ReturnType<typeof releaseFixture>,
+  target: ReturnType<typeof releaseFixture>,
+) => {
+  const currentContext = releaseContextFor(current);
+  const targetContext = releaseContextFor(target);
+  const currentRelease = verifyReleaseManifestWithIdentity(
+    current.manifestBytes,
+    current.signature,
+    current.publicKeyPem,
+  );
+  const targetRelease = verifyReleaseManifestWithIdentity(
+    target.manifestBytes,
+    target.signature,
+    current.publicKeyPem,
+  );
+  await writeFile(join(root, "release-context.json"), currentContext);
+  await saveManagedState(root, current);
+  const plan = await planUpdate({
+    root,
+    release: targetRelease,
+    rollbackRelease: currentRelease,
+    executor: new DeploymentExecutor(),
+  });
+  await applyUpdate({
+    root,
+    plan,
+    executor: new DeploymentExecutor(),
+    getRollbackContext: async () => Buffer.from(currentContext),
+  });
+  await writeFile(join(root, "release-context.pending.json"), targetContext);
+  return {
+    currentContext,
+    targetContext,
+    updateState: await readFile(join(root, "update-state.json"), "utf8"),
+  };
 };
 
 describe("production onboarding integration", () => {
@@ -554,9 +653,16 @@ describe("production onboarding integration", () => {
       }),
       updateIntegration: expect.objectContaining({
         fetchUpdateRelease: expect.any(Function),
-        fetchRollbackRelease: expect.any(Function),
+        inspectCurrentRelease: expect.any(Function),
+        validateCurrentReleaseInspection: expect.any(Function),
+        fetchRollbackSnapshot: expect.any(Function),
+        validateRollbackSnapshot: expect.any(Function),
+        getRollbackContext: expect.any(Function),
         stageCurrentRelease: expect.any(Function),
         promoteCurrentRelease: expect.any(Function),
+        reconcileCurrentRelease: expect.any(Function),
+        promoteRollbackSnapshot: expect.any(Function),
+        promoteManagementRelease: expect.any(Function),
       }),
     });
   });
@@ -621,7 +727,7 @@ describe("production onboarding integration", () => {
     })).toThrow(expect.objectContaining({ code: "RELEASE_COMPOSITION_INVALID" }));
   });
 
-  it("promotes the verified target context only after success so the next update rolls back to it", async () => {
+  it("returns the exact verified prior context bytes before promoting a target release", async () => {
     const root = await mkdtemp(join(tmpdir(), "argus-update-context-"));
     const releaseA = releaseFixture({ version: "1.0.0", appMarker: "a" });
     const releaseB = releaseFixture({ version: "2.0.0", appMarker: "b" });
@@ -655,15 +761,19 @@ describe("production onboarding integration", () => {
       },
     });
 
+    const verifiedA = (await integration.inspectCurrentRelease()).release;
     const verifiedB = await integration.fetchUpdateRelease();
+    const rollbackContext = await integration.getRollbackContext(verifiedA);
     await integration.stageCurrentRelease(verifiedB);
     await integration.promoteCurrentRelease(verifiedB);
+    expect(Buffer.from(rollbackContext).toString("utf8")).toContain(
+      Buffer.from(releaseA.manifestBytes).toString("base64"),
+    );
     target = releaseC;
     await expect(integration.fetchUpdateRelease()).resolves.toMatchObject({ manifest: { version: "3.0.0" } });
-    await expect(integration.fetchRollbackRelease()).resolves.toMatchObject({ manifest: { version: "2.0.0" } });
   });
 
-  it("recovers an interrupted context promotion when the staged release matches deployment state", async () => {
+  it("fails closed on interrupted context promotion without authoritative rollback state", async () => {
     const root = await mkdtemp(join(tmpdir(), "argus-update-recovery-"));
     const releaseA = releaseFixture({ version: "1.0.0", appMarker: "a" });
     const releaseB = releaseFixture({ version: "2.0.0", appMarker: "b" });
@@ -683,11 +793,575 @@ describe("production onboarding integration", () => {
       fetcher: async () => new Response(null, { status: 404 }),
     });
 
-    await expect(integration.fetchRollbackRelease()).resolves.toMatchObject({ manifest: { version: "2.0.0" } });
-    expect(await readFile(join(root, "release-context.json"), "utf8")).toBe(contextFor(releaseB));
+    await expect(integration.inspectCurrentRelease()).rejects.toMatchObject({ code: "UPDATE_ROLLBACK_UNAVAILABLE" });
+    expect(await readFile(join(root, "release-context.json"), "utf8")).toBe(contextFor(releaseA));
   });
 
-  it("stages the target before apply and promotes it only after healthy update verification", async () => {
+  it("keeps pending recovery, current context, and transaction bytes unchanged during a dry-run inspection", async () => {
+    const root = await mkdtemp(join(tmpdir(), "argus-update-read-only-inspection-"));
+    const current = releaseFixture({ version: "1.0.0", appMarker: "a" });
+    const target = releaseFixture({ version: "2.0.0", appMarker: "b" });
+    const { currentContext, targetContext, updateState } = await preparePendingRecovery(root, current, target);
+    const updateIntegration = createProductionUpdateIntegration({
+      root,
+      manifestUrl: "https://release.example/manifest.json",
+      publicKeyPem: current.publicKeyPem,
+      fetcher: async (input) => {
+        const url = String(input);
+        const bytes = url.endsWith("manifest.sig")
+          ? target.signature
+          : url.endsWith("manifest.json")
+            ? target.manifestBytes
+            : target.fxembed;
+        return new Response(Uint8Array.from(bytes).buffer);
+      },
+    });
+    const dependencies = createNodeCliDependencies({
+      root,
+      executor: new DeploymentExecutor(),
+      prompt: {
+        async confirm() { return true; },
+        async select() { return ""; },
+        async multiselect() { return []; },
+        async text() { return ""; },
+        async secret() { return ""; },
+      },
+      io: { stdout() {}, stderr() {} },
+      updateIntegration,
+      version: "test",
+    });
+
+    await expect(dependencies.deployment.inspectUpdate?.()).resolves.toMatchObject({
+      noop: true,
+      rollbackRelease: { manifest: { version: target.version } },
+      currentReleaseInspection: {
+        recovery: "promote-pending",
+        release: { manifest: { version: target.version } },
+      },
+    });
+    await createProgram(dependencies).parseAsync(["node", "argus", "update", "--dry-run"]);
+
+    expect(await readFile(join(root, "release-context.json"), "utf8")).toBe(currentContext);
+    expect(await readFile(join(root, "release-context.pending.json"), "utf8")).toBe(targetContext);
+    expect(await readFile(join(root, "update-state.json"), "utf8")).toBe(updateState);
+  });
+
+  it("leaves every durable recovery file unchanged when a confirmed no-op retry is unhealthy", async () => {
+    const root = await mkdtemp(join(tmpdir(), "argus-update-unhealthy-recovery-"));
+    const current = releaseFixture({ version: "1.0.0", appMarker: "a" });
+    const target = releaseFixture({ version: "2.0.0", appMarker: "b" });
+    const { currentContext, targetContext, updateState } = await preparePendingRecovery(root, current, target);
+    const managementState = `schema=1\nversion=${current.version}\ncli_image=ghcr.io/gpsxtreme/argus-cli@sha256:${digest("b")}\n`;
+    await writeFile(join(root, "management.state"), managementState);
+    const updateIntegration = createProductionUpdateIntegration({
+      root,
+      manifestUrl: "https://release.example/manifest.json",
+      publicKeyPem: current.publicKeyPem,
+      fetcher: async (input) => {
+        const url = String(input);
+        const bytes = url.endsWith("manifest.sig")
+          ? target.signature
+          : url.endsWith("manifest.json")
+            ? target.manifestBytes
+            : target.fxembed;
+        return new Response(Uint8Array.from(bytes).buffer);
+      },
+    });
+    const dependencies = createNodeCliDependencies({
+      root,
+      executor: {
+        async run(_command, args) {
+          return args.includes("ps")
+            ? { exitCode: 0, stdout: "[]", stderr: "" }
+            : { exitCode: 0, stdout: "", stderr: "" };
+        },
+      },
+      prompt: {
+        async confirm() { return true; },
+        async select() { return ""; },
+        async multiselect() { return []; },
+        async text() { return ""; },
+        async secret() { return ""; },
+      },
+      io: { stdout() {}, stderr() {} },
+      updateIntegration,
+      version: "test",
+    });
+
+    await expect(
+      createProgram(dependencies).parseAsync(["node", "argus", "update", "--yes"]),
+    ).rejects.toMatchObject({ exitCode: 1 });
+
+    expect(await readFile(join(root, "release-context.json"), "utf8")).toBe(currentContext);
+    expect(await readFile(join(root, "release-context.pending.json"), "utf8")).toBe(targetContext);
+    expect(await readFile(join(root, "management.state"), "utf8")).toBe(managementState);
+    expect(await readFile(join(root, "update-state.json"), "utf8")).toBe(updateState);
+  });
+
+  it("reconciles a healthy pending recovery only after health, management promotion, and final verification", async () => {
+    const root = await mkdtemp(join(tmpdir(), "argus-update-healthy-recovery-"));
+    const current = releaseFixture({ version: "1.0.0", appMarker: "a" });
+    const target = releaseFixture({ version: "2.0.0", appMarker: "b" });
+    const { targetContext } = await preparePendingRecovery(root, current, target);
+    const signed = createProductionUpdateIntegration({
+      root,
+      manifestUrl: "https://release.example/manifest.json",
+      publicKeyPem: current.publicKeyPem,
+      fetcher: async (input) => {
+        const url = String(input);
+        const bytes = url.endsWith("manifest.sig")
+          ? target.signature
+          : url.endsWith("manifest.json")
+            ? target.manifestBytes
+            : target.fxembed;
+        return new Response(Uint8Array.from(bytes).buffer);
+      },
+    });
+    const events: string[] = [];
+    const updateIntegration = {
+      ...signed,
+      async reconcileCurrentRelease(
+        inspection: Parameters<typeof signed.reconcileCurrentRelease>[0],
+      ) {
+        events.push("context");
+        await signed.reconcileCurrentRelease(inspection);
+      },
+      async promoteManagementRelease(
+        release: Parameters<typeof signed.promoteManagementRelease>[0],
+      ) {
+        events.push("management");
+        await signed.promoteManagementRelease(release);
+      },
+    };
+    const dependencies = createNodeCliDependencies({
+      root,
+      executor: {
+        async run(_command, args) {
+          if (args.includes("ps")) {
+            events.push("health");
+            return {
+              exitCode: 0,
+              stdout: '[{"Service":"argus","State":"running","Health":"healthy"}]',
+              stderr: "",
+            };
+          }
+          return { exitCode: 0, stdout: "", stderr: "" };
+        },
+      },
+      prompt: {
+        async confirm() { return true; },
+        async select() { return ""; },
+        async multiselect() { return []; },
+        async text() { return ""; },
+        async secret() { return ""; },
+      },
+      io: { stdout() {}, stderr() {} },
+      updateIntegration,
+      version: "test",
+    });
+
+    updateEventCapture.events = events;
+    try {
+      await createProgram(dependencies).parseAsync(["node", "argus", "update", "--yes"]);
+    } finally {
+      updateEventCapture.events = undefined;
+    }
+
+    expect(events).toEqual(["health", "context", "management", "verified"]);
+    expect(await readFile(join(root, "release-context.json"), "utf8")).toBe(targetContext);
+    await expect(readFile(join(root, "release-context.pending.json"), "utf8")).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    await expect(readFile(join(root, "update-state.json"), "utf8")).resolves.toContain(
+      '"phase": "verified"',
+    );
+  });
+
+  it("settles a pending recovery before staging a newer target so rollback holds the recovered context", async () => {
+    const root = await mkdtemp(join(tmpdir(), "argus-update-recovery-then-target-"));
+    const current = releaseFixture({ version: "1.0.0", appMarker: "a" });
+    const recovered = releaseFixture({ version: "2.0.0", appMarker: "b", cliMarker: "c" });
+    const target = releaseFixture({ version: "3.0.0", appMarker: "d", cliMarker: "e" });
+    const { targetContext: recoveredContext } = await preparePendingRecovery(root, current, recovered);
+    const updateIntegration = createProductionUpdateIntegration({
+      root,
+      manifestUrl: "https://release.example/manifest.json",
+      publicKeyPem: current.publicKeyPem,
+      fetcher: async (input) => {
+        const url = String(input);
+        const bytes = url.endsWith("manifest.sig")
+          ? target.signature
+          : url.endsWith("manifest.json")
+            ? target.manifestBytes
+            : target.fxembed;
+        return new Response(Uint8Array.from(bytes).buffer);
+      },
+    });
+    const dependencies = createNodeCliDependencies({
+      root,
+      executor: {
+        async run(_command, args) {
+          return args.includes("ps")
+            ? {
+                exitCode: 0,
+                stdout: '[{"Service":"argus","State":"running","Health":"healthy"}]',
+                stderr: "",
+              }
+            : { exitCode: 0, stdout: "", stderr: "" };
+        },
+      },
+      prompt: {
+        async confirm() { return true; },
+        async select() { return ""; },
+        async multiselect() { return []; },
+        async text() { return ""; },
+        async secret() { return ""; },
+      },
+      io: { stdout() {}, stderr() {} },
+      updateIntegration,
+      version: "test",
+    });
+
+    await createProgram(dependencies).parseAsync(["node", "argus", "update", "--yes"]);
+
+    const persisted = JSON.parse(await readFile(join(root, "update-state.json"), "utf8")) as {
+      phase: string;
+      release: { manifest: { version: string } };
+      backup: { signedContext: { relativePath: string } };
+    };
+    expect(persisted).toMatchObject({
+      phase: "verified",
+      release: { manifest: { version: target.version } },
+    });
+    expect(await readFile(join(root, persisted.backup.signedContext.relativePath), "utf8")).toBe(
+      recoveredContext,
+    );
+    expect(parseManagementState(await readFile(join(root, "management.state"), "utf8"))).toMatchObject({
+      version: target.version,
+      cliImage: `ghcr.io/gpsxtreme/argus-cli@sha256:${digest("e")}`,
+    });
+  });
+
+  it("holds verified rollback bytes across confirmation and rejects mutated inspection material before side effects", async () => {
+    const root = await mkdtemp(join(tmpdir(), "argus-update-rollback-lifecycle-"));
+    const launcherDirectory = await mkdtemp(join(tmpdir(), "argus-immutable-launcher-"));
+    const launcher = join(launcherDirectory, "argus");
+    const current = releaseFixture({ version: "1.0.0", appMarker: "a", cliMarker: "b" });
+    const target = releaseFixture({ version: "2.0.0", appMarker: "e", cliMarker: "f" });
+    const currentContext = JSON.stringify({
+      schemaVersion: 1,
+      manifest: Buffer.from(current.manifestBytes).toString("base64"),
+      signature: Buffer.from(current.signature).toString("base64"),
+      fxembed: Buffer.from(current.fxembed).toString("base64"),
+    });
+    const launcherBytes = Buffer.from(renderArgusWrapper());
+    await writeFile(launcher, launcherBytes, { mode: 0o755 });
+    await writeFile(join(root, "release-context.json"), currentContext);
+    await writeFile(join(root, "argus.db"), "prior database");
+    await writeFile(
+      join(root, "management.state"),
+      `schema=1\nversion=${current.version}\ncli_image=ghcr.io/gpsxtreme/argus-cli@sha256:${digest("b")}\n`,
+    );
+    await saveManagedState(root, current);
+
+    const updateIntegration = createProductionUpdateIntegration({
+      root,
+      manifestUrl: "https://release.example/manifest.json",
+      publicKeyPem: current.publicKeyPem,
+      fetcher: async (input) => {
+        const url = String(input);
+        const bytes = url.endsWith("manifest.sig")
+          ? target.signature
+          : url.endsWith("manifest.json")
+            ? target.manifestBytes
+            : target.fxembed;
+        return new Response(Uint8Array.from(bytes).buffer);
+      },
+    });
+    const deploymentExecutor = new DeploymentExecutor();
+    const dependencies = createNodeCliDependencies({
+      root,
+      executor: deploymentExecutor,
+      prompt: {
+        async confirm() { return true; },
+        async select() { return ""; },
+        async multiselect() { return []; },
+        async text() { return ""; },
+        async secret() { return ""; },
+      },
+      io: { stdout() {}, stderr() {} },
+      updateIntegration,
+      version: "test",
+    });
+
+    await createProgram(dependencies).parseAsync(["node", "argus", "update", "--yes"]);
+    await createProgram(dependencies).parseAsync(["node", "argus", "update", "--yes"]);
+    await writeFile(join(root, "argus.db"), "target database");
+    const targetContext = await readFile(join(root, "release-context.json"), "utf8");
+    const targetManagementState = await readFile(join(root, "management.state"), "utf8");
+    await expect(readFile(join(root, "rollback-release-context.json"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    const persistedManifestInspection = await dependencies.deployment.inspectRollbackUpdate?.();
+    const originalUpdateState = await readFile(join(root, "update-state.json"), "utf8");
+    const forgedUpdateState = JSON.parse(originalUpdateState) as {
+      rollbackRelease: VerifiedReleaseManifest;
+    };
+    forgedUpdateState.rollbackRelease.manifest.publishedAt = "2026-08-02T00:00:00.000Z";
+    forgedUpdateState.rollbackRelease.manifest.images = {
+      app: {
+        reference: `ghcr.io/gpsxtreme/argus@sha256:${digest("1")}`,
+        digest: `sha256:${digest("1")}`,
+      },
+      cli: {
+        reference: `ghcr.io/gpsxtreme/argus-cli@sha256:${digest("2")}`,
+        digest: `sha256:${digest("2")}`,
+      },
+      postgres: {
+        reference: `docker.io/library/postgres@sha256:${digest("3")}`,
+        digest: `sha256:${digest("3")}`,
+      },
+      searxng: {
+        reference: `docker.io/searxng/searxng@sha256:${digest("4")}`,
+        digest: `sha256:${digest("4")}`,
+      },
+    };
+    forgedUpdateState.rollbackRelease.manifest.assets.fxembed = {
+      url: "https://attacker.test/fxembed.js",
+      sha256: digest("5"),
+      compatibilityDate: "2026-08-02",
+    };
+    forgedUpdateState.rollbackRelease.manifest.assets.wrapper = {
+      url: "https://attacker.test/argus",
+      sha256: digest("6"),
+    };
+    await writeFile(join(root, "update-state.json"), JSON.stringify(forgedUpdateState));
+    await expect(
+      dependencies.deployment.applyRollbackUpdate?.(persistedManifestInspection),
+    ).rejects.toMatchObject({ code: "UPDATE_ROLLBACK_INCOMPATIBLE" });
+    expect(await loadDeploymentState(root)).toMatchObject({ argusVersion: target.version });
+    expect(await readFile(join(root, "argus.db"), "utf8")).toBe("target database");
+    expect(await readFile(join(root, "release-context.json"), "utf8")).toBe(targetContext);
+    expect(await readFile(join(root, "management.state"), "utf8")).toBe(targetManagementState);
+    expect(deploymentExecutor.restarts).toBe(1);
+    await writeFile(join(root, "update-state.json"), originalUpdateState);
+
+    const mutatedReleaseInspection = await dependencies.deployment.inspectRollbackUpdate?.() as {
+      snapshot: { release: { manifest: { version: string } } };
+    };
+    mutatedReleaseInspection.snapshot.release.manifest.version = "forged";
+    await expect(
+      dependencies.deployment.applyRollbackUpdate?.(mutatedReleaseInspection),
+    ).rejects.toMatchObject({ code: "UPDATE_ROLLBACK_UNAVAILABLE" });
+    expect(await loadDeploymentState(root)).toMatchObject({ argusVersion: target.version });
+    expect(await readFile(join(root, "argus.db"), "utf8")).toBe("target database");
+    expect(await readFile(join(root, "release-context.json"), "utf8")).toBe(targetContext);
+    expect(await readFile(join(root, "management.state"), "utf8")).toBe(targetManagementState);
+    expect(deploymentExecutor.restarts).toBe(1);
+
+    const invalidInspection = await dependencies.deployment.inspectRollbackUpdate?.() as {
+      snapshot: { signedContext: Uint8Array };
+    };
+    invalidInspection.snapshot.signedContext[0] =
+      (invalidInspection.snapshot.signedContext[0] ?? 0) ^ 0xff;
+    await expect(
+      dependencies.deployment.applyRollbackUpdate?.(invalidInspection),
+    ).rejects.toMatchObject({ code: "UPDATE_ROLLBACK_UNAVAILABLE" });
+    expect(await loadDeploymentState(root)).toMatchObject({ argusVersion: target.version });
+    expect(await readFile(join(root, "argus.db"), "utf8")).toBe("target database");
+    expect(await readFile(join(root, "release-context.json"), "utf8")).toBe(targetContext);
+    expect(await readFile(join(root, "management.state"), "utf8")).toBe(targetManagementState);
+    expect(deploymentExecutor.restarts).toBe(1);
+
+    const heldInspection = await dependencies.deployment.inspectRollbackUpdate?.();
+    const persistedUpdate = JSON.parse(
+      await readFile(join(root, "update-state.json"), "utf8"),
+    ) as { backup: { signedContext: { relativePath: string } } };
+    await unlink(join(root, persistedUpdate.backup.signedContext.relativePath));
+    await expect(
+      dependencies.deployment.applyRollbackUpdate?.(heldInspection),
+    ).resolves.toMatchObject({ phase: "rolled_back" });
+
+    expect(await loadDeploymentState(root)).toMatchObject({
+      argusVersion: current.version,
+      compose: { images: { argus: `ghcr.io/gpsxtreme/argus@sha256:${digest("a")}` } },
+      services: { argus: { image: `ghcr.io/gpsxtreme/argus@sha256:${digest("a")}` } },
+    });
+    expect(await readFile(join(root, "release-context.json"), "utf8")).toBe(currentContext);
+    expect(parseManagementState(await readFile(join(root, "management.state"), "utf8"))).toEqual({
+      schema: 1,
+      version: current.version,
+      cliImage: `ghcr.io/gpsxtreme/argus-cli@sha256:${digest("b")}`,
+    });
+    expect(await readFile(join(root, "argus.db"), "utf8")).toBe("prior database");
+    expect(deploymentExecutor.restarts).toBe(2);
+    expect(await readFile(launcher)).toStrictEqual(launcherBytes);
+  });
+
+  it("keeps the prior rollback slot when a later update fails before durable update state is written", async () => {
+    const root = await mkdtemp(join(tmpdir(), "argus-update-rollback-pre-persist-failure-"));
+    const releaseA = releaseFixture({ version: "1.0.0", appMarker: "a", cliMarker: "b" });
+    const releaseB = releaseFixture({ version: "2.0.0", appMarker: "e", cliMarker: "f" });
+    const releaseC = releaseFixture({ version: "3.0.0", appMarker: "c", cliMarker: "d" });
+    const releaseAContext = JSON.stringify({
+      schemaVersion: 1,
+      manifest: Buffer.from(releaseA.manifestBytes).toString("base64"),
+      signature: Buffer.from(releaseA.signature).toString("base64"),
+      fxembed: Buffer.from(releaseA.fxembed).toString("base64"),
+    });
+    await writeFile(join(root, "release-context.json"), releaseAContext);
+    await writeFile(
+      join(root, "management.state"),
+      `schema=1\nversion=${releaseA.version}\ncli_image=ghcr.io/gpsxtreme/argus-cli@sha256:${digest("b")}\n`,
+    );
+    await saveManagedState(root, releaseA);
+
+    let target = releaseB;
+    let failBeforePersist = false;
+    const signed = createProductionUpdateIntegration({
+      root,
+      manifestUrl: "https://release.example/manifest.json",
+      publicKeyPem: releaseA.publicKeyPem,
+      fetcher: async (input) => {
+        const url = String(input);
+        const bytes = url.endsWith("manifest.sig")
+          ? target.signature
+          : url.endsWith("manifest.json")
+            ? target.manifestBytes
+            : target.fxembed;
+        return new Response(Uint8Array.from(bytes).buffer);
+      },
+    });
+    const updateIntegration = {
+      ...signed,
+      async stageCurrentRelease(release: Awaited<ReturnType<typeof signed.fetchUpdateRelease>>) {
+        if (failBeforePersist) {
+          throw new DeploymentError(
+            "UPDATE_STAGING_FAILED",
+            "Injected failure before deployment update state persistence.",
+          );
+        }
+        await signed.stageCurrentRelease(release);
+      },
+    };
+    const dependencies = createNodeCliDependencies({
+      root,
+      executor: new DeploymentExecutor(),
+      prompt: {
+        async confirm() { return true; },
+        async select() { return ""; },
+        async multiselect() { return []; },
+        async text() { return ""; },
+        async secret() { return ""; },
+      },
+      io: { stdout() {}, stderr() {} },
+      updateIntegration,
+      version: "test",
+    });
+
+    await createProgram(dependencies).parseAsync(["node", "argus", "update", "--yes"]);
+    const durableUpdateState = await readFile(join(root, "update-state.json"), "utf8");
+    target = releaseC;
+    failBeforePersist = true;
+
+    await expect(
+      createProgram(dependencies).parseAsync(["node", "argus", "update", "--yes"]),
+    ).rejects.toMatchObject({ exitCode: 1 });
+
+    expect(await readFile(join(root, "update-state.json"), "utf8")).toBe(durableUpdateState);
+    await expect(signed.fetchRollbackSnapshot()).resolves.toMatchObject({
+      release: { manifest: { version: releaseA.version } },
+    });
+  });
+
+  it("retains the verified rollback context and target selections when CLI rollback health fails", async () => {
+    const root = await mkdtemp(join(tmpdir(), "argus-update-rollback-health-failure-"));
+    const current = releaseFixture({ version: "1.0.0", appMarker: "a", cliMarker: "b" });
+    const target = releaseFixture({ version: "2.0.0", appMarker: "e", cliMarker: "f" });
+    const currentContext = JSON.stringify({
+      schemaVersion: 1,
+      manifest: Buffer.from(current.manifestBytes).toString("base64"),
+      signature: Buffer.from(current.signature).toString("base64"),
+      fxembed: Buffer.from(current.fxembed).toString("base64"),
+    });
+    const targetContext = JSON.stringify({
+      schemaVersion: 1,
+      manifest: Buffer.from(target.manifestBytes).toString("base64"),
+      signature: Buffer.from(target.signature).toString("base64"),
+      fxembed: Buffer.from(target.fxembed).toString("base64"),
+    });
+    await writeFile(join(root, "release-context.json"), currentContext);
+    await writeFile(
+      join(root, "management.state"),
+      `schema=1\nversion=${current.version}\ncli_image=ghcr.io/gpsxtreme/argus-cli@sha256:${digest("b")}\n`,
+    );
+    await saveManagedState(root, current);
+
+    const updateIntegration = createProductionUpdateIntegration({
+      root,
+      manifestUrl: "https://release.example/manifest.json",
+      publicKeyPem: current.publicKeyPem,
+      fetcher: async (input) => {
+        const url = String(input);
+        const bytes = url.endsWith("manifest.sig")
+          ? target.signature
+          : url.endsWith("manifest.json")
+            ? target.manifestBytes
+            : target.fxembed;
+        return new Response(Uint8Array.from(bytes).buffer);
+      },
+    });
+    let restarts = 0;
+    const dependencies = createNodeCliDependencies({
+      root,
+      executor: {
+        async run(_command, args) {
+          if (args.includes("up")) restarts += 1;
+          return args.at(-1) === "json"
+            ? {
+                exitCode: 0,
+                stdout: restarts === 1
+                  ? '[{"Service":"argus","State":"running","Health":"healthy"}]'
+                  : "[]",
+                stderr: "",
+              }
+            : { exitCode: 0, stdout: "", stderr: "" };
+        },
+      },
+      prompt: {
+        async confirm() { return true; },
+        async select() { return ""; },
+        async multiselect() { return []; },
+        async text() { return ""; },
+        async secret() { return ""; },
+      },
+      io: { stdout() {}, stderr() {} },
+      updateIntegration,
+      version: "test",
+    });
+
+    await createProgram(dependencies).parseAsync(["node", "argus", "update", "--yes"]);
+    await expect(
+      createProgram(dependencies).parseAsync([
+        "node",
+        "argus",
+        "update",
+        "--rollback",
+        "--yes",
+      ]),
+    ).rejects.toMatchObject({ exitCode: 1 });
+
+    expect(await loadDeploymentState(root)).toMatchObject({ argusVersion: target.version });
+    expect(await readFile(join(root, "release-context.json"), "utf8")).toBe(targetContext);
+    expect(parseManagementState(await readFile(join(root, "management.state"), "utf8"))).toEqual({
+      schema: 1,
+      version: target.version,
+      cliImage: `ghcr.io/gpsxtreme/argus-cli@sha256:${digest("f")}`,
+    });
+    await expect(updateIntegration.fetchRollbackSnapshot()).resolves.toMatchObject({
+      release: { manifest: { version: current.version } },
+    });
+  });
+
+  it("orders signed-context and management-state promotion after durable healthy update state", async () => {
     const root = await mkdtemp(join(tmpdir(), "argus-update-order-"));
     const current = releaseFixture({ version: "1.0.0", appMarker: "a" });
     const target = releaseFixture({ version: "2.0.0", appMarker: "b" });
@@ -718,7 +1392,8 @@ describe("production onboarding integration", () => {
       },
     });
     const targetRelease = await signed.fetchUpdateRelease();
-    const currentRelease = await signed.fetchRollbackRelease();
+    const currentReleaseInspection = await signed.inspectCurrentRelease();
+    const rollbackSnapshot = {} as Awaited<ReturnType<typeof signed.fetchRollbackSnapshot>>;
     const events: string[] = [];
     const dependencies = createNodeCliDependencies({
       root,
@@ -726,9 +1401,9 @@ describe("production onboarding integration", () => {
         async run(_command, args) {
           if (args.includes("pull")) events.push("pull");
           if (args.includes("migrate")) events.push("migrate");
-          if (args.includes("up")) events.push("up");
+          if (args.includes("up")) events.push("reconcile");
           if (args.includes("ps")) {
-            events.push("healthy");
+            events.push("health");
             return { exitCode: 0, stdout: '[{"Service":"argus","State":"running","Health":"healthy"}]', stderr: "" };
           }
           return { exitCode: 0, stdout: "", stderr: "" };
@@ -744,22 +1419,323 @@ describe("production onboarding integration", () => {
       io: { stdout() {}, stderr() {} },
       updateIntegration: {
         async fetchUpdateRelease() { return targetRelease; },
-        async fetchRollbackRelease() { return currentRelease; },
-        async stageCurrentRelease() { events.push("stage"); },
-        async promoteCurrentRelease() { events.push("promote"); },
+        async inspectCurrentRelease() { return currentReleaseInspection; },
+        validateCurrentReleaseInspection() { return currentReleaseInspection; },
+        async fetchRollbackSnapshot() { return rollbackSnapshot; },
+        validateRollbackSnapshot() { return rollbackSnapshot; },
+        async getRollbackContext() {
+          events.push("get-rollback-context");
+          return Buffer.from(context);
+        },
+        async stageCurrentRelease() { events.push("stage-release-context"); },
+        async promoteCurrentRelease() { events.push("promote-release-context"); },
+        async reconcileCurrentRelease() { events.push("reconcile-current-context"); },
+        async promoteRollbackSnapshot() { events.push("promote-rollback-context"); },
+        async promoteManagementRelease() { events.push("promote-management-state"); },
       },
       version: "test",
     });
 
     const plan = await dependencies.deployment.inspectUpdate?.();
-    await dependencies.deployment.applyUpdate?.(plan);
-    expect(events).toEqual(["stage", "pull", "migrate", "up", "healthy", "promote"]);
+    updateEventCapture.events = events;
+    try {
+      await dependencies.deployment.applyUpdate?.(plan);
+    } finally {
+      updateEventCapture.events = undefined;
+    }
+    expect(events).toEqual([
+      "stage-release-context",
+      "backup",
+      "get-rollback-context",
+      "pull",
+      "migrate",
+      "reconcile",
+      "health",
+      "save-deployment-state",
+      "promote-release-context",
+      "promote-management-state",
+      "verified",
+    ]);
   });
 
-  it("rejects an unhealthy no-op without promoting a different signed target context", async () => {
-    const root = await mkdtemp(join(tmpdir(), "argus-update-noop-"));
+  it("writes management state only from the exact fetched verified release", async () => {
+    const root = await mkdtemp(join(tmpdir(), "argus-update-management-state-"));
+    const fixture = releaseFixture({ version: "2.0.0" });
+    const integration = createProductionUpdateIntegration({
+      root,
+      manifestUrl: "https://release.example/manifest.json",
+      publicKeyPem: fixture.publicKeyPem,
+      fetcher: async (input) => {
+        const url = String(input);
+        const bytes = url.endsWith("manifest.sig")
+          ? fixture.signature
+          : url.endsWith("manifest.json")
+            ? fixture.manifestBytes
+            : fixture.fxembed;
+        return new Response(Uint8Array.from(bytes).buffer);
+      },
+    });
+
+    const release = await integration.fetchUpdateRelease();
+    await integration.promoteManagementRelease(release);
+
+    expect(await readFile(join(root, "management.state"), "utf8")).toBe(
+      `schema=1\nversion=2.0.0\ncli_image=ghcr.io/gpsxtreme/argus-cli@sha256:${digest("b")}\n`,
+    );
+    await expect(
+      integration.promoteManagementRelease({ ...release, manifestSha256: digest("other") }),
+    ).rejects.toMatchObject({ code: "UPDATE_RELEASE_UNVERIFIED" });
+    const priorManagementState = await readFile(join(root, "management.state"), "utf8");
+    const swappedCliRelease = structuredClone(release);
+    swappedCliRelease.manifest.images.cli = {
+      reference: `ghcr.io/gpsxtreme/argus-cli@sha256:${digest("e")}`,
+      digest: `sha256:${digest("e")}`,
+    };
+    await expect(
+      integration.promoteManagementRelease(swappedCliRelease),
+    ).rejects.toMatchObject({ code: "UPDATE_RELEASE_UNVERIFIED" });
+    expect(await readFile(join(root, "management.state"), "utf8")).toBe(
+      priorManagementState,
+    );
+  });
+
+  it("preserves management state and skips final verification when signed-context promotion fails after promotion", async () => {
+    const root = await mkdtemp(join(tmpdir(), "argus-update-before-management-"));
     const current = releaseFixture({ version: "1.0.0", appMarker: "a" });
-    const target = releaseFixture({ version: "1.0.0", appMarker: "a", fxembedMarker: "target" });
+    const target = releaseFixture({ version: "2.0.0", appMarker: "b" });
+    const currentContext = JSON.stringify({
+      schemaVersion: 1,
+      manifest: Buffer.from(current.manifestBytes).toString("base64"),
+      signature: Buffer.from(current.signature).toString("base64"),
+      fxembed: Buffer.from(current.fxembed).toString("base64"),
+    });
+    const targetContext = JSON.stringify({
+      schemaVersion: 1,
+      manifest: Buffer.from(target.manifestBytes).toString("base64"),
+      signature: Buffer.from(target.signature).toString("base64"),
+      fxembed: Buffer.from(target.fxembed).toString("base64"),
+    });
+    const priorManagementState = `schema=1\nversion=${current.version}\ncli_image=ghcr.io/gpsxtreme/argus-cli@sha256:${digest("b")}\n`;
+    await writeFile(join(root, "release-context.json"), currentContext);
+    await writeFile(join(root, "management.state"), priorManagementState);
+    await saveManagedState(root, current);
+    const signed = createProductionUpdateIntegration({
+      root,
+      manifestUrl: "https://release.example/manifest.json",
+      publicKeyPem: current.publicKeyPem,
+      fetcher: async (input) => {
+        const url = String(input);
+        const bytes = url.endsWith("manifest.sig")
+          ? target.signature
+          : url.endsWith("manifest.json")
+            ? target.manifestBytes
+            : target.fxembed;
+        return new Response(Uint8Array.from(bytes).buffer);
+      },
+    });
+    let managementPromotionCalled = false;
+    const updateIntegration = {
+      fetchUpdateRelease: () => signed.fetchUpdateRelease(),
+      inspectCurrentRelease: () => signed.inspectCurrentRelease(),
+      validateCurrentReleaseInspection: (
+        inspection: unknown,
+        expectedRelease: VerifiedReleaseManifest,
+      ) => signed.validateCurrentReleaseInspection(inspection, expectedRelease),
+      fetchRollbackSnapshot: () => signed.fetchRollbackSnapshot(),
+      validateRollbackSnapshot: (snapshot: unknown) => signed.validateRollbackSnapshot(snapshot),
+      getRollbackContext: (release: VerifiedReleaseManifest) => signed.getRollbackContext(release),
+      stageCurrentRelease: (release: Awaited<ReturnType<typeof signed.fetchUpdateRelease>>) => signed.stageCurrentRelease(release),
+      async promoteCurrentRelease(release: Awaited<ReturnType<typeof signed.fetchUpdateRelease>>) {
+        await signed.promoteCurrentRelease(release);
+        throw new DeploymentError(
+          "UPDATE_SIGNED_CONTEXT_PROMOTION_FAILED",
+          "Signed release context promotion failed after completion.",
+        );
+      },
+      reconcileCurrentRelease: (inspection: Parameters<typeof signed.reconcileCurrentRelease>[0]) =>
+        signed.reconcileCurrentRelease(inspection),
+      async promoteRollbackSnapshot(
+        snapshot: Parameters<typeof signed.promoteRollbackSnapshot>[0],
+      ) {
+        await signed.promoteRollbackSnapshot(snapshot);
+      },
+      async promoteManagementRelease(release: Awaited<ReturnType<typeof signed.fetchUpdateRelease>>) {
+        managementPromotionCalled = true;
+        await signed.promoteManagementRelease(release);
+      },
+    };
+    let verified = false;
+    let stdout = "";
+    const dependencies = createNodeCliDependencies({
+      root,
+      executor: {
+        async run(_command, args) {
+          return args.includes("ps")
+            ? { exitCode: 0, stdout: '[{"Service":"argus","State":"running","Health":"healthy"}]', stderr: "" }
+            : { exitCode: 0, stdout: "", stderr: "" };
+        },
+      },
+      prompt: {
+        async confirm() { return true; },
+        async select() { return ""; },
+        async multiselect() { return []; },
+        async text() { return ""; },
+        async secret() { return ""; },
+      },
+      io: { stdout(value) { stdout += value; }, stderr() {} },
+      updateIntegration,
+      version: "test",
+    });
+    const verifyUpdate = dependencies.deployment.verifyUpdate;
+    dependencies.deployment.verifyUpdate = async (applied) => {
+      verified = true;
+      return verifyUpdate?.(applied);
+    };
+
+    await expect(
+      createProgram(dependencies).parseAsync(["node", "argus", "update", "--json", "--yes"]),
+    ).rejects.toMatchObject({ exitCode: 1 });
+    expect(managementPromotionCalled).toBe(false);
+    expect(verified).toBe(false);
+    expect(JSON.parse(stdout)).toMatchObject({ ok: false });
+    expect(JSON.parse(stdout)).not.toHaveProperty("data");
+    expect(await readFile(join(root, "release-context.json"), "utf8")).toBe(targetContext);
+    expect(await readFile(join(root, "management.state"), "utf8")).toBe(priorManagementState);
+    await expect(readFile(join(root, "update-state.json"), "utf8")).resolves.toContain(
+      '"phase": "restarted"',
+    );
+  });
+
+  it("retries an interrupted management promotion to one canonical advanced state", async () => {
+    const root = await mkdtemp(join(tmpdir(), "argus-update-during-management-"));
+    const current = releaseFixture({ version: "1.0.0", appMarker: "a" });
+    const target = releaseFixture({ version: "2.0.0", appMarker: "b", cliMarker: "e" });
+    const currentContext = JSON.stringify({
+      schemaVersion: 1,
+      manifest: Buffer.from(current.manifestBytes).toString("base64"),
+      signature: Buffer.from(current.signature).toString("base64"),
+      fxembed: Buffer.from(current.fxembed).toString("base64"),
+    });
+    const targetContext = JSON.stringify({
+      schemaVersion: 1,
+      manifest: Buffer.from(target.manifestBytes).toString("base64"),
+      signature: Buffer.from(target.signature).toString("base64"),
+      fxembed: Buffer.from(target.fxembed).toString("base64"),
+    });
+    const priorManagementState = `schema=1\nversion=${current.version}\ncli_image=ghcr.io/gpsxtreme/argus-cli@sha256:${digest("b")}\n`;
+    await writeFile(join(root, "release-context.json"), currentContext);
+    await writeFile(join(root, "management.state"), priorManagementState);
+    await saveManagedState(root, current);
+    let writeAttempted = false;
+    let interruptRename = true;
+    const updateIntegration = createProductionUpdateIntegration({
+      root,
+      manifestUrl: "https://release.example/manifest.json",
+      publicKeyPem: current.publicKeyPem,
+      fetcher: async (input) => {
+        const url = String(input);
+        const bytes = url.endsWith("manifest.sig")
+          ? target.signature
+          : url.endsWith("manifest.json")
+            ? target.manifestBytes
+            : target.fxembed;
+        return new Response(Uint8Array.from(bytes).buffer);
+      },
+      writeManagementState: async (path, state) => {
+        writeAttempted = true;
+        await writeManagementStateAtomic(path, state, {
+          lstat,
+          open,
+          async rename(source, destination) {
+            if (interruptRename) {
+              interruptRename = false;
+              throw new DeploymentError(
+                "UPDATE_MANAGEMENT_PROMOTION_FAILED",
+                "Management state promotion failed.",
+              );
+            }
+            await rename(source, destination);
+          },
+          unlink,
+        });
+      },
+    });
+    let verified = false;
+    let stdout = "";
+    const dependencies = createNodeCliDependencies({
+      root,
+      executor: {
+        async run(_command, args) {
+          return args.includes("ps")
+            ? { exitCode: 0, stdout: '[{"Service":"argus","State":"running","Health":"healthy"}]', stderr: "" }
+            : { exitCode: 0, stdout: "", stderr: "" };
+        },
+      },
+      prompt: {
+        async confirm() { return true; },
+        async select() { return ""; },
+        async multiselect() { return []; },
+        async text() { return ""; },
+        async secret() { return ""; },
+      },
+      io: { stdout(value) { stdout += value; }, stderr() {} },
+      updateIntegration,
+      version: "test",
+    });
+    const verifyUpdate = dependencies.deployment.verifyUpdate;
+    dependencies.deployment.verifyUpdate = async (applied) => {
+      verified = true;
+      return verifyUpdate?.(applied);
+    };
+
+    await expect(
+      createProgram(dependencies).parseAsync(["node", "argus", "update", "--json", "--yes"]),
+    ).rejects.toMatchObject({ exitCode: 1 });
+    expect(writeAttempted).toBe(true);
+    expect(verified).toBe(false);
+    expect(JSON.parse(stdout)).toMatchObject({ ok: false });
+    expect(JSON.parse(stdout)).not.toHaveProperty("data");
+    expect(await readFile(join(root, "release-context.json"), "utf8")).toBe(targetContext);
+    expect(await readFile(join(root, "management.state"), "utf8")).toBe(priorManagementState);
+    await expect(readFile(join(root, "update-state.json"), "utf8")).resolves.toContain(
+      '"phase": "restarted"',
+    );
+    expect(await readdir(root)).not.toEqual(
+      expect.arrayContaining([expect.stringMatching(/\.tmp$/u)]),
+    );
+
+    stdout = "";
+    verified = false;
+    await createProgram(dependencies).parseAsync([
+      "node",
+      "argus",
+      "update",
+      "--json",
+      "--yes",
+    ]);
+    expect(verified).toBe(true);
+    expect(JSON.parse(stdout)).toMatchObject({
+      contractVersion: 1,
+      ok: true,
+      data: { version: target.version, health: { healthy: true } },
+    });
+    expect(parseManagementState(await readFile(join(root, "management.state"), "utf8"))).toEqual({
+      schema: 1,
+      version: target.version,
+      cliImage: `ghcr.io/gpsxtreme/argus-cli@sha256:${digest("e")}`,
+    });
+    await expect(readFile(join(root, "update-state.json"), "utf8")).resolves.toContain(
+      '"phase": "verified"',
+    );
+    expect(await readdir(root)).not.toEqual(
+      expect.arrayContaining([expect.stringMatching(/\.tmp$/u)]),
+    );
+  });
+
+  it("repairs stale management state for a healthy no-op update", async () => {
+    const root = await mkdtemp(join(tmpdir(), "argus-update-management-noop-"));
+    const current = releaseFixture({ version: "1.0.0", appMarker: "a" });
+    const stale = releaseFixture({ version: "0.9.0", appMarker: "a" });
     const context = JSON.stringify({
       schemaVersion: 1,
       manifest: Buffer.from(current.manifestBytes).toString("base64"),
@@ -768,6 +1744,72 @@ describe("production onboarding integration", () => {
     });
     await writeFile(join(root, "release-context.json"), context);
     await saveManagedState(root, current);
+    await writeFile(
+      join(root, "management.state"),
+      `schema=1\nversion=${stale.version}\ncli_image=ghcr.io/gpsxtreme/argus-cli@sha256:${digest("b")}\n`,
+    );
+    const updateIntegration = createProductionUpdateIntegration({
+      root,
+      manifestUrl: "https://release.example/manifest.json",
+      publicKeyPem: current.publicKeyPem,
+      fetcher: async (input) => {
+        const url = String(input);
+        const bytes = url.endsWith("manifest.sig")
+          ? current.signature
+          : url.endsWith("manifest.json")
+            ? current.manifestBytes
+            : current.fxembed;
+        return new Response(Uint8Array.from(bytes).buffer);
+      },
+    });
+    const dependencies = createNodeCliDependencies({
+      root,
+      executor: {
+        async run(_command, args) {
+          return args.includes("ps")
+            ? { exitCode: 0, stdout: '[{"Service":"argus","State":"running","Health":"healthy"}]', stderr: "" }
+            : { exitCode: 0, stdout: "", stderr: "" };
+        },
+      },
+      prompt: {
+        async confirm() { return true; },
+        async select() { return ""; },
+        async multiselect() { return []; },
+        async text() { return ""; },
+        async secret() { return ""; },
+      },
+      io: { stdout() {}, stderr() {} },
+      updateIntegration,
+      version: "test",
+    });
+
+    const plan = await dependencies.deployment.inspectUpdate?.();
+    expect((plan as { noop: boolean }).noop).toBe(true);
+    await dependencies.deployment.applyUpdate?.(plan);
+    expect(await readFile(join(root, "management.state"), "utf8")).toBe(
+      `schema=1\nversion=${current.version}\ncli_image=ghcr.io/gpsxtreme/argus-cli@sha256:${digest("b")}\n`,
+    );
+  });
+
+  it("rejects an unhealthy no-op without promoting a different signed target context", async () => {
+    const root = await mkdtemp(join(tmpdir(), "argus-update-noop-"));
+    const current = releaseFixture({ version: "1.0.0", appMarker: "a" });
+    const target = releaseFixture({
+      version: "1.0.0",
+      appMarker: "a",
+      cliMarker: "e",
+      fxembedMarker: "target",
+    });
+    const context = JSON.stringify({
+      schemaVersion: 1,
+      manifest: Buffer.from(current.manifestBytes).toString("base64"),
+      signature: Buffer.from(current.signature).toString("base64"),
+      fxembed: Buffer.from(current.fxembed).toString("base64"),
+    });
+    await writeFile(join(root, "release-context.json"), context);
+    await saveManagedState(root, current);
+    const priorManagementState = `schema=1\nversion=${current.version}\ncli_image=ghcr.io/gpsxtreme/argus-cli@sha256:${digest("b")}\n`;
+    await writeFile(join(root, "management.state"), priorManagementState);
     const updateIntegration = createProductionUpdateIntegration({
       root,
       manifestUrl: "https://release.example/manifest.json",
@@ -813,6 +1855,18 @@ describe("production onboarding integration", () => {
       code: "UPDATE_HEALTHCHECK_FAILED",
     });
     expect(await readFile(join(root, "release-context.json"), "utf8")).toBe(context);
+    expect(await readFile(join(root, "management.state"), "utf8")).toBe(priorManagementState);
+    await expect(readFile(join(root, "release-context.pending.json"), "utf8")).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    await expect(updateIntegration.inspectCurrentRelease()).resolves.toMatchObject({
+      release: {
+        manifest: {
+          images: { cli: { reference: `ghcr.io/gpsxtreme/argus-cli@sha256:${digest("b")}` } },
+          version: current.version,
+        },
+      },
+    });
   });
 
   it("verifies assets, applies one exact plan, and reverifies persisted signed context", async () => {

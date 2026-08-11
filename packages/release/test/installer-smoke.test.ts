@@ -144,6 +144,7 @@ exec /bin/sleep "$@"`,
         ARGUS_MANIFEST_URL: "https://example.com/release/manifest.json",
         ARGUS_EXPECTED_VERSION: "1.2.3",
         ARGUS_EXPECTED_WRAPPER_SHA256: "a".repeat(64),
+        ARGUS_EXPECTED_CLI_IMAGE: `ghcr.io/gpsxtreme/argus-cli@sha256:${"b".repeat(64)}`,
         ARGUS_SMOKE_ARTIFACT_DIR: join(directory, "artifacts"),
       },
     },
@@ -573,6 +574,7 @@ exit 42
           ARGUS_MANIFEST_URL: "https://example.com/release/manifest.json",
           ARGUS_EXPECTED_VERSION: "1.2.3",
           ARGUS_EXPECTED_WRAPPER_SHA256: "a".repeat(64),
+          ARGUS_EXPECTED_CLI_IMAGE: `ghcr.io/gpsxtreme/argus-cli@sha256:${"b".repeat(64)}`,
           ARGUS_SMOKE_ARTIFACT_DIR: artifacts,
           ...fixtureTimingEnvironment(),
         },
@@ -788,6 +790,7 @@ exit 42
             ARGUS_MANIFEST_URL: "https://example.com/release/manifest.json",
             ARGUS_EXPECTED_VERSION: "1.2.3",
             ARGUS_EXPECTED_WRAPPER_SHA256: "a".repeat(64),
+            ARGUS_EXPECTED_CLI_IMAGE: `ghcr.io/gpsxtreme/argus-cli@sha256:${"b".repeat(64)}`,
             ARGUS_SMOKE_ARTIFACT_DIR: artifacts,
             ...fixtureTimingEnvironment(),
           },
@@ -801,7 +804,7 @@ exit 42
     fixtureTestDeadlineMs,
   );
 
-  it("installs the exact signed wrapper twice and verifies onboarding health", async () => {
+  it("installs the exact signed wrapper and management state twice before onboarding", async () => {
     const smoke = await read("scripts/e2e/installer-smoke.sh");
 
     expect(smoke).toMatch(/^#!\/bin\/sh\nset -eu\n/u);
@@ -810,6 +813,7 @@ exit 42
       "ARGUS_MANIFEST_URL",
       "ARGUS_EXPECTED_VERSION",
       "ARGUS_EXPECTED_WRAPPER_SHA256",
+      "ARGUS_EXPECTED_CLI_IMAGE",
     ]) {
       expect(smoke).toContain(required);
     }
@@ -827,6 +831,12 @@ exit 42
     expect(smoke).toContain("sha256sum");
     expect(smoke).toContain("cmp -s");
     expect(smoke).toContain("argus --version");
+    expect(smoke).toContain("argus_management_state=/opt/argus/management.state");
+    expect(smoke).toContain("argus_management_state_mode");
+    expect(smoke).toContain("schema=1");
+    expect(smoke).toContain('"$argus_management_cli_image" = "cli_image=$ARGUS_EXPECTED_CLI_IMAGE"');
+    expect(smoke).toContain("management state has unexpected extra content");
+    expect(smoke).toContain("second installation changed management state");
     expect(smoke).toContain("argus onboard --from");
     expect(smoke).toContain("https://example.com/");
     expect(smoke).toContain("argus doctor --json");
@@ -838,6 +848,21 @@ exit 42
     expect(smoke).not.toMatch(
       /(?:OPENROUTER|TELEGRAM|CLOUDFLARE|ARGUS_RELEASE_ED25519_KEY)=/u,
     );
+  });
+
+  it("defines a signed predecessor-to-stable update lifecycle for VPS smoke", async () => {
+    const smoke = await read("scripts/e2e/vps-smoke.sh");
+
+    expect(smoke).toContain("ARGUS_UPDATE_MANIFEST_ASSET_URL");
+    expect(smoke).toContain("ARGUS_UPDATE_EXPECTED_VERSION");
+    expect(smoke).toContain("ARGUS_UPDATE_MANIFEST_SHA256");
+    expect(smoke).toContain("sha256sum /usr/local/bin/argus");
+    expect(smoke).toContain("argus update --json --yes");
+    expect(smoke).toContain("/opt/argus/release-context.json");
+    expect(smoke).toContain("base64 --decode");
+    expect(smoke).toContain("persisted signed update context did not match the candidate");
+    expect(smoke).toContain("management state did not advance to the signed update");
+    expect(smoke).toContain("launcher changed during signed update");
   });
 
   it("defines pinned OS and architecture coverage with sanitized artifacts", async () => {
@@ -907,6 +932,11 @@ exit 42
     expect(source).toContain("if: failure()");
     expect(source).toContain("installer.log");
     expect(source).toContain("wrapper.sha256");
+    expect(source).toMatch(
+      /cli_image: \$\{\{ steps\.candidate\.outputs\.cli_image \}\}/u,
+    );
+    expect(source).toContain("jq -er '.images.cli.reference' manifest.json");
+    expect(source).toContain('--env "ARGUS_EXPECTED_CLI_IMAGE=$CLI_IMAGE"');
     expect(source).toContain("compose.log");
     expect(source).toContain("doctor.json");
     expect(source).not.toMatch(

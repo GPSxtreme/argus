@@ -85,7 +85,12 @@ argus status --json
 argus doctor --json
 ```
 
-For a non-noop plan, Argus persists update state, copies the prior state and only eligible SQLite files found under `/opt/argus` or `/opt/argus/data` into `/opt/argus/backups/<version>-<timestamp>/`, pulls the pinned images, runs the application's migration command in Compose, starts Compose, checks selected service health, and then records the new verified state. The managed SQLite database is instead in the named `argus_argus-data` volume. Argus does not back up the managed named volume. An already-current release is a no-op plan but still performs health verification. The CLI does not automatically roll back a failed update; preserve the backup, inspect diagnostics, and choose rollback deliberately.
+For a non-noop plan, Argus persists update state, copies the prior state and only eligible SQLite files found under `/opt/argus` or `/opt/argus/data` into `/opt/argus/backups/<version>-<timestamp>/`, pulls the pinned images, runs the application's migration command in Compose, starts Compose, checks selected service health, and then records the new verified state. Finally it advances `/opt/argus/management.state` to the matching signed management CLI image. The root-owned `/usr/local/bin/argus` launcher is immutable and is not replaced by updates. The managed SQLite database is instead in the named `argus_argus-data` volume. Argus does not back up the managed named volume. An already-current release is a no-op plan but still performs health verification and can repair stale valid management state from the verified release. A missing state fails closed and requires the signed installer. The CLI does not automatically roll back a failed update; preserve the backup, inspect diagnostics, and choose rollback deliberately.
+
+An existing legacy version-pinned launcher needs one final signed installer run
+to install the immutable launcher and bootstrap `management.state`. Do not
+edit that state file: missing or malformed state fails closed before Docker
+runs. Rerun the signed installer to repair this launcher/state pair.
 
 ```bash
 argus update --rollback --dry-run --json

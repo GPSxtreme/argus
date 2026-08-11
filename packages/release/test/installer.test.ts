@@ -1,15 +1,17 @@
+import { execFile, spawn } from "node:child_process";
 import {
   createHash,
   generateKeyPairSync,
-  sign,
   type KeyObject,
+  sign,
 } from "node:crypto";
-import { execFile, spawn } from "node:child_process";
 import {
   lstat,
   mkdir,
   mkdtemp,
+  readdir,
   readFile,
+  rm,
   symlink,
   writeFile,
 } from "node:fs/promises";
@@ -19,10 +21,11 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  parseManagementState,
   type ReleaseManifestError,
+  type ReleaseManifestV1,
   renderInstaller,
   serializeReleaseManifestCanonical,
-  type ReleaseManifestV1,
   verifyReleaseManifest,
 } from "../src/index.js";
 
@@ -100,6 +103,8 @@ interface Fixture {
   installer: string;
   target: string;
   installRoot: string;
+  state: string;
+  validationState: string;
   wrapper: string;
   privateKey: KeyObject;
   publicKeyPem: string;
@@ -116,6 +121,8 @@ const createFixture = async (): Promise<Fixture> => {
   const bin = join(root, "bin");
   const target = join(root, "install", "argus");
   const installRoot = join(root, "opt", "argus");
+  const state = join(installRoot, "management.state");
+  const validationState = join(installRoot, ".management-state.validation");
   const osRelease = join(root, "os-release");
   await mkdir(bin);
   await mkdir(join(root, "install"));
@@ -132,11 +139,26 @@ const createFixture = async (): Promise<Fixture> => {
 # generated-by=@argus/release
 set -eu
 
-argus_version='1.2.3'
-argus_cli_image='ghcr.io/gpsxtreme/argus-cli@sha256:${digest}'
-# --env 'ARGUS_INSTALL_ROOT=/opt/argus'
+argus_state_error() {
+  exit 65
+}
+
+argus_state='${state}'
+[ -f "$argus_state" ] && [ ! -L "$argus_state" ] || argus_state_error
+argus_state_mode=$(stat -c '%a' "$argus_state" 2>/dev/null || stat -f '%Lp' "$argus_state" 2>/dev/null || true)
+[ "$argus_state_mode" = 644 ] || exit 65
+exec 3< "$argus_state" || exit 65
+IFS= read -r argus_schema <&3 || exit 65
+IFS= read -r argus_version <&3 || exit 65
+IFS= read -r argus_cli_image <&3 || exit 65
+argus_extra=''
+if IFS= read -r argus_extra <&3 || [ -n "$argus_extra" ]; then exit 65; fi
+exec 3<&-
+[ "$argus_schema" = schema=1 ] || exit 65
+case "$argus_version" in version=*) argus_version=\${argus_version#version=} ;; *) exit 65 ;; esac
+case "$argus_cli_image" in cli_image=*) ;; *) exit 65 ;; esac
 if [ "\${1:-}" = --version ]; then
-  printf '%s\\n' "\${ARGUS_FIXTURE_WRAPPER_VERSION:-1.2.3}"
+  printf '%s\\n' "\${ARGUS_FIXTURE_WRAPPER_VERSION:-$argus_version}"
   exit 0
 fi
 exit 64
@@ -228,6 +250,8 @@ argus_actual=$(shasum -a 256 "$argus_file" | awk '{print $1}')
     installer,
     target,
     installRoot,
+    state,
+    validationState,
     wrapper,
     privateKey,
     publicKeyPem,
@@ -276,6 +300,7 @@ const runInstaller = async (
       ARGUS_INSTALL_OS_RELEASE: fixture.osRelease,
       ARGUS_INSTALL_TARGET: fixture.target,
       ARGUS_INSTALL_ROOT: fixture.installRoot,
+      ARGUS_INSTALL_FIXTURE_STATE_PATH: fixture.validationState,
       ARGUS_INSTALL_LOCK: join(fixture.root, "installer.lock"),
       ARGUS_INSTALL_DOCKER: "0",
       ARGUS_FIXTURE_WRAPPER: fixture.wrapper,
@@ -326,6 +351,8 @@ sys.exit(os.waitstatus_to_exitcode(status))
       ARGUS_INSTALL_FIXTURE: "1",
       ARGUS_INSTALL_OS_RELEASE: fixture.osRelease,
       ARGUS_INSTALL_TARGET: fixture.target,
+      ARGUS_INSTALL_ROOT: fixture.installRoot,
+      ARGUS_INSTALL_FIXTURE_STATE_PATH: fixture.validationState,
       ARGUS_INSTALL_LOCK: join(fixture.root, "installer.lock"),
       ARGUS_FIXTURE_WRAPPER: fixture.wrapper,
       ARGUS_PTY_ANSWER: answer,
@@ -429,7 +456,7 @@ describe("renderInstaller", () => {
     ).toThrow("credential-free HTTPS");
   });
 
-  it("verifies a local signed fixture, installs atomically, and reinstalls idempotently", async () => {
+  it("bootstraps a verified management state and exact durable launcher idempotently", async () => {
     const fixture = await createFixture();
     const wrapperSha = createHash("sha256")
       .update(await readFile(fixture.wrapper))
@@ -439,10 +466,22 @@ describe("renderInstaller", () => {
     const first = await runInstaller(fixture, bytes);
     expect(first.stdout).toBe("argus onboard\n");
     expect((await lstat(fixture.target)).mode & 0o777).toBe(0o755);
+    expect((await lstat(fixture.state)).mode & 0o777).toBe(0o644);
+    expect(parseManagementState(await readFile(fixture.state, "utf8"))).toEqual({
+      schema: 1,
+      version: "1.2.3",
+      cliImage: `ghcr.io/gpsxtreme/argus-cli@sha256:${digest}`,
+    });
     const installed = await readFile(fixture.target);
+    const installedState = await readFile(fixture.state);
+    expect(createHash("sha256").update(installed).digest("hex")).toBe(wrapperSha);
     const second = await runInstaller(fixture, bytes);
     expect(second.stdout).toBe("argus onboard\n");
     expect(await readFile(fixture.target)).toEqual(installed);
+    expect(await readFile(fixture.state)).toEqual(installedState);
+    await expect(lstat(fixture.validationState)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
   }, 15_000);
 
   it("shares the exact canonical manifest corpus with the Node verifier", async () => {
@@ -772,7 +811,13 @@ describe("renderInstaller", () => {
       previousWrapper,
       { mode: 0o755 },
     );
+    await writeFile(
+      fixture.state,
+      `schema=1\nversion=0.9.0\ncli_image=ghcr.io/gpsxtreme/argus-cli@sha256:${digest}\n`,
+      { mode: 0o644 },
+    );
     const original = await readFile(fixture.target);
+    const originalState = await readFile(fixture.state, "utf8");
     const wrapperSha = createHash("sha256")
       .update(await readFile(fixture.wrapper))
       .digest("hex");
@@ -785,11 +830,20 @@ describe("renderInstaller", () => {
       stderr: expect.stringContaining("existing installation was preserved"),
     });
     expect(await readFile(fixture.target)).toEqual(original);
+    expect(await readFile(fixture.state, "utf8")).toEqual(originalState);
   });
 
-  it("restores the previous wrapper when post-rename durability sync fails", async () => {
+  it.each([7, 8, 9, 10, 11])(
+    "restores the complete prior pair when durability sync %d fails",
+    async (failureCount) => {
     const fixture = await createFixture();
-    await writeFile(fixture.target, previousWrapper, { mode: 0o755 });
+    await writeFile(fixture.target, previousWrapper, { mode: 0o750 });
+    await writeFile(
+      fixture.state,
+      `schema=1\nversion=0.9.0\ncli_image=ghcr.io/gpsxtreme/argus-cli@sha256:${digest}\n`,
+      { mode: 0o600 },
+    );
+    const originalState = await readFile(fixture.state, "utf8");
     const syncCount = join(fixture.root, "sync-count");
     await command(
       join(fixture.bin, "sync"),
@@ -797,7 +851,7 @@ describe("renderInstaller", () => {
 [ ! -f "$ARGUS_SYNC_COUNT" ] || argus_count=$(cat "$ARGUS_SYNC_COUNT")
 argus_count=$((argus_count + 1))
 printf '%s' "$argus_count" > "$ARGUS_SYNC_COUNT"
-[ "$argus_count" -ne 3 ]`,
+[ "$argus_count" -ne "$ARGUS_SYNC_FAIL_AT" ]`,
     );
     const wrapperSha = createHash("sha256")
       .update(await readFile(fixture.wrapper))
@@ -806,12 +860,534 @@ printf '%s' "$argus_count" > "$ARGUS_SYNC_COUNT"
       runInstaller(
         fixture,
         Buffer.from(JSON.stringify(manifest(wrapperSha))),
-        { ARGUS_SYNC_COUNT: syncCount },
+        {
+          ARGUS_SYNC_COUNT: syncCount,
+          ARGUS_SYNC_FAIL_AT: String(failureCount),
+        },
       ),
     ).rejects.toMatchObject({
       stderr: expect.stringContaining("previous state was restored"),
     });
     expect(await readFile(fixture.target, "utf8")).toBe(previousWrapper);
+    expect(await readFile(fixture.state, "utf8")).toBe(originalState);
+    expect((await lstat(fixture.target)).mode & 0o777).toBe(0o750);
+    expect((await lstat(fixture.state)).mode & 0o777).toBe(0o600);
+    },
+  );
+
+  it("preserves the recovery backup when rollback cannot restore the launcher", async () => {
+    const fixture = await createFixture();
+    await writeFile(fixture.target, previousWrapper, { mode: 0o750 });
+    await writeFile(
+      fixture.state,
+      `schema=1\nversion=0.9.0\ncli_image=ghcr.io/gpsxtreme/argus-cli@sha256:${digest}\n`,
+      { mode: 0o600 },
+    );
+    const syncCount = join(fixture.root, "sync-count");
+    await command(
+      join(fixture.bin, "sync"),
+      `argus_count=0
+[ ! -f "$ARGUS_SYNC_COUNT" ] || argus_count=$(cat "$ARGUS_SYNC_COUNT")
+argus_count=$((argus_count + 1))
+printf '%s' "$argus_count" > "$ARGUS_SYNC_COUNT"
+[ "$argus_count" -ne 8 ]`,
+    );
+    await command(
+      join(fixture.bin, "mv"),
+      `argus_source=
+argus_destination=
+for argus_item do
+  argus_destination=$argus_item
+  case "$argus_item" in -*) ;; *) [ -n "$argus_source" ] || argus_source=$argus_item ;; esac
+done
+case "$argus_source" in *.argus.restore.*) exit 1 ;; esac
+exec /bin/mv "$@"`,
+    );
+    const wrapperSha = createHash("sha256")
+      .update(await readFile(fixture.wrapper))
+      .digest("hex");
+
+    await expect(
+      runInstaller(fixture, Buffer.from(JSON.stringify(manifest(wrapperSha))), {
+        ARGUS_SYNC_COUNT: syncCount,
+      }),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining("recovery backups were preserved"),
+    });
+    expect(await readdir(join(fixture.root, "install"))).toEqual(
+      expect.arrayContaining([expect.stringMatching(/^\.argus\.backup\./u)]),
+    );
+  });
+
+  it("retains recovery backups when rollback directory sync fails", async () => {
+    const fixture = await createFixture();
+    await writeFile(fixture.target, previousWrapper, { mode: 0o750 });
+    await writeFile(
+      fixture.state,
+      `schema=1\nversion=0.9.0\ncli_image=ghcr.io/gpsxtreme/argus-cli@sha256:${digest}\n`,
+      { mode: 0o600 },
+    );
+    const syncCount = join(fixture.root, "sync-count");
+    await command(
+      join(fixture.bin, "sync"),
+      `argus_count=0
+[ ! -f "$ARGUS_SYNC_COUNT" ] || argus_count=$(cat "$ARGUS_SYNC_COUNT")
+argus_count=$((argus_count + 1))
+printf '%s' "$argus_count" > "$ARGUS_SYNC_COUNT"
+case "$argus_count" in 8|11) exit 1 ;; esac`,
+    );
+    const wrapperSha = createHash("sha256")
+      .update(await readFile(fixture.wrapper))
+      .digest("hex");
+
+    await expect(
+      runInstaller(fixture, Buffer.from(JSON.stringify(manifest(wrapperSha))), {
+        ARGUS_SYNC_COUNT: syncCount,
+      }),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining("recovery backups were preserved"),
+    });
+    expect(await readdir(join(fixture.root, "install"))).toEqual(
+      expect.arrayContaining([expect.stringMatching(/^\.argus\.backup\./u)]),
+    );
+    expect(await readdir(fixture.installRoot)).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/^\.management\.state\.backup\./u),
+      ]),
+    );
+  });
+
+  it("fails closed when a launcher target becomes a symlink during preservation", async () => {
+    const fixture = await createFixture();
+    await writeFile(fixture.target, previousWrapper, { mode: 0o755 });
+    const protectedFile = join(fixture.root, "protected");
+    await writeFile(protectedFile, "do-not-follow\n", { mode: 0o600 });
+    await command(
+      join(fixture.bin, "cp"),
+      `argus_source=
+for argus_item do
+  case "$argus_item" in -*) ;; *) argus_source=$argus_item; break ;; esac
+done
+if [ "\${ARGUS_FIXTURE_SWAP_TARGET:-0}" = 1 ] && [ "$argus_source" = "$ARGUS_INSTALL_TARGET" ]; then
+  ln -sf "$ARGUS_FIXTURE_PROTECTED_FILE" "$ARGUS_INSTALL_TARGET"
+fi
+exec /bin/cp "$@"`,
+    );
+    const wrapperSha = createHash("sha256")
+      .update(await readFile(fixture.wrapper))
+      .digest("hex");
+
+    await expect(
+      runInstaller(fixture, Buffer.from(JSON.stringify(manifest(wrapperSha))), {
+        ARGUS_FIXTURE_SWAP_TARGET: "1",
+        ARGUS_FIXTURE_PROTECTED_FILE: protectedFile,
+      }),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining("changed during preservation"),
+    });
+    expect(await readFile(protectedFile, "utf8")).toBe("do-not-follow\n");
+  });
+
+  it("fails closed when the launcher becomes a symlink during promotion", async () => {
+    const fixture = await createFixture();
+    const protectedWrapper = join(fixture.root, "protected-wrapper");
+    await writeFile(protectedWrapper, await readFile(fixture.wrapper), { mode: 0o755 });
+    await command(
+      join(fixture.bin, "mv"),
+      `argus_source=
+argus_destination=
+for argus_item do
+  argus_destination=$argus_item
+  case "$argus_item" in -*) ;; *) [ -n "$argus_source" ] || argus_source=$argus_item ;; esac
+done
+if [ "\${ARGUS_FIXTURE_PROMOTE_TARGET_SYMLINK:-0}" = 1 ] &&
+  case "$argus_source" in *.argus.tmp.*) true ;; *) false ;; esac
+then
+  ln -sf "$ARGUS_FIXTURE_PROTECTED_WRAPPER" "$argus_destination"
+  exit 0
+fi
+exec /bin/mv "$@"`,
+    );
+    const wrapperSha = createHash("sha256")
+      .update(await readFile(fixture.wrapper))
+      .digest("hex");
+
+    await expect(
+      runInstaller(fixture, Buffer.from(JSON.stringify(manifest(wrapperSha))), {
+        ARGUS_FIXTURE_PROMOTE_TARGET_SYMLINK: "1",
+        ARGUS_FIXTURE_PROTECTED_WRAPPER: protectedWrapper,
+      }),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining("recovery backups were preserved"),
+    });
+    await expect(lstat(fixture.target)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readdir(join(fixture.root, "install"))).toEqual(
+      expect.arrayContaining([expect.stringMatching(/^\.argus\.quarantine\./u)]),
+    );
+  });
+
+  it("fails closed when the installation root becomes a symlink during promotion", async () => {
+    const fixture = await createFixture();
+    const alternateRoot = join(fixture.root, "alternate-root");
+    const movedRoot = join(fixture.root, "real-install-root");
+    await mkdir(alternateRoot);
+    await command(
+      join(fixture.bin, "mv"),
+      `argus_source=
+for argus_item do
+  case "$argus_item" in -*) ;; *) [ -n "$argus_source" ] || argus_source=$argus_item ;; esac
+done
+if [ "\${ARGUS_FIXTURE_PROMOTE_ROOT_SYMLINK:-0}" = 1 ] &&
+  case "$argus_source" in *.management-state.validation) true ;; *) false ;; esac
+then
+  /bin/mv "$ARGUS_INSTALL_ROOT" "$ARGUS_FIXTURE_MOVED_ROOT"
+  ln -s "$ARGUS_FIXTURE_ALTERNATE_ROOT" "$ARGUS_INSTALL_ROOT"
+  /bin/mv "$ARGUS_FIXTURE_MOVED_ROOT/.management-state.validation" "$ARGUS_FIXTURE_ALTERNATE_ROOT/management.state"
+  exit 0
+fi
+exec /bin/mv "$@"`,
+    );
+    const wrapperSha = createHash("sha256")
+      .update(await readFile(fixture.wrapper))
+      .digest("hex");
+
+    await expect(
+      runInstaller(fixture, Buffer.from(JSON.stringify(manifest(wrapperSha))), {
+        ARGUS_FIXTURE_PROMOTE_ROOT_SYMLINK: "1",
+        ARGUS_FIXTURE_ALTERNATE_ROOT: alternateRoot,
+        ARGUS_FIXTURE_MOVED_ROOT: movedRoot,
+      }),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining("recovery backups were preserved"),
+    });
+    expect((await lstat(fixture.installRoot)).isSymbolicLink()).toBe(true);
+  });
+
+  it("fails closed when the management state becomes a symlink during promotion", async () => {
+    const fixture = await createFixture();
+    const protectedState = join(fixture.root, "protected-state");
+    await writeFile(
+      protectedState,
+      `schema=1\nversion=1.2.3\ncli_image=ghcr.io/gpsxtreme/argus-cli@sha256:${digest}\n`,
+      { mode: 0o644 },
+    );
+    await command(
+      join(fixture.bin, "mv"),
+      `argus_source=
+argus_destination=
+for argus_item do
+  argus_destination=$argus_item
+  case "$argus_item" in -*) ;; *) [ -n "$argus_source" ] || argus_source=$argus_item ;; esac
+done
+if [ "\${ARGUS_FIXTURE_PROMOTE_STATE_SYMLINK:-0}" = 1 ] &&
+  case "$argus_source" in *.management-state.validation) true ;; *) false ;; esac
+then
+  ln -sf "$ARGUS_FIXTURE_PROTECTED_STATE" "$argus_destination"
+  exit 0
+fi
+exec /bin/mv "$@"`,
+    );
+    const wrapperSha = createHash("sha256")
+      .update(await readFile(fixture.wrapper))
+      .digest("hex");
+
+    await expect(
+      runInstaller(fixture, Buffer.from(JSON.stringify(manifest(wrapperSha))), {
+        ARGUS_FIXTURE_PROMOTE_STATE_SYMLINK: "1",
+        ARGUS_FIXTURE_PROTECTED_STATE: protectedState,
+      }),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining("recovery backups were preserved"),
+    });
+    await expect(lstat(fixture.state)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readdir(fixture.installRoot)).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/^\.management\.state\.quarantine\./u),
+      ]),
+    );
+  });
+
+  it("does not remove a concurrent management state when promotion fails before its move", async () => {
+    const fixture = await createFixture();
+    await command(
+      join(fixture.bin, "mv"),
+      `argus_source=
+argus_destination=
+for argus_item do
+  argus_destination=$argus_item
+  case "$argus_item" in -*) ;; *) [ -n "$argus_source" ] || argus_source=$argus_item ;; esac
+done
+if [ "\${ARGUS_FIXTURE_CONCURRENT_STATE:-0}" = 1 ] &&
+  case "$argus_source" in *.management-state.validation) true ;; *) false ;; esac
+then
+  printf '%s\\n' concurrent-state > "$argus_destination"
+  exit 1
+fi
+exec /bin/mv "$@"`,
+    );
+    const wrapperSha = createHash("sha256")
+      .update(await readFile(fixture.wrapper))
+      .digest("hex");
+
+    await expect(
+      runInstaller(fixture, Buffer.from(JSON.stringify(manifest(wrapperSha))), {
+        ARGUS_FIXTURE_CONCURRENT_STATE: "1",
+      }),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining("previous state was restored"),
+    });
+    expect(await readFile(fixture.state, "utf8")).toBe("concurrent-state\n");
+  });
+
+  it("does not remove a concurrent launcher when promotion fails before its move", async () => {
+    const fixture = await createFixture();
+    await command(
+      join(fixture.bin, "mv"),
+      `argus_source=
+argus_destination=
+for argus_item do
+  argus_destination=$argus_item
+  case "$argus_item" in -*) ;; *) [ -n "$argus_source" ] || argus_source=$argus_item ;; esac
+done
+if [ "\${ARGUS_FIXTURE_CONCURRENT_TARGET:-0}" = 1 ] &&
+  case "$argus_source" in *.argus.tmp.*) true ;; *) false ;; esac
+then
+  printf '%s\\n' concurrent-target > "$argus_destination"
+  exit 1
+fi
+exec /bin/mv "$@"`,
+    );
+    const wrapperSha = createHash("sha256")
+      .update(await readFile(fixture.wrapper))
+      .digest("hex");
+
+    await expect(
+      runInstaller(fixture, Buffer.from(JSON.stringify(manifest(wrapperSha))), {
+        ARGUS_FIXTURE_CONCURRENT_TARGET: "1",
+      }),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining("previous state was restored"),
+    });
+    expect(await readFile(fixture.target, "utf8")).toBe("concurrent-target\n");
+  });
+
+  it.each(["content", "mode"])(
+    "fails closed when launcher %s changes in place during preservation",
+    async (change) => {
+      const fixture = await createFixture();
+      await writeFile(fixture.target, previousWrapper, { mode: 0o755 });
+      const replacement = join(fixture.root, "replacement-wrapper");
+      await writeFile(replacement, previousWrapper.replace("0.9.0", "0.8.0"), {
+        mode: 0o755,
+      });
+      await command(
+        join(fixture.bin, "cp"),
+        `argus_source=
+for argus_item do
+  case "$argus_item" in -*) ;; *) argus_source=$argus_item; break ;; esac
+done
+if [ "$argus_source" = "$ARGUS_INSTALL_TARGET" ] && [ "\${ARGUS_FIXTURE_CHANGE:-}" = content ]; then
+  /bin/cp "$ARGUS_FIXTURE_REPLACEMENT_WRAPPER" "$ARGUS_INSTALL_TARGET"
+elif [ "$argus_source" = "$ARGUS_INSTALL_TARGET" ] && [ "\${ARGUS_FIXTURE_CHANGE:-}" = mode ]; then
+  chmod 700 "$ARGUS_INSTALL_TARGET"
+fi
+exec /bin/cp "$@"`,
+      );
+      const wrapperSha = createHash("sha256")
+        .update(await readFile(fixture.wrapper))
+        .digest("hex");
+
+      await expect(
+        runInstaller(fixture, Buffer.from(JSON.stringify(manifest(wrapperSha))), {
+          ARGUS_FIXTURE_CHANGE: change,
+          ARGUS_FIXTURE_REPLACEMENT_WRAPPER: replacement,
+        }),
+      ).rejects.toMatchObject({
+        stderr: expect.stringContaining("changed during preservation"),
+      });
+    },
+  );
+
+  it("rejects a preservation backup whose captured bytes differ from the snapshot", async () => {
+    const fixture = await createFixture();
+    await writeFile(fixture.target, previousWrapper, { mode: 0o755 });
+    const substituted = join(fixture.root, "substituted-wrapper");
+    await writeFile(substituted, previousWrapper.replace("0.9.0", "0.8.0"), {
+      mode: 0o755,
+    });
+    await command(
+      join(fixture.bin, "cp"),
+      `argus_source=
+argus_destination=
+for argus_item do
+  argus_destination=$argus_item
+  case "$argus_item" in -*) ;; *) [ -n "$argus_source" ] || argus_source=$argus_item ;; esac
+done
+if [ "$argus_source" = "$ARGUS_INSTALL_TARGET" ] && [ "\${ARGUS_FIXTURE_SUBSTITUTE_BACKUP:-0}" = 1 ]; then
+  /bin/cp "$ARGUS_FIXTURE_SUBSTITUTED_WRAPPER" "$argus_destination"
+  exit 0
+fi
+exec /bin/cp "$@"`,
+    );
+    const wrapperSha = createHash("sha256")
+      .update(await readFile(fixture.wrapper))
+      .digest("hex");
+
+    await expect(
+      runInstaller(fixture, Buffer.from(JSON.stringify(manifest(wrapperSha))), {
+        ARGUS_FIXTURE_SUBSTITUTE_BACKUP: "1",
+        ARGUS_FIXTURE_SUBSTITUTED_WRAPPER: substituted,
+      }),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining("changed during preservation"),
+    });
+  });
+
+  it("rejects a launcher substituted after its original snapshot and before backup", async () => {
+    const fixture = await createFixture();
+    await writeFile(fixture.target, previousWrapper, { mode: 0o755 });
+    const substituted = join(fixture.root, "snapshot-substituted-wrapper");
+    await writeFile(substituted, previousWrapper.replace("0.9.0", "0.8.0"), {
+      mode: 0o755,
+    });
+    const statCount = join(fixture.root, "target-stat-count");
+    await command(
+      join(fixture.bin, "stat"),
+      `argus_last=
+for argus_item do argus_last=$argus_item; done
+if [ "$argus_last" = "$ARGUS_INSTALL_TARGET" ] &&
+  [ "\${1:-}" = "$ARGUS_FIXTURE_STAT_FLAG" ]; then
+  argus_count=0
+  [ ! -f "$ARGUS_FIXTURE_STAT_COUNT" ] || argus_count=$(cat "$ARGUS_FIXTURE_STAT_COUNT")
+  argus_count=$((argus_count + 1))
+  printf '%s' "$argus_count" > "$ARGUS_FIXTURE_STAT_COUNT"
+  if [ "$argus_count" -eq 4 ]; then
+    /bin/cp "$ARGUS_FIXTURE_SUBSTITUTED_WRAPPER" "$ARGUS_INSTALL_TARGET"
+  fi
+fi
+exec /usr/bin/stat "$@"`,
+    );
+    const wrapperSha = createHash("sha256")
+      .update(await readFile(fixture.wrapper))
+      .digest("hex");
+
+    await expect(
+      runInstaller(fixture, Buffer.from(JSON.stringify(manifest(wrapperSha))), {
+        ARGUS_FIXTURE_STAT_FLAG:
+          process.platform === "linux" ? "-c" : "-f",
+        ARGUS_FIXTURE_STAT_COUNT: statCount,
+        ARGUS_FIXTURE_SUBSTITUTED_WRAPPER: substituted,
+      }),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining("changed during preservation"),
+    });
+    expect(await readFile(fixture.target, "utf8")).toBe(
+      previousWrapper.replace("0.9.0", "0.8.0"),
+    );
+  }, 20_000);
+
+  it("does not execute a launcher swapped after promotion verification", async () => {
+    const fixture = await createFixture();
+    const executionMarker = join(fixture.root, "swapped-launcher-executed");
+    const swappedLauncher = join(fixture.root, "swapped-launcher");
+    await writeFile(
+      swappedLauncher,
+      `#!/bin/sh
+printf '%s\\n' executed > '${executionMarker}'
+printf '%s\\n' 1.2.3
+`,
+      { mode: 0o755 },
+    );
+    await command(
+      join(fixture.bin, "cmp"),
+      `argus_source=
+argus_destination=
+for argus_item do
+  case "$argus_item" in -*) ;; *)
+    if [ -z "$argus_source" ]; then argus_source=$argus_item; else argus_destination=$argus_item; fi
+    ;;
+  esac
+done
+/usr/bin/cmp "$@"
+argus_status=$?
+if [ "$argus_status" -eq 0 ] && [ "$argus_destination" = "$ARGUS_INSTALL_TARGET" ] &&
+  [ "\${ARGUS_FIXTURE_SWAP_AFTER_VERIFY:-0}" = 1 ]; then
+  /bin/cp "$ARGUS_FIXTURE_SWAPPED_LAUNCHER" "$ARGUS_INSTALL_TARGET"
+fi
+exit "$argus_status"`,
+    );
+    const wrapperSha = createHash("sha256")
+      .update(await readFile(fixture.wrapper))
+      .digest("hex");
+
+    await expect(
+      runInstaller(fixture, Buffer.from(JSON.stringify(manifest(wrapperSha))), {
+        ARGUS_FIXTURE_SWAP_AFTER_VERIFY: "1",
+        ARGUS_FIXTURE_SWAPPED_LAUNCHER: swappedLauncher,
+      }),
+    ).resolves.toMatchObject({ stdout: "argus onboard\n" });
+    await expect(lstat(executionMarker)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("quarantines a promoted state instead of deleting it by its live path", async () => {
+    const fixture = await createFixture();
+    const removalMarker = join(fixture.root, "live-state-removal");
+    const syncCount = join(fixture.root, "sync-count");
+    await command(
+      join(fixture.bin, "sync"),
+      `argus_count=0
+[ ! -f "$ARGUS_SYNC_COUNT" ] || argus_count=$(cat "$ARGUS_SYNC_COUNT")
+argus_count=$((argus_count + 1))
+printf '%s' "$argus_count" > "$ARGUS_SYNC_COUNT"
+[ "$argus_count" -ne 5 ]`,
+    );
+    await command(
+      join(fixture.bin, "rm"),
+      `for argus_item do
+  if [ "$argus_item" = "$ARGUS_STATE_PATH" ]; then
+    : > "$ARGUS_FIXTURE_LIVE_REMOVAL_MARKER"
+    exit 1
+  fi
+done
+exec /bin/rm "$@"`,
+    );
+    const wrapperSha = createHash("sha256")
+      .update(await readFile(fixture.wrapper))
+      .digest("hex");
+
+    await expect(
+      runInstaller(fixture, Buffer.from(JSON.stringify(manifest(wrapperSha))), {
+        ARGUS_SYNC_COUNT: syncCount,
+        ARGUS_STATE_PATH: fixture.state,
+        ARGUS_FIXTURE_LIVE_REMOVAL_MARKER: removalMarker,
+      }),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining("previous state was restored"),
+    });
+    await expect(lstat(removalMarker)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("replaces a recognized release-specific legacy wrapper with the signed durable launcher", async () => {
+    const fixture = await createFixture();
+    await writeFile(fixture.target, previousWrapper, { mode: 0o755 });
+    await writeFile(
+      fixture.state,
+      `schema=1\nversion=0.9.0\ncli_image=ghcr.io/gpsxtreme/argus-cli@sha256:${digest}\n`,
+      { mode: 0o644 },
+    );
+    const wrapperSha = createHash("sha256")
+      .update(await readFile(fixture.wrapper))
+      .digest("hex");
+
+    await expect(
+      runInstaller(fixture, Buffer.from(JSON.stringify(manifest(wrapperSha)))),
+    ).resolves.toMatchObject({ stdout: "argus onboard\n" });
+    expect(await readFile(fixture.target, "utf8")).toBe(
+      await readFile(fixture.wrapper, "utf8"),
+    );
+    expect(parseManagementState(await readFile(fixture.state, "utf8"))).toMatchObject({
+      version: "1.2.3",
+    });
   });
 
   it("refuses target symlinks, unrelated targets, and held installer locks", async () => {
@@ -827,20 +1403,56 @@ printf '%s' "$argus_count" > "$ARGUS_SYNC_COUNT"
     });
 
     const second = await createFixture();
+    const secondWrapperSha = createHash("sha256")
+      .update(await readFile(second.wrapper))
+      .digest("hex");
+    const secondBytes = Buffer.from(JSON.stringify(manifest(secondWrapperSha)));
     await writeFile(
       second.target,
       "mine\n# argus-host-wrapper schema=1\nargus_version=1.0.0\nargus_cli_image=spoof\n--env 'ARGUS_INSTALL_ROOT=/opt/argus'\n# generated-by=@argus/release\n",
     );
-    await expect(runInstaller(second, bytes)).rejects.toMatchObject({
+    await expect(runInstaller(second, secondBytes)).rejects.toMatchObject({
       stderr: expect.stringContaining("unrelated"),
     });
 
     const third = await createFixture();
+    const thirdWrapperSha = createHash("sha256")
+      .update(await readFile(third.wrapper))
+      .digest("hex");
+    const thirdBytes = Buffer.from(JSON.stringify(manifest(thirdWrapperSha)));
     await mkdir(join(third.root, "installer.lock"));
-    await expect(runInstaller(third, bytes)).rejects.toMatchObject({
+    await expect(runInstaller(third, thirdBytes)).rejects.toMatchObject({
       stderr: expect.stringContaining("in progress"),
     });
   }, 20_000);
+
+  it("refuses symlinked installation roots and management-state targets", async () => {
+    const fixture = await createFixture();
+    const wrapperSha = createHash("sha256")
+      .update(await readFile(fixture.wrapper))
+      .digest("hex");
+    const bytes = Buffer.from(JSON.stringify(manifest(wrapperSha)));
+    const rootTarget = join(fixture.root, "real-root");
+    await rm(fixture.installRoot, { recursive: true });
+    await mkdir(rootTarget);
+    await symlink(rootTarget, fixture.installRoot);
+    await expect(runInstaller(fixture, bytes)).rejects.toMatchObject({
+      stderr: expect.stringContaining("symlinked Argus installation root"),
+    });
+
+    const stateFixture = await createFixture();
+    const stateFixtureWrapperSha = createHash("sha256")
+      .update(await readFile(stateFixture.wrapper))
+      .digest("hex");
+    const stateFixtureBytes = Buffer.from(
+      JSON.stringify(manifest(stateFixtureWrapperSha)),
+    );
+    await writeFile(join(stateFixture.root, "state-target"), "untrusted\n");
+    await symlink(join(stateFixture.root, "state-target"), stateFixture.state);
+    await expect(runInstaller(stateFixture, stateFixtureBytes)).rejects.toMatchObject({
+      stderr: expect.stringContaining("symlink"),
+    });
+  });
 
   it("fails deterministically for unsupported platform and missing Docker", async () => {
     const fixture = await createFixture();

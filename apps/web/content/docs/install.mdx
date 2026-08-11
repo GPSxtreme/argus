@@ -42,6 +42,18 @@ Install only after reviewing the report:
 curl -fsSL https://argus.gpsxtre.me/install.sh | sh
 ```
 
+## Durable management launcher
+
+The signed installer writes the strict `/opt/argus/management.state` file and
+installs one immutable `/usr/local/bin/argus` launcher. If this host still uses
+the legacy version-pinned wrapper, this is the one final privileged installer
+run required to bootstrap that durable launcher. Later `argus update` commands
+advance the verified management state without replacing the launcher.
+
+Do not edit `management.state`. A missing or malformed state makes the launcher
+fail closed before Docker starts. Rerun the signed installer to repair the
+launcher/state pair.
+
 ## Docker-present and Docker-absent paths
 
 With usable Docker Engine and the Compose plugin, the installer downloads and
