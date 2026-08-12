@@ -17,6 +17,12 @@ const root = resolve(import.meta.dirname, "../../..");
 const read = (path: string): Promise<string> =>
   readFile(resolve(root, path), "utf8");
 
+const exists = async (path: string): Promise<boolean> =>
+  readFile(path).then(
+    () => true,
+    () => false,
+  );
+
 const temporaryDirectories: string[] = [];
 afterEach(async () => {
   await Promise.all(
@@ -48,6 +54,112 @@ const fixtureTimingEnvironment = ({
   ARGUS_DAEMON_SETTLE_SECONDS: settleSeconds,
   ARGUS_SNAPSHOT_TIMEOUT_SECONDS: timeoutSeconds,
 });
+
+const expectedCliImage =
+  `ghcr.io/gpsxtreme/argus-cli@sha256:${"b".repeat(64)}`;
+
+const managementStateVerificationSource = (smoke: string): string => {
+  const preflightEnd = smoke.indexOf("\nfor argus_command in");
+  const verifierStart = smoke.indexOf("argus_management_state=/opt/argus/management.state");
+  const verifierEnd = smoke.indexOf("\n\nARGUS_INSTALL_INSPECT=0 sh");
+  if (
+    preflightEnd < 0 ||
+    verifierStart < preflightEnd ||
+    verifierEnd < verifierStart
+  ) {
+    throw new Error("installer smoke management state boundary changed");
+  }
+
+  return [
+    smoke.slice(0, preflightEnd),
+    smoke
+      .slice(verifierStart, verifierEnd)
+      .replace(
+        "argus_management_state=/opt/argus/management.state",
+        'argus_management_state="$ARGUS_TEST_MANAGEMENT_STATE"',
+      ),
+  ].join("\n");
+};
+
+const runManagementStateCliImageFixture = async ({
+  expectedImage = expectedCliImage,
+  installedImage = expectedCliImage,
+}: {
+  expectedImage?: string;
+  installedImage?: string;
+} = {}) => {
+  const directory = await mkdtemp(join(tmpdir(), "argus-management-state-smoke-"));
+  temporaryDirectories.push(directory);
+  const bin = join(directory, "bin");
+  const installer = join(directory, "install.sh");
+  const runner = join(directory, "verify-management-state.sh");
+  const systemRoot = join(directory, "host");
+  const managementState = join(directory, "management.state");
+  const installerMarker = join(directory, "installer-ran");
+  const onboardingMarker = join(directory, "onboarding-ran");
+  const smoke = await read("scripts/e2e/installer-smoke.sh");
+
+  await Promise.all([
+    mkdir(bin, { recursive: true }),
+    mkdir(systemRoot, { recursive: true }),
+  ]);
+  await Promise.all([
+    writeFile(
+      join(bin, "id"),
+      '#!/bin/sh\ntest "$1" = -u && printf "0\\n"\n',
+      { mode: 0o755 },
+    ),
+    writeFile(
+      join(bin, "stat"),
+      '#!/bin/sh\ntest "$1" = -c && test "$2" = %a && printf "644\\n"\n',
+      { mode: 0o755 },
+    ),
+    writeFile(
+      installer,
+      `#!/bin/sh
+mkdir -p "$(dirname "$ARGUS_TEST_MANAGEMENT_STATE")"
+printf '%s\\n' \
+  'schema=1' \
+  'version=1.2.3' \
+  "cli_image=$ARGUS_INSTALLED_CLI_IMAGE" > "$ARGUS_TEST_MANAGEMENT_STATE"
+chmod 644 "$ARGUS_TEST_MANAGEMENT_STATE"
+touch "$ARGUS_TEST_INSTALLER_MARKER"
+`,
+      { mode: 0o755 },
+    ),
+    writeFile(
+      runner,
+      `#!/bin/sh
+${managementStateVerificationSource(smoke)}
+sh "$ARGUS_TEST_INSTALLER"
+argus_verify_management_state
+touch "$ARGUS_TEST_ONBOARDING_MARKER"
+`,
+      { mode: 0o755 },
+    ),
+  ]);
+
+  const result = spawnSync("/bin/sh", [runner], {
+    encoding: "utf8",
+    env: {
+      PATH: `${bin}:/usr/bin:/bin:/sbin`,
+      ARGUS_INSTALLER_URL: "https://example.com/release/install.sh",
+      ARGUS_MANIFEST_URL: "https://example.com/release/manifest.json",
+      ARGUS_EXPECTED_VERSION: "1.2.3",
+      ARGUS_EXPECTED_WRAPPER_SHA256: "a".repeat(64),
+      ARGUS_EXPECTED_CLI_IMAGE: expectedImage,
+      ARGUS_INSTALL_FIXTURE: "1",
+      ARGUS_SMOKE_SYSTEM_ROOT: systemRoot,
+      ARGUS_INSTALLED_CLI_IMAGE: installedImage,
+      ARGUS_TEST_MANAGEMENT_STATE: managementState,
+      ARGUS_TEST_INSTALLER: installer,
+      ARGUS_TEST_INSTALLER_MARKER: installerMarker,
+      ARGUS_TEST_ONBOARDING_MARKER: onboardingMarker,
+    },
+  });
+
+  return { result, installerMarker, onboardingMarker };
+};
 const quiescenceWorkBudgetMs = (
   settleSeconds: string,
   timeoutSeconds: string,
@@ -228,6 +340,59 @@ const resolveWorkflowRun = (conclusion: string) =>
   );
 
 describe("clean-host installer smoke contract", () => {
+  describe("management state CLI image", () => {
+    it(
+      "accepts the canonical 64-character image and advances to onboarding",
+      async () => {
+        const { result, onboardingMarker } =
+          await runManagementStateCliImageFixture();
+
+        expect(result).toMatchObject({ status: 0, stderr: "" });
+        expect(await exists(onboardingMarker)).toBe(true);
+      },
+      fixtureTestDeadlineMs,
+    );
+
+    it.each([63, 65])(
+      "rejects an expected image with %i digest characters before installation",
+      async (digestLength) => {
+        const image = `ghcr.io/gpsxtreme/argus-cli@sha256:${"b".repeat(digestLength)}`;
+        const { result, installerMarker, onboardingMarker } =
+          await runManagementStateCliImageFixture({
+            expectedImage: image,
+            installedImage: image,
+          });
+
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain(
+          "ARGUS_EXPECTED_CLI_IMAGE must be digest pinned",
+        );
+        expect(await exists(installerMarker)).toBe(false);
+        expect(await exists(onboardingMarker)).toBe(false);
+      },
+      fixtureTestDeadlineMs,
+    );
+
+    it(
+      "rejects a different valid state image before onboarding",
+      async () => {
+        const { result, installerMarker, onboardingMarker } =
+          await runManagementStateCliImageFixture({
+            installedImage:
+              `ghcr.io/gpsxtreme/argus-cli@sha256:${"c".repeat(64)}`,
+          });
+
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain(
+          "management state has the wrong CLI image",
+        );
+        expect(await exists(installerMarker)).toBe(true);
+        expect(await exists(onboardingMarker)).toBe(false);
+      },
+      fixtureTestDeadlineMs,
+    );
+  });
+
   it("pins vfs only for Docker installed inside the nested clean host", async () => {
     const directory = await mkdtemp(join(tmpdir(), "argus-nested-docker-"));
     temporaryDirectories.push(directory);
