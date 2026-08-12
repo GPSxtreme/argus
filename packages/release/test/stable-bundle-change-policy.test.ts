@@ -6,6 +6,9 @@ import { afterEach, describe, expect, it } from "vitest";
 
 const repositoryRoot = resolve(import.meta.dirname, "../../..");
 const policy = join(repositoryRoot, "scripts/ci/assert-stable-bundle-change.mjs");
+const manifest = "apps/web/public/releases/stable/manifest.json";
+const signature = "apps/web/public/releases/stable/manifest.sig";
+const installer = "apps/web/public/releases/stable/install.sh";
 const temporaryRepositories: string[] = [];
 const gitLocalEnvironmentVariables = execFileSync(
   "git",
@@ -53,6 +56,9 @@ const commit = (directory: string, files: Record<string, string>): string => {
   git(directory, ["commit", "-m", "change"]);
   return git(directory, ["rev-parse", "HEAD"]).trim();
 };
+
+const filesFor = (paths: readonly string[]): Record<string, string> =>
+  Object.fromEntries(paths.map((path) => [path, `${path}\n`]));
 
 const runPolicy = (directory: string, base: string, head: string) =>
   spawnSync(process.execPath, [policy, base, head], {
@@ -116,38 +122,39 @@ describe("stable bundle change policy", () => {
     expect(runPolicy(directory, base, head).status).toBe(0);
   });
 
-  it("allows the exact three stable bundle members alongside unrelated changes", () => {
+  it.each([
+    [[manifest, signature], 0],
+    [[installer, manifest, signature], 0],
+    [[manifest], 1],
+    [[signature], 1],
+    [[installer], 1],
+    [[manifest, installer], 1],
+    [[signature, installer], 1],
+  ])("enforces stable changed set %j", (paths, status) => {
     const { directory, base } = createRepository();
-    const head = commit(directory, {
-      "apps/web/public/releases/stable/install.sh": "#!/bin/sh\n",
-      "apps/web/public/releases/stable/manifest.json": "{}\n",
-      "apps/web/public/releases/stable/manifest.sig": "signature\n",
-      "docs/operations.md": "also changed\n",
-    });
+    const head = commit(directory, filesFor(paths));
+    const result = runPolicy(directory, base, head);
+
+    if (status === 0) expect(result.stderr).toBe("");
+    expect(result.status).toBe(status);
+  });
+
+  it.each([
+    [[manifest, signature]],
+    [[installer, manifest, signature]],
+  ])("allows unrelated paths beside valid stable set %j", (paths) => {
+    const { directory, base } = createRepository();
+    const head = commit(directory, filesFor([...paths, "docs/operations.md"]));
 
     expect(runPolicy(directory, base, head).status).toBe(0);
   });
 
-  it("rejects a partial stable bundle change", () => {
+  it.each([
+    [[manifest, signature]],
+    [[installer, manifest, signature]],
+  ])("rejects notes.txt beside valid stable set %j", (paths) => {
     const { directory, base } = createRepository();
-    const head = commit(directory, {
-      "apps/web/public/releases/stable/manifest.json": "{}\n",
-    });
-
-    const result = runPolicy(directory, base, head);
-
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain("missing install.sh, manifest.sig");
-  });
-
-  it("rejects extra files under the stable directory", () => {
-    const { directory, base } = createRepository();
-    const head = commit(directory, {
-      "apps/web/public/releases/stable/install.sh": "#!/bin/sh\n",
-      "apps/web/public/releases/stable/manifest.json": "{}\n",
-      "apps/web/public/releases/stable/manifest.sig": "signature\n",
-      "apps/web/public/releases/stable/notes.txt": "not a bundle member\n",
-    });
+    const head = commit(directory, filesFor([...paths, "apps/web/public/releases/stable/notes.txt"]));
 
     const result = runPolicy(directory, base, head);
 

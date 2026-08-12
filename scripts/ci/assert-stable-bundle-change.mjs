@@ -31,18 +31,26 @@ try {
   if (changedBundleMembers.length === 0) process.exit(0);
 
   const changed = new Set(changedBundleMembers);
-  const missing = [...bundleMembers].filter((member) => !changed.has(member));
+  const manifestChanged = changed.has("manifest.json");
+  const signatureChanged = changed.has("manifest.sig");
+  const installerChanged = changed.has("install.sh");
+  const missing = ["manifest.json", "manifest.sig"].filter(
+    (member) => !changed.has(member),
+  );
   const unexpected = changedBundleMembers.filter(
     (member) => !bundleMembers.has(member),
   );
-  if (missing.length > 0 || unexpected.length > 0) {
+  if (!manifestChanged || !signatureChanged || unexpected.length > 0) {
     const details = [
       missing.length > 0 ? `missing ${missing.sort().join(", ")}` : undefined,
       unexpected.length > 0
         ? `unexpected ${[...new Set(unexpected)].sort().join(", ")}`
         : undefined,
     ].filter(Boolean);
-    fail(`stable directory changes must be exactly install.sh, manifest.json, manifest.sig (${details.join("; ")})`);
+    fail(`stable directory changes must include manifest.json and manifest.sig, with optional install.sh (${details.join("; ")})`);
+  }
+  if (installerChanged && (!manifestChanged || !signatureChanged)) {
+    fail("install.sh requires manifest.json and manifest.sig");
   }
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error);
