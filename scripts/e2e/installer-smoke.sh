@@ -446,10 +446,6 @@ argus_verify_management_state() {
   esac
   [ "$argus_management_version" = "$ARGUS_EXPECTED_VERSION" ] ||
     argus_die "management state has the wrong release version"
-  case "$argus_management_cli_image" in
-    cli_image=*@sha256:[a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9]) ;;
-    *) argus_die "management state has an invalid CLI image" ;;
-  esac
   [ "$argus_management_cli_image" = "cli_image=$ARGUS_EXPECTED_CLI_IMAGE" ] ||
     argus_die "management state has the wrong CLI image"
 }
