@@ -494,6 +494,8 @@ export const createSqliteSnapshot = async ({
           name: cause.name,
           code: cause.code ?? null,
           syscall: cause.syscall ?? null,
+          message: cause.message,
+          stack: cause.stack?.split("\n").slice(0, 8) ?? [],
         }),
       );
     }
