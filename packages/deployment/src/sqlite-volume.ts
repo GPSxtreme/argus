@@ -96,12 +96,21 @@ const snapshotReceiptSchema = z
 const snapshotHelper = String.raw`
 import Database from "better-sqlite3";
 import { createHash } from "node:crypto";
-import { chmod, copyFile, mkdtemp, open, readFile, rm, stat } from "node:fs/promises";
+import { chmod, chown, copyFile, mkdtemp, open, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const [sourcePath, destinationPath] = process.argv.slice(1);
-if (!sourcePath || !destinationPath) throw new Error("snapshot paths are required");
+const [sourcePath, destinationPath, ownerUidText, ownerGidText] = process.argv.slice(1);
+const ownerUid = Number(ownerUidText);
+const ownerGid = Number(ownerGidText);
+if (
+  !sourcePath ||
+  !destinationPath ||
+  !Number.isSafeInteger(ownerUid) ||
+  ownerUid < 0 ||
+  !Number.isSafeInteger(ownerGid) ||
+  ownerGid < 0
+) throw new Error("snapshot paths and owner are required");
 
 const quickCheck = (database) => {
   const rows = database.pragma("quick_check");
@@ -140,6 +149,7 @@ snapshot.close();
 
 const bytes = await readFile(destinationPath);
 const metadata = await stat(destinationPath);
+await chown(destinationPath, ownerUid, ownerGid);
 await chmod(destinationPath, 0o600);
 const file = await open(destinationPath, "r");
 await file.sync();
@@ -441,6 +451,8 @@ export const createSqliteSnapshot = async ({
         "--",
         "/data/argus.db",
         "/backup/argus.db",
+        String(process.getuid?.() ?? 0),
+        String(process.getgid?.() ?? 0),
       ],
       { timeoutMs: 120_000 },
     );
