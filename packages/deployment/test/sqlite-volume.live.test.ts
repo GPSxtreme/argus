@@ -79,8 +79,25 @@ const records = database.prepare("SELECT count(*) AS count FROM records").get().
 database.close();
 process.stdout.write(JSON.stringify({ rows, records }));
 `;
+        const readerScript = `
+import Database from "better-sqlite3";
+const database = new Database("/app/data/argus.db", { readonly: true, fileMustExist: true });
+database.exec("BEGIN");
+database.prepare("SELECT count(*) AS count FROM records").get();
+process.stdout.write("ready\\n");
+setInterval(() => undefined, 1_000);
+`;
+        const liveInspectScript = `
+import Database from "better-sqlite3";
+const database = new Database("/app/data/argus.db", { readonly: true, fileMustExist: true });
+const records = database.prepare("SELECT count(*) AS count FROM records").get().count;
+const rows = database.prepare("SELECT value FROM markers ORDER BY value").all().map(({ value }) => value);
+database.close();
+process.stdout.write(JSON.stringify({ records, rows }));
+`;
 
         let ownsProject = false;
+        const readerName = `argus-sqlite-wal-reader-${process.pid}-${Date.now()}`;
         try {
           const existingContainers = await executor.run(
             "docker",
@@ -100,8 +117,8 @@ process.stdout.write(JSON.stringify({ rows, records }));
               "Refusing to run destructive SQLite live test while an argus Compose project already exists.",
             );
           }
-          await run(executor, root, [...compose, "up", "-d"]);
           ownsProject = true;
+          await run(executor, root, [...compose, "up", "-d"]);
           await run(executor, root, [
             ...compose,
             "exec",
@@ -130,6 +147,34 @@ process.stdout.write(JSON.stringify({ rows, records }));
 
           await run(executor, root, [...compose, "up", "-d", "argus"]);
           await run(executor, root, [
+            "run",
+            "-d",
+            "--name",
+            readerName,
+            "--network",
+            "none",
+            "--mount",
+            `type=volume,src=${volume.name},dst=/app/data`,
+            "--entrypoint",
+            "node",
+            image,
+            "--input-type=module",
+            "-e",
+            readerScript,
+          ]);
+          let readerReady = false;
+          for (let attempt = 0; attempt < 30; attempt += 1) {
+            const logs = await executor.run("docker", ["logs", readerName], {
+              timeoutMs: 10_000,
+            });
+            if (logs.exitCode === 0 && logs.stdout.includes("ready")) {
+              readerReady = true;
+              break;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 100));
+          }
+          expect(readerReady).toBe(true);
+          await run(executor, root, [
             ...compose,
             "exec",
             "-T",
@@ -140,6 +185,51 @@ process.stdout.write(JSON.stringify({ rows, records }));
             mutateScript,
           ]);
           await run(executor, root, [...compose, "stop", "argus"]);
+          await expect(
+            restoreSqliteSnapshot({
+              root,
+              backupRoot,
+              snapshot,
+              executor,
+              environment,
+              image,
+              volume,
+            }),
+          ).rejects.toMatchObject({ code: "UPDATE_ROLLBACK_RESTORE_FAILED" });
+          await run(executor, root, [
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "--mount",
+            `type=volume,src=${volume.name},dst=/data`,
+            "--entrypoint",
+            "sh",
+            image,
+            "-c",
+            "test -f /data/argus.db-wal && test -f /data/argus.db-shm",
+          ]);
+          await run(executor, root, ["rm", "-f", readerName]);
+          const live = JSON.parse(
+            await run(executor, root, [
+              "run",
+              "--rm",
+              "--network",
+              "none",
+              "--mount",
+              `type=volume,src=${volume.name},dst=/app/data`,
+              "--entrypoint",
+              "node",
+              image,
+              "--input-type=module",
+              "-e",
+              liveInspectScript,
+            ]),
+          ) as { records: number; rows: string[] };
+          expect(live).toEqual({
+            records: 2,
+            rows: ["after", "before"],
+          });
           await verifySqliteSnapshot({
             root,
             backupRoot,
@@ -181,6 +271,9 @@ process.stdout.write(JSON.stringify({ rows, records }));
             records: 1,
           });
         } finally {
+          await executor.run("docker", ["rm", "-f", readerName], {
+            timeoutMs: 10_000,
+          });
           if (ownsProject) {
             await run(executor, root, [
               ...compose,

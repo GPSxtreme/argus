@@ -3,8 +3,8 @@ import {
   mkdir,
   mkdtemp,
   rm,
-  symlink,
   stat,
+  symlink,
   unlink,
   writeFile,
 } from "node:fs/promises";
