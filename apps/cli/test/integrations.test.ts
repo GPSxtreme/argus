@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   lstat,
   mkdir,
@@ -225,7 +226,68 @@ const answers: OnboardingAnswersV1 = {
 class DeploymentExecutor implements CommandExecutor {
   running = false;
   restarts = 0;
-  async run(_command: string, args: string[]) {
+  async run(
+    _command: string,
+    args: string[],
+    _options?: Parameters<CommandExecutor["run"]>[2],
+  ) {
+    if (args.join(" ").includes("compose -p argus ps -q --all argus")) {
+      return { exitCode: 0, stdout: `${digest("9")}\n`, stderr: "" };
+    }
+    if (args[0] === "inspect") {
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify([
+          {
+            Type: "volume",
+            Name: "argus_argus-data",
+            Destination: "/app/data",
+          },
+        ]),
+        stderr: "",
+      };
+    }
+    if (args[0] === "volume") {
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({
+          "com.docker.compose.project": "argus",
+          "com.docker.compose.volume": "argus-data",
+        }),
+        stderr: "",
+      };
+    }
+    if (args.includes("stop")) this.running = false;
+    if (args[0] === "run" && args.includes("--network")) {
+      const mount = args.find((value) => value.startsWith("type=bind,src="));
+      const backupRoot = mount
+        ?.slice("type=bind,src=".length)
+        .split(",dst=")[0];
+      if (!mount || !backupRoot) throw new Error("Missing SQLite backup mount");
+      const path = join(backupRoot, "argus.db");
+      if (!mount.includes("readonly")) {
+        await writeFile(path, Buffer.from("CLI integration SQLite snapshot"), {
+          flag: "wx",
+        });
+      }
+      const bytes = await readFile(path);
+      const receipt = {
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+        bytes: bytes.byteLength,
+        quickCheck: "ok",
+        counts: { records: 1, revisions: 2, jobs: 3 },
+      };
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify(
+          args.some((value) => value.includes("type=volume")) &&
+            mount.includes("readonly")
+            ? { restored: true, ...receipt }
+            : receipt,
+        ),
+        stderr: "",
+      };
+    }
     if (args.includes("up")) {
       this.running = true;
       this.restarts += 1;
@@ -997,19 +1059,11 @@ describe("production onboarding integration", () => {
         return new Response(Uint8Array.from(bytes).buffer);
       },
     });
+    const recoveryExecutor = new DeploymentExecutor();
+    recoveryExecutor.running = true;
     const dependencies = createNodeCliDependencies({
       root,
-      executor: {
-        async run(_command, args) {
-          return args.includes("ps")
-            ? {
-                exitCode: 0,
-                stdout: '[{"Service":"argus","State":"running","Health":"healthy"}]',
-                stderr: "",
-              }
-            : { exitCode: 0, stdout: "", stderr: "" };
-        },
-      },
+      executor: recoveryExecutor,
       prompt: {
         async confirm() { return true; },
         async select() { return ""; },
@@ -1057,7 +1111,6 @@ describe("production onboarding integration", () => {
     const launcherBytes = Buffer.from(renderArgusWrapper());
     await writeFile(launcher, launcherBytes, { mode: 0o755 });
     await writeFile(join(root, "release-context.json"), currentContext);
-    await writeFile(join(root, "argus.db"), "prior database");
     await writeFile(
       join(root, "management.state"),
       `schema=1\nversion=${current.version}\ncli_image=ghcr.io/gpsxtreme/argus-cli@sha256:${digest("b")}\n`,
@@ -1096,7 +1149,6 @@ describe("production onboarding integration", () => {
 
     await createProgram(dependencies).parseAsync(["node", "argus", "update", "--yes"]);
     await createProgram(dependencies).parseAsync(["node", "argus", "update", "--yes"]);
-    await writeFile(join(root, "argus.db"), "target database");
     const targetContext = await readFile(join(root, "release-context.json"), "utf8");
     const targetManagementState = await readFile(join(root, "management.state"), "utf8");
     await expect(readFile(join(root, "rollback-release-context.json"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
@@ -1138,7 +1190,6 @@ describe("production onboarding integration", () => {
       dependencies.deployment.applyRollbackUpdate?.(persistedManifestInspection),
     ).rejects.toMatchObject({ code: "UPDATE_ROLLBACK_INCOMPATIBLE" });
     expect(await loadDeploymentState(root)).toMatchObject({ argusVersion: target.version });
-    expect(await readFile(join(root, "argus.db"), "utf8")).toBe("target database");
     expect(await readFile(join(root, "release-context.json"), "utf8")).toBe(targetContext);
     expect(await readFile(join(root, "management.state"), "utf8")).toBe(targetManagementState);
     expect(deploymentExecutor.restarts).toBe(1);
@@ -1152,7 +1203,6 @@ describe("production onboarding integration", () => {
       dependencies.deployment.applyRollbackUpdate?.(mutatedReleaseInspection),
     ).rejects.toMatchObject({ code: "UPDATE_ROLLBACK_UNAVAILABLE" });
     expect(await loadDeploymentState(root)).toMatchObject({ argusVersion: target.version });
-    expect(await readFile(join(root, "argus.db"), "utf8")).toBe("target database");
     expect(await readFile(join(root, "release-context.json"), "utf8")).toBe(targetContext);
     expect(await readFile(join(root, "management.state"), "utf8")).toBe(targetManagementState);
     expect(deploymentExecutor.restarts).toBe(1);
@@ -1166,7 +1216,6 @@ describe("production onboarding integration", () => {
       dependencies.deployment.applyRollbackUpdate?.(invalidInspection),
     ).rejects.toMatchObject({ code: "UPDATE_ROLLBACK_UNAVAILABLE" });
     expect(await loadDeploymentState(root)).toMatchObject({ argusVersion: target.version });
-    expect(await readFile(join(root, "argus.db"), "utf8")).toBe("target database");
     expect(await readFile(join(root, "release-context.json"), "utf8")).toBe(targetContext);
     expect(await readFile(join(root, "management.state"), "utf8")).toBe(targetManagementState);
     expect(deploymentExecutor.restarts).toBe(1);
@@ -1191,7 +1240,6 @@ describe("production onboarding integration", () => {
       version: current.version,
       cliImage: `ghcr.io/gpsxtreme/argus-cli@sha256:${digest("b")}`,
     });
-    expect(await readFile(join(root, "argus.db"), "utf8")).toBe("prior database");
     expect(deploymentExecutor.restarts).toBe(2);
     expect(await readFile(launcher)).toStrictEqual(launcherBytes);
   });
@@ -1310,20 +1358,23 @@ describe("production onboarding integration", () => {
       },
     });
     let restarts = 0;
+    const deploymentExecutor = new DeploymentExecutor();
     const dependencies = createNodeCliDependencies({
       root,
       executor: {
-        async run(_command, args) {
+        async run(command, args, options) {
           if (args.includes("up")) restarts += 1;
-          return args.at(-1) === "json"
-            ? {
-                exitCode: 0,
-                stdout: restarts === 1
+          if (args.at(-1) === "json") {
+            return {
+              exitCode: 0,
+              stdout:
+                restarts === 1
                   ? '[{"Service":"argus","State":"running","Health":"healthy"}]'
                   : "[]",
-                stderr: "",
-              }
-            : { exitCode: 0, stdout: "", stderr: "" };
+              stderr: "",
+            };
+          }
+          return deploymentExecutor.run(command, args, options);
         },
       },
       prompt: {
@@ -1395,18 +1446,19 @@ describe("production onboarding integration", () => {
     const currentReleaseInspection = await signed.inspectCurrentRelease();
     const rollbackSnapshot = {} as Awaited<ReturnType<typeof signed.fetchRollbackSnapshot>>;
     const events: string[] = [];
+    const deploymentExecutor = new DeploymentExecutor();
     const dependencies = createNodeCliDependencies({
       root,
       executor: {
-        async run(_command, args) {
+        async run(command, args, options) {
           if (args.includes("pull")) events.push("pull");
           if (args.includes("migrate")) events.push("migrate");
           if (args.includes("up")) events.push("reconcile");
-          if (args.includes("ps")) {
+          if (args.at(-1) === "json") {
             events.push("health");
             return { exitCode: 0, stdout: '[{"Service":"argus","State":"running","Health":"healthy"}]', stderr: "" };
           }
-          return { exitCode: 0, stdout: "", stderr: "" };
+          return deploymentExecutor.run(command, args, options);
         },
       },
       prompt: {
@@ -1568,13 +1620,7 @@ describe("production onboarding integration", () => {
     let stdout = "";
     const dependencies = createNodeCliDependencies({
       root,
-      executor: {
-        async run(_command, args) {
-          return args.includes("ps")
-            ? { exitCode: 0, stdout: '[{"Service":"argus","State":"running","Health":"healthy"}]', stderr: "" }
-            : { exitCode: 0, stdout: "", stderr: "" };
-        },
-      },
+      executor: new DeploymentExecutor(),
       prompt: {
         async confirm() { return true; },
         async select() { return ""; },
@@ -1664,13 +1710,7 @@ describe("production onboarding integration", () => {
     let stdout = "";
     const dependencies = createNodeCliDependencies({
       root,
-      executor: {
-        async run(_command, args) {
-          return args.includes("ps")
-            ? { exitCode: 0, stdout: '[{"Service":"argus","State":"running","Health":"healthy"}]', stderr: "" }
-            : { exitCode: 0, stdout: "", stderr: "" };
-        },
-      },
+      executor: new DeploymentExecutor(),
       prompt: {
         async confirm() { return true; },
         async select() { return ""; },

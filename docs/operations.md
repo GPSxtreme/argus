@@ -78,9 +78,13 @@ argus update --rollback --json --yes
 ```
 
 `argus update` downloads and verifies the stable signed manifest before it
-stops services. It backs up the current instance, runs storage migrations,
-starts the candidate, and verifies health. A failed update restores the
-previous verified release; keep `/opt/argus/backups` until you have separately
+mutates the instance. For SQLite it proves the Compose-owned `argus-data`
+volume, stops only the Argus service, creates a consistent database snapshot,
+and records its SHA-256, byte length, integrity result, table counts, and exact
+volume identity. Only then does it pull images, run migrations, start the
+candidate, and verify health. A failed update retains the verified snapshot;
+review diagnostics and run `argus update --rollback --json --yes` to restore
+the previous signed release. Keep `/opt/argus/backups` until you have separately
 validated the new version.
 
 Existing installations with the legacy version-pinned wrapper need one final
@@ -139,11 +143,15 @@ print configuration objects or authorization headers.
 
 ## Backup and recovery
 
-For SQLite, stop Argus and copy the database plus any `-wal` and `-shm` files
-from its `argus-data` Docker volume, or use SQLite's online backup tooling.
-Restore all files together. Signed updates also copy these files into a
-timestamped `/opt/argus/backups/<version>-<timestamp>/` directory before
-migration.
+For SQLite, the live database exists only in the Compose-owned `argus-data`
+Docker volume; there is no authoritative host database under `/opt/argus`.
+Signed updates stop the Argus writer and use SQLite's backup API from the exact
+digest-pinned application image. The resulting regular file is stored beneath
+`/opt/argus/backups/<version>-<timestamp>-<id>/argus.db`, fsynced, quick-checked,
+hashed, and recorded in `update-state.json`. Rollback revalidates that file and
+its table counts before stopping Argus, then stages and atomically renames the
+database inside the same Docker volume. Do not edit the snapshot metadata,
+rename the volume, or copy a host-side `argus.db` over it.
 
 For PostgreSQL, use regular `pg_dump`/`pg_restore` or provider snapshots.
 Store dumps outside `/opt/argus`; Argus update backups preserve deployment

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -46,10 +47,71 @@ const release = (version = "2.0.0", minimumStateSchema = 1, marker = "a"): Verif
 
 const executor = (fail?: "migration" | "health"): CommandExecutor => ({
   async run(_command, args) {
+    if (args.join(" ").includes("compose -p argus ps -q --all argus")) {
+      return { exitCode: 0, stdout: `${"9".repeat(64)}\n`, stderr: "" };
+    }
+    if (args[0] === "inspect") {
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify([
+          {
+            Type: "volume",
+            Name: "argus_argus-data",
+            Destination: "/app/data",
+          },
+        ]),
+        stderr: "",
+      };
+    }
+    if (args[0] === "volume") {
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({
+          "com.docker.compose.project": "argus",
+          "com.docker.compose.volume": "argus-data",
+        }),
+        stderr: "",
+      };
+    }
+    if (args[0] === "run" && args.includes("--network")) {
+      const mount = args.find((value) => value.startsWith("type=bind,src="));
+      const backupRoot = mount
+        ?.slice("type=bind,src=".length)
+        .split(",dst=")[0];
+      if (!backupRoot) throw new Error("Missing snapshot bind mount");
+      const snapshotPath = join(backupRoot, "argus.db");
+      if (!mount.includes("readonly")) {
+        await writeFile(snapshotPath, Buffer.from("test SQLite snapshot"), {
+          flag: "wx",
+        });
+      }
+      const bytes = await readFile(snapshotPath);
+      const receipt = {
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+        bytes: bytes.byteLength,
+        quickCheck: "ok",
+        counts: { records: 1, revisions: 2, jobs: 3 },
+      };
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify(
+          args.some((value) => value.includes("type=volume")) &&
+            mount.includes("readonly")
+            ? { restored: true, ...receipt }
+            : receipt,
+        ),
+        stderr: "",
+      };
+    }
     if (fail === "migration" && args.includes("migrate")) return { exitCode: 1, stdout: "", stderr: "migration failed" };
     if (fail === "health" && args.includes("ps")) return { exitCode: 0, stdout: "[]", stderr: "" };
     if (args.includes("ps")) {
-      return { exitCode: 0, stdout: '[{"Service":"argus","State":"running","Health":"healthy"}]', stderr: "" };
+      return {
+        exitCode: 0,
+        stdout:
+          '[{"Service":"argus","State":"running","Health":"healthy"},{"Service":"postgres","State":"running","Health":"healthy"}]',
+        stderr: "",
+      };
     }
     return { exitCode: 0, stdout: "", stderr: "" };
   },
@@ -57,7 +119,13 @@ const executor = (fail?: "migration" | "health"): CommandExecutor => ({
 const rollbackContext = async (): Promise<Uint8Array> =>
   Buffer.from("verified signed release context");
 
-const rootWithState = async ({ searxng = false }: { searxng?: boolean } = {}) => {
+const rootWithState = async ({
+  searxng = false,
+  storage = "sqlite",
+}: {
+  searxng?: boolean;
+  storage?: "sqlite" | "postgres";
+} = {}) => {
   const root = await mkdtemp(join(tmpdir(), "argus-update-"));
   roots.push(root);
   await saveDeploymentState(root, {
@@ -74,7 +142,7 @@ const rootWithState = async ({ searxng = false }: { searxng?: boolean } = {}) =>
     compose: {
       version: "1.0.0",
       apiPort: 8788,
-      storage: "sqlite",
+      storage,
       searxng,
       images: { argus: image("f").reference, postgres: image("d").reference, searxng: image("c").reference },
     },
@@ -119,23 +187,234 @@ describe("safe update state machine", () => {
     });
   });
 
-  it("backs up SQLite database sidecars and completes every success phase", async () => {
+  it("quiesces Argus and snapshots its proven Compose SQLite volume", async () => {
     const root = await rootWithState();
-    await writeFile(join(root, "argus.db"), "db");
-    await writeFile(join(root, "argus.db-wal"), "wal");
-    await writeFile(join(root, "argus.db-shm"), "shm");
     const plan = await planUpdate({ root, release: release(), rollbackRelease: release("1.0.0", 1, "f"), executor: executor() });
-    const backup = await backupInstance({ root, plan, getRollbackContext: rollbackContext });
-
-    expect(await readFile(join(backup.path, "argus.db"), "utf8")).toBe("db");
-    expect(await readFile(join(backup.path, "argus.db-wal"), "utf8")).toBe("wal");
-    expect(await readFile(join(backup.path, "argus.db-shm"), "utf8")).toBe("shm");
-    const applied = await applyUpdate({ root, plan, executor: executor(), getRollbackContext: rollbackContext });
-    await expect(finalizeUpdate({ root, plan, applied })).resolves.toMatchObject({
-      version: "2.0.0",
-      health: { healthy: true },
-      phase: "verified",
+    const events: string[] = [];
+    const snapshotBytes = Buffer.from("managed SQLite snapshot");
+    const snapshotSha = createHash("sha256").update(snapshotBytes).digest("hex");
+    const snapshotExecutor: CommandExecutor = {
+      async run(command, args) {
+        if (
+          command === "docker" &&
+          args.join(" ").includes("compose -p argus ps -q --all argus")
+        ) {
+          events.push("compose-ps");
+          return { exitCode: 0, stdout: `${"a".repeat(64)}\n`, stderr: "" };
+        }
+        if (command === "docker" && args[0] === "inspect") {
+          events.push("container-inspect");
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify([
+              {
+                Type: "volume",
+                Name: "argus_argus-data",
+                Destination: "/app/data",
+              },
+            ]),
+            stderr: "",
+          };
+        }
+        if (command === "docker" && args[0] === "volume") {
+          events.push("volume-inspect");
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              "com.docker.compose.project": "argus",
+              "com.docker.compose.volume": "argus-data",
+            }),
+            stderr: "",
+          };
+        }
+        if (args.includes("stop")) {
+          events.push("stop-argus");
+          return { exitCode: 0, stdout: "", stderr: "" };
+        }
+        if (args[0] === "run" && args.includes("--network")) {
+          events.push("snapshot-helper");
+          const mount = args.find((value) => value.startsWith("type=bind,src="));
+          const backupRoot = mount?.slice("type=bind,src=".length).split(",dst=")[0];
+          if (!backupRoot) throw new Error("Missing snapshot bind mount");
+          await writeFile(join(backupRoot, "argus.db"), snapshotBytes, { flag: "wx" });
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              sha256: snapshotSha,
+              bytes: snapshotBytes.byteLength,
+              quickCheck: "ok",
+              counts: { records: 10, revisions: 20, jobs: 30 },
+            }),
+            stderr: "",
+          };
+        }
+        throw new Error(`Unexpected command: ${command} ${args.join(" ")}`);
+      },
+    };
+    const backup = await backupInstance({
+      root,
+      plan,
+      executor: snapshotExecutor,
+      getRollbackContext: async () => {
+        events.push("rollback-context");
+        return rollbackContext();
+      },
     });
+
+    expect(events).toEqual([
+      "rollback-context",
+      "compose-ps",
+      "container-inspect",
+      "volume-inspect",
+      "stop-argus",
+      "snapshot-helper",
+    ]);
+    expect(backup.sqliteSnapshot).toMatchObject({
+      relativePath: expect.stringMatching(/^backups\/.+\/argus\.db$/u),
+      sha256: snapshotSha,
+      bytes: snapshotBytes.byteLength,
+      quickCheck: "ok",
+      counts: { records: 10, revisions: 20, jobs: 30 },
+      volume: { name: "argus_argus-data" },
+    });
+    expect(await readFile(join(backup.path, "argus.db"))).toEqual(snapshotBytes);
+  });
+
+  it("restarts the old Argus service and preserves update state when snapshot creation fails", async () => {
+    const root = await rootWithState();
+    const plan = await planUpdate({
+      root,
+      release: release(),
+      rollbackRelease: release("1.0.0", 1, "f"),
+      executor: executor(),
+    });
+    const calls: string[][] = [];
+    const baseExecutor = executor();
+    const failingExecutor: CommandExecutor = {
+      async run(command, args, options) {
+        calls.push(args);
+        if (args[0] === "run" && args.includes("--network")) {
+          return { exitCode: 1, stdout: "", stderr: "snapshot failed" };
+        }
+        return baseExecutor.run(command, args, options);
+      },
+    };
+
+    await expect(
+      applyUpdate({
+        root,
+        plan,
+        executor: failingExecutor,
+        getRollbackContext: rollbackContext,
+      }),
+    ).rejects.toMatchObject({ code: "UPDATE_SQLITE_SNAPSHOT_FAILED" });
+    expect(calls.some((args) => args.includes("pull"))).toBe(false);
+    expect(calls.some((args) => args.includes("migrate"))).toBe(false);
+    expect(
+      calls.some(
+        (args) => args.includes("up") && args.includes("argus"),
+      ),
+    ).toBe(true);
+    await expect(readFile(join(root, "update-state.json"), "utf8")).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("restarts the old service when durable snapshot publication fails", async () => {
+    const root = await rootWithState();
+    await mkdir(join(root, "update-state.json"));
+    const plan = await planUpdate({
+      root,
+      release: release(),
+      rollbackRelease: release("1.0.0", 1, "f"),
+      executor: executor(),
+    });
+    const calls: string[][] = [];
+    const baseExecutor = executor();
+    const recordingExecutor: CommandExecutor = {
+      async run(command, args, options) {
+        calls.push(args);
+        return baseExecutor.run(command, args, options);
+      },
+    };
+
+    await expect(
+      applyUpdate({
+        root,
+        plan,
+        executor: recordingExecutor,
+        getRollbackContext: rollbackContext,
+      }),
+    ).rejects.toBeDefined();
+    expect(calls.some((args) => args.includes("pull"))).toBe(false);
+    expect(
+      calls.some(
+        (args) => args.includes("up") && args.includes("argus"),
+      ),
+    ).toBe(true);
+  });
+
+  it("reports failed recovery when snapshot failure cannot restart a healthy old service", async () => {
+    const root = await rootWithState();
+    const plan = await planUpdate({
+      root,
+      release: release(),
+      rollbackRelease: release("1.0.0", 1, "f"),
+      executor: executor(),
+    });
+    const baseExecutor = executor();
+    const failingExecutor: CommandExecutor = {
+      async run(command, args, options) {
+        if (args[0] === "run" && args.includes("--network")) {
+          return { exitCode: 1, stdout: "", stderr: "snapshot failed" };
+        }
+        if (args.includes("--format") && args.includes("ps")) {
+          return { exitCode: 0, stdout: "[]", stderr: "" };
+        }
+        return baseExecutor.run(command, args, options);
+      },
+    };
+
+    await expect(
+      applyUpdate({
+        root,
+        plan,
+        executor: failingExecutor,
+        getRollbackContext: rollbackContext,
+      }),
+    ).rejects.toMatchObject({ code: "UPDATE_SQLITE_RECOVERY_FAILED" });
+  });
+
+  it("does not stop or invoke SQLite helpers for PostgreSQL deployments", async () => {
+    const root = await rootWithState({ storage: "postgres" });
+    const plan = await planUpdate({
+      root,
+      release: release(),
+      rollbackRelease: release("1.0.0", 1, "f"),
+      executor: executor(),
+    });
+    const calls: string[][] = [];
+    const baseExecutor = executor();
+    const recordingExecutor: CommandExecutor = {
+      async run(command, args, options) {
+        calls.push(args);
+        return baseExecutor.run(command, args, options);
+      },
+    };
+
+    await applyUpdate({
+      root,
+      plan,
+      executor: recordingExecutor,
+      getRollbackContext: rollbackContext,
+    });
+
+    expect(calls.some((args) => args.includes("stop"))).toBe(false);
+    expect(calls.some((args) => args.includes("--network"))).toBe(false);
+    const persisted = JSON.parse(
+      await readFile(join(root, "update-state.json"), "utf8"),
+    ) as { backup: { sqliteSnapshot?: unknown } };
+    expect(persisted.backup.sqliteSnapshot).toBeUndefined();
   });
 
   it("leaves a healthy update at the restart phase until its durable promotions finalize", async () => {
@@ -196,7 +475,7 @@ describe("safe update state machine", () => {
       rollbackRelease,
       executor: executor(),
     });
-    await backupInstance({ root, plan: failedPlan, getRollbackContext: rollbackContext });
+    await backupInstance({ root, plan: failedPlan, executor: executor(), getRollbackContext: rollbackContext });
     await rollbackUpdate({ root, executor: executor(), release: rollbackRelease });
     const recoveryPlan = await planUpdate({
       root,
@@ -252,7 +531,7 @@ describe("safe update state machine", () => {
       rollbackRelease: release("1.0.0", 1, "f"),
       executor: executor(),
     });
-    const backup = await backupInstance({ root, plan, getRollbackContext: rollbackContext });
+    const backup = await backupInstance({ root, plan, executor: executor(), getRollbackContext: rollbackContext });
     await expect(loadRollbackReleaseContext(root)).resolves.toEqual(
       Buffer.from("verified signed release context"),
     );
@@ -341,9 +620,10 @@ describe("safe update state machine", () => {
   it("accepts newline-delimited Compose service records during update verification", async () => {
     const root = await rootWithState({ searxng: true });
     const plan = await planUpdate({ root, release: release(), rollbackRelease: release("1.0.0", 1, "f"), executor: executor() });
+    const baseExecutor = executor();
     const composeV239Executor: CommandExecutor = {
-      async run(_command, args) {
-        if (args.includes("ps")) {
+      async run(command, args, options) {
+        if (args.includes("--format") && args.includes("ps")) {
           return {
             exitCode: 0,
             stdout: [
@@ -353,7 +633,7 @@ describe("safe update state machine", () => {
             stderr: "",
           };
         }
-        return { exitCode: 0, stdout: "", stderr: "" };
+        return baseExecutor.run(command, args, options);
       },
     };
 
@@ -393,16 +673,17 @@ describe("safe update state machine", () => {
   it("fails an explicitly unhealthy newline-delimited Compose status", async () => {
     const root = await rootWithState();
     const plan = await planUpdate({ root, release: release(), rollbackRelease: release("1.0.0", 1, "f"), executor: executor() });
+    const baseExecutor = executor();
     const unhealthyExecutor: CommandExecutor = {
-      async run(_command, args) {
-        if (args.includes("ps")) {
+      async run(command, args, options) {
+        if (args.includes("--format") && args.includes("ps")) {
           return {
             exitCode: 0,
             stdout: '{"Service":"argus","State":"running","Health":"unhealthy"}',
             stderr: "",
           };
         }
-        return { exitCode: 0, stdout: "", stderr: "" };
+        return baseExecutor.run(command, args, options);
       },
     };
 
@@ -414,7 +695,7 @@ describe("safe update state machine", () => {
   it("fails closed when rollback state is incompatible", async () => {
     const root = await rootWithState();
     const plan = await planUpdate({ root, release: release(), rollbackRelease: release("1.0.0", 1, "f"), executor: executor() });
-    await backupInstance({ root, plan, getRollbackContext: rollbackContext });
+    await backupInstance({ root, plan, executor: executor(), getRollbackContext: rollbackContext });
 
     await expect(rollbackUpdate({ root, executor: executor(), release: release("1.0.0", 2, "f") })).rejects.toThrow(/incompatible/u);
   });
@@ -429,7 +710,7 @@ describe("safe update state machine", () => {
       rollbackRelease,
       executor: executor(),
     });
-    await backupInstance({ root, plan, getRollbackContext: rollbackContext });
+    await backupInstance({ root, plan, executor: executor(), getRollbackContext: rollbackContext });
     await writeFile(join(root, "argus.db"), "live database");
     const priorState = await readFile(join(root, "state.json"), "utf8");
     const persisted = JSON.parse(
@@ -484,7 +765,7 @@ describe("safe update state machine", () => {
     await mkdir(join(root, "data"));
     await writeFile(databasePath, "backup database");
     const plan = await planUpdate({ root, release: release(), rollbackRelease, executor: executor() });
-    await backupInstance({ root, plan, getRollbackContext: rollbackContext });
+    await backupInstance({ root, plan, executor: executor(), getRollbackContext: rollbackContext });
     const originalState = await readFile(join(root, "state.json"), "utf8");
     await writeFile(databasePath, "live database");
     const persisted = JSON.parse(await readFile(join(root, "update-state.json"), "utf8")) as {
@@ -518,14 +799,11 @@ describe("safe update state machine", () => {
   it("rejects a persisted rollback with a path that escapes the instance root", async () => {
     const root = await rootWithState();
     const plan = await planUpdate({ root, release: release(), rollbackRelease: release("1.0.0", 1, "f"), executor: executor() });
-    await backupInstance({ root, plan, getRollbackContext: rollbackContext });
+    await backupInstance({ root, plan, executor: executor(), getRollbackContext: rollbackContext });
     const state = JSON.parse(await readFile(join(root, "update-state.json"), "utf8")) as {
-      backup: { sqliteFiles: Array<{ relativePath: string }> };
+      backup: { sqliteSnapshot: { relativePath: string } };
     };
-    state.backup.sqliteFiles = [
-      { relativePath: "../../etc/cron.d/argus" },
-      ...state.backup.sqliteFiles,
-    ];
+    state.backup.sqliteSnapshot.relativePath = "../../etc/cron.d/argus";
     await writeFile(join(root, "update-state.json"), JSON.stringify(state));
 
     await expect(rollbackUpdate({ root, executor: executor(), release: release("1.0.0", 1, "f") })).rejects.toThrow(/No persisted Argus update backup/u);
@@ -534,9 +812,9 @@ describe("safe update state machine", () => {
   it("rejects a persisted rollback with an absolute path", async () => {
     const root = await rootWithState();
     const plan = await planUpdate({ root, release: release(), rollbackRelease: release("1.0.0", 1, "f"), executor: executor() });
-    await backupInstance({ root, plan, getRollbackContext: rollbackContext });
+    await backupInstance({ root, plan, executor: executor(), getRollbackContext: rollbackContext });
     const state = JSON.parse(await readFile(join(root, "update-state.json"), "utf8")) as {
-      backup: { path: string; sqliteFiles: Array<{ relativePath: string }> };
+      backup: { path: string };
     };
     state.backup.path = "/etc";
     await writeFile(join(root, "update-state.json"), JSON.stringify(state));
@@ -593,30 +871,24 @@ describe("safe update state machine", () => {
     ).rejects.toMatchObject({ code: "UPDATE_ROLLBACK_RELEASE_MISMATCH" });
   });
 
-  it("restores SQLite sidecars to their original data directory with the verified old image", async () => {
+  it("restores the verified SQLite volume snapshot with the signed old image", async () => {
     const root = await rootWithState();
-    const { mkdir, rm } = await import("node:fs/promises");
-    await mkdir(join(root, "data"));
-    for (const [name, value] of [["argus.db", "db"], ["argus.db-wal", "wal"], ["argus.db-shm", "shm"]] as const) {
-      await writeFile(join(root, "data", name), value);
-    }
     const calls: Array<{ args: string[]; env?: Record<string, string> }> = [];
+    const baseExecutor = executor();
     const recordingExecutor: CommandExecutor = {
-      async run(_command, args, options) {
+      async run(command, args, options) {
         calls.push({ args, ...(options?.env === undefined ? {} : { env: options.env }) });
-        if (args.includes("ps")) return { exitCode: 0, stdout: '[{"Service":"argus","State":"running","Health":"healthy"}]', stderr: "" };
-        return { exitCode: 0, stdout: "", stderr: "" };
+        return baseExecutor.run(command, args, options);
       },
     };
     const rollbackRelease = release("1.0.0", 1, "f");
     const plan = await planUpdate({ root, release: release(), rollbackRelease, executor: recordingExecutor });
-    await backupInstance({ root, plan, getRollbackContext: rollbackContext });
-    await rm(join(root, "data", "argus.db"));
+    await backupInstance({ root, plan, executor: recordingExecutor, getRollbackContext: rollbackContext });
     await rollbackUpdate({ root, executor: recordingExecutor, release: rollbackRelease });
 
-    expect(await readFile(join(root, "data", "argus.db"), "utf8")).toBe("db");
-    expect(await readFile(join(root, "data", "argus.db-wal"), "utf8")).toBe("wal");
-    expect(await readFile(join(root, "data", "argus.db-shm"), "utf8")).toBe("shm");
+    expect(calls.some((call) => call.args.some((arg) => arg.includes("dst=/backup,readonly")))).toBe(true);
+    expect(calls.some((call) => call.args.includes("stop"))).toBe(true);
+    expect(calls.some((call) => call.args.includes("/data/argus.db"))).toBe(true);
     expect(calls.find((call) => call.args.includes("up"))?.env?.ARGUS_IMAGE).toBe(rollbackRelease.manifest.images.app.reference);
   });
 });

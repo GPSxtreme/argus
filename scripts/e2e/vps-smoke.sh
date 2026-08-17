@@ -155,7 +155,7 @@ case "$ARGUS_VPS_SMOKE_MODE" in
     ;;
   *) argus_vps_die "ARGUS_VPS_SMOKE_MODE must be bootstrap or update" ;;
 esac
-for argus_vps_command in base64 curl docker expect jq openssl sha256sum; do
+for argus_vps_command in base64 curl docker expect jq openssl realpath sha256sum stat; do
   command -v "$argus_vps_command" >/dev/null 2>&1 ||
     argus_vps_die "$argus_vps_command is required"
 done
@@ -352,6 +352,47 @@ jq -e --arg version "$ARGUS_UPDATE_EXPECTED_VERSION" '
   .contractVersion == 1 and .ok == true and .data.version == $version and
   .data.health.healthy == true
 ' "$argus_vps_work/update.json" >/dev/null
+jq -e '
+  type == "object" and .phase == "verified" and
+  (.backup | has("sqliteFiles") | not) and
+  .backup.sqliteSnapshot.quickCheck == "ok" and
+  (.backup.sqliteSnapshot.relativePath | type == "string" and length > 0) and
+  (.backup.sqliteSnapshot.sha256 | test("^[a-f0-9]{64}$")) and
+  (.backup.sqliteSnapshot.bytes | type == "number" and . > 0 and floor == .) and
+  ([
+    .backup.sqliteSnapshot.counts.records,
+    .backup.sqliteSnapshot.counts.revisions,
+    .backup.sqliteSnapshot.counts.jobs
+  ] | all(type == "number" and . >= 0 and floor == .)) and
+  .backup.sqliteSnapshot.volume.project == "argus" and
+  .backup.sqliteSnapshot.volume.logicalName == "argus-data" and
+  .backup.sqliteSnapshot.volume.destination == "/app/data"
+' /opt/argus/update-state.json >/dev/null ||
+  argus_vps_die "persisted SQLite volume snapshot metadata is invalid"
+argus_vps_snapshot_relative=$(jq -er '.backup.sqliteSnapshot.relativePath' /opt/argus/update-state.json)
+case "$argus_vps_snapshot_relative" in
+  backups/*) ;;
+  *) argus_vps_die "persisted SQLite snapshot path is outside backups" ;;
+esac
+case "/$argus_vps_snapshot_relative/" in
+  *"/../"*|*"/./"*|*"//"*|*\\*)
+    argus_vps_die "persisted SQLite snapshot path is not confined"
+    ;;
+esac
+argus_vps_snapshot_path=$(realpath -e "/opt/argus/$argus_vps_snapshot_relative") ||
+  argus_vps_die "persisted SQLite snapshot is missing"
+case "$argus_vps_snapshot_path" in
+  /opt/argus/backups/*) ;;
+  *) argus_vps_die "persisted SQLite snapshot resolved outside backups" ;;
+esac
+[ -f "$argus_vps_snapshot_path" ] && [ ! -L "$argus_vps_snapshot_path" ] ||
+  argus_vps_die "persisted SQLite snapshot is not a regular file"
+argus_vps_snapshot_sha=$(jq -er '.backup.sqliteSnapshot.sha256' /opt/argus/update-state.json)
+[ "$(sha256sum "$argus_vps_snapshot_path" | awk 'NR == 1 { print $1 }')" = "$argus_vps_snapshot_sha" ] ||
+  argus_vps_die "persisted SQLite snapshot hash does not match"
+argus_vps_snapshot_bytes=$(jq -er '.backup.sqliteSnapshot.bytes' /opt/argus/update-state.json)
+[ "$(stat -c %s -- "$argus_vps_snapshot_path")" = "$argus_vps_snapshot_bytes" ] ||
+  argus_vps_die "persisted SQLite snapshot size does not match"
 [ -f /opt/argus/release-context.json ] && [ ! -L /opt/argus/release-context.json ] ||
   argus_vps_die "persisted signed update context is not a regular file"
 jq -e '

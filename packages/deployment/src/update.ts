@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { copyFile, mkdir, open, readFile, rename, stat } from "node:fs/promises";
+import { chmod, mkdir, open, readFile, rename, stat } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -15,6 +15,13 @@ import { DeploymentError } from "./errors.js";
 import type { CommandExecutor } from "./executor.js";
 import { loadDeploymentState, saveDeploymentState } from "./files.js";
 import { parseComposeStatus } from "./reconciler.js";
+import {
+  createSqliteSnapshot,
+  inspectSqliteVolume,
+  restoreSqliteSnapshot,
+  type SqliteSnapshot,
+  verifySqliteSnapshot,
+} from "./sqlite-volume.js";
 
 export type UpdatePhase =
   | "backed_up"
@@ -54,7 +61,7 @@ export interface AppliedUpdate {
 export interface InstanceBackup {
   path: string;
   state: DeploymentStateV1;
-  sqliteFiles: Array<{ relativePath: string }>;
+  sqliteSnapshot?: SqliteSnapshot;
   signedContext: {
     relativePath: string;
     sha256: string;
@@ -93,6 +100,7 @@ export interface FinalizeUpdateInput {
 export interface BackupInstanceInput {
   root: string;
   plan: UpdatePlan;
+  executor: CommandExecutor;
   getRollbackContext?: () => Promise<Uint8Array>;
 }
 
@@ -172,17 +180,38 @@ const persistedUpdateSchema = z
       .object({
         path: z.string().min(1),
         state: deploymentStateSchema,
-        sqliteFiles: z.array(
-          z.object({ relativePath: confinedRelativePathSchema }).passthrough(),
-        ),
+        sqliteSnapshot: z
+          .object({
+            relativePath: confinedRelativePathSchema,
+            sha256: z.string().regex(/^[a-f0-9]{64}$/u),
+            bytes: z.number().int().positive(),
+            quickCheck: z.literal("ok"),
+            counts: z
+              .object({
+                records: z.number().int().nonnegative(),
+                revisions: z.number().int().nonnegative(),
+                jobs: z.number().int().nonnegative(),
+              })
+              .strict(),
+            volume: z
+              .object({
+                name: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.-]*$/u),
+                project: z.literal("argus"),
+                logicalName: z.literal("argus-data"),
+                destination: z.literal("/app/data"),
+              })
+              .strict(),
+          })
+          .strict()
+          .optional(),
         signedContext: z
           .object({
             relativePath: confinedRelativePathSchema,
             sha256: z.string().regex(/^[a-f0-9]{64}$/u),
           })
-          .passthrough(),
+          .strict(),
       })
-      .passthrough(),
+      .strict(),
   })
   .passthrough();
 
@@ -390,20 +419,6 @@ const health = async (
   return { healthy, services };
 };
 
-const sqliteFiles = async (root: string): Promise<string[]> => {
-  const candidates = ["argus.db", "argus.db-wal", "argus.db-shm"];
-  const directories = [root, join(root, "data")];
-  const files: string[] = [];
-  for (const directory of directories) {
-    for (const name of candidates) {
-      const path = join(directory, name);
-      if (await stat(path).then(() => true).catch(() => false)) files.push(path);
-    }
-    if (files.length) return files;
-  }
-  return files;
-};
-
 export const planUpdate = async ({ root, release, rollbackRelease }: PlanUpdateInput): Promise<UpdatePlan> => {
   assertVerifiedRelease(release);
   assertVerifiedRelease(rollbackRelease);
@@ -445,6 +460,7 @@ export const planUpdate = async ({ root, release, rollbackRelease }: PlanUpdateI
 export const backupInstance = async ({
   root,
   plan,
+  executor,
   getRollbackContext,
 }: BackupInstanceInput): Promise<InstanceBackup> => {
   const path = join(
@@ -452,15 +468,9 @@ export const backupInstance = async ({
     "backups",
     `${plan.currentVersion}-${Date.now()}-${crypto.randomUUID()}`,
   );
-  await mkdir(path, { recursive: true });
+  await mkdir(path, { recursive: true, mode: 0o700 });
+  await chmod(path, 0o700);
   await atomicWrite(join(path, "state.json"), `${JSON.stringify(plan.previousState, null, 2)}\n`);
-  const files = await sqliteFiles(root);
-  const sqliteBackupFiles = files.map((source) => ({ relativePath: relative(root, source) }));
-  for (const file of sqliteBackupFiles) {
-    const destination = join(path, file.relativePath);
-    await mkdir(dirname(destination), { recursive: true });
-    await copyFile(join(root, file.relativePath), destination);
-  }
   if (getRollbackContext === undefined) {
     throw new DeploymentError(
       "UPDATE_ROLLBACK_CONTEXT_REQUIRED",
@@ -470,24 +480,80 @@ export const backupInstance = async ({
   const signedContextBytes = await getRollbackContext();
   const signedContextPath = join(path, "release-context.json");
   await atomicWrite(signedContextPath, signedContextBytes);
-  const backup = {
-    path,
-    state: plan.previousState,
-    sqliteFiles: sqliteBackupFiles,
-    signedContext: {
-      relativePath: relative(root, signedContextPath),
-      sha256: sha256(signedContextBytes),
-    },
-  };
-  await persist(root, {
-    phase: "backed_up",
-    plan: { currentVersion: plan.currentVersion, targetVersion: plan.targetVersion },
-    previousState: plan.previousState,
-    release: plan.release,
-    rollbackRelease: plan.rollbackRelease,
-    backup,
-  });
-  return backup;
+  const environment = environmentFor(plan.previousState, plan.rollbackRelease);
+  let sqliteSnapshot: SqliteSnapshot | undefined;
+  let sqliteStopped = false;
+  try {
+    if (plan.previousState.compose?.storage === "sqlite") {
+      const volume = await inspectSqliteVolume({ root, executor, environment });
+      await command(
+        root,
+        executor,
+        ["stop", "argus"],
+        environment,
+        "Argus could not stop for its SQLite snapshot.",
+      );
+      sqliteStopped = true;
+      sqliteSnapshot = await createSqliteSnapshot({
+        root,
+        backupRoot: path,
+        executor,
+        environment,
+        image: plan.rollbackRelease.manifest.images.app.reference,
+        volume,
+      });
+    }
+    const backup = {
+      path,
+      state: plan.previousState,
+      ...(sqliteSnapshot === undefined ? {} : { sqliteSnapshot }),
+      signedContext: {
+        relativePath: relative(root, signedContextPath),
+        sha256: sha256(signedContextBytes),
+      },
+    };
+    await persist(root, {
+      phase: "backed_up",
+      plan: {
+        currentVersion: plan.currentVersion,
+        targetVersion: plan.targetVersion,
+      },
+      previousState: plan.previousState,
+      release: plan.release,
+      rollbackRelease: plan.rollbackRelease,
+      backup,
+    });
+    return backup;
+  } catch (error) {
+    if (sqliteStopped) {
+      try {
+        await command(
+          root,
+          executor,
+          ["up", "-d", "argus"],
+          environment,
+          "Argus could not restart after its SQLite backup failed.",
+        );
+        const report = await health(
+          root,
+          executor,
+          plan.previousState,
+          plan.rollbackRelease,
+        );
+        if (!report.healthy) throw new Error("Argus remained unhealthy");
+      } catch {
+        throw new DeploymentError(
+          "UPDATE_SQLITE_RECOVERY_FAILED",
+          "Argus could not recover the prior service after SQLite backup failed.",
+          {
+            recovery:
+              "Keep the verified volume and backup directory unchanged, then inspect 'argus doctor --json' before manual recovery.",
+          },
+        );
+      }
+    }
+    throw error;
+  }
 };
 
 export const loadRollbackReleaseContext = async (root: string): Promise<Uint8Array> => {
@@ -524,6 +590,7 @@ export const applyUpdate = async ({ root, plan, executor, getRollbackContext }: 
   const backup = await backupInstance({
     root,
     plan,
+    executor,
     ...(getRollbackContext === undefined ? {} : { getRollbackContext }),
   });
   let persisted: PersistedUpdate = {
@@ -647,12 +714,41 @@ export const rollbackUpdate = async ({ root, executor, release }: RollbackUpdate
   }
   requireComposeState(backup.state);
   const backupRoot = confinedPath(root, backup.path);
-  for (const file of backup.sqliteFiles) {
-    const destination = confinedPath(root, file.relativePath);
-    await mkdir(dirname(destination), { recursive: true });
-    await copyFile(confinedPath(backupRoot, file.relativePath), destination);
-  }
   const environment = environmentFor(backup.state, release);
+  if (backup.state.compose?.storage === "sqlite") {
+    if (backup.sqliteSnapshot === undefined) {
+      throw new DeploymentError(
+        "UPDATE_ROLLBACK_INCOMPATIBLE",
+        "The SQLite rollback backup does not contain a verified volume snapshot.",
+        { recovery: "Preserve the backup and do not restart Argus against an unverified database." },
+      );
+    }
+    await verifySqliteSnapshot({
+      root,
+      backupRoot,
+      snapshot: backup.sqliteSnapshot,
+      executor,
+      environment,
+      image: release.manifest.images.app.reference,
+    });
+    const volume = await inspectSqliteVolume({ root, executor, environment });
+    await command(
+      root,
+      executor,
+      ["stop", "argus"],
+      environment,
+      "Argus could not stop for SQLite rollback.",
+    );
+    await restoreSqliteSnapshot({
+      root,
+      backupRoot,
+      snapshot: backup.sqliteSnapshot,
+      executor,
+      environment,
+      image: release.manifest.images.app.reference,
+      volume,
+    });
+  }
   await command(root, executor, ["up", "-d"], environment, "Argus rollback restart failed.");
   const report = await health(root, executor, backup.state, release);
   if (!report.healthy) {
