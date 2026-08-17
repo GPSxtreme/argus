@@ -486,6 +486,17 @@ export const createSqliteSnapshot = async ({
       volume,
     };
   } catch (error) {
+    if (process.env.ARGUS_SQLITE_VOLUME_TEST === "1") {
+      const cause = error as NodeJS.ErrnoException;
+      console.error(
+        JSON.stringify({
+          sqliteSnapshotInternalDiagnostic: true,
+          name: cause.name,
+          code: cause.code ?? null,
+          syscall: cause.syscall ?? null,
+        }),
+      );
+    }
     if (
       error instanceof DeploymentError &&
       error.code === "UPDATE_SQLITE_SNAPSHOT_FAILED"
