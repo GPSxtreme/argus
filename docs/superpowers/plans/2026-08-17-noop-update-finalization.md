@@ -4,7 +4,7 @@
 
 **Goal:** Make an exact, healthy, already-current update succeed without parsing an obsolete rollback journal while keeping interrupted recovery and rollback fail-closed.
 
-**Architecture:** Keep the strict deployment transaction parser unchanged. The CLI orchestration already has a branded current-release inspection with an explicit `recovery` discriminator, so it will bypass transaction finalization only for `plan.noop && recovery === "none"`; recovery no-ops still call the strict finalizer. The production regression uses a v0.1.15-shaped terminal journal and proves the journal remains unusable for rollback.
+**Architecture:** Keep the strict deployment transaction parser unchanged. Add a narrow deployment-side reader for only `phase: "verified"` and the existing strict signed release snapshot; a healthy no-op may return before full rollback parsing only when that terminal release exactly matches the verified deployed release. Restarted and other non-terminal journals still use the strict full finalizer. The production regression uses a v0.1.15-shaped terminal journal and proves the journal remains unusable for rollback.
 
 **Tech Stack:** TypeScript, Commander CLI orchestration, Vitest, Node.js 24, pnpm, Biome.
 
@@ -22,11 +22,12 @@
 
 **Files:**
 - Modify: `apps/cli/test/integrations.test.ts` beside `repairs stale management state for a healthy no-op update`
-- Modify: `apps/cli/src/program.ts` inside `createNodeCliDependencies().deployment.applyUpdate`
+- Modify: `packages/deployment/src/update.ts` inside `finalizeUpdate`
+- Test: `packages/deployment/test/update.test.ts` beside finalization recovery tests
 
 **Interfaces:**
-- Consumes: `VerifiedCurrentReleaseInspection.recovery`, `UpdatePlan.noop`, and the healthy `AppliedUpdate` result already returned by `@argus/deployment`.
-- Produces: the existing update result shape `{ version: string; phase: "verified"; health: UpdateHealthReport }`; no new exported API.
+- Consumes: `UpdatePlan.noop`, the healthy `AppliedUpdate`, `releaseSnapshotSchema`, and the existing complete `sameRelease` identity comparison.
+- Produces: the existing update result shape `{ version: string; phase: "verified"; health: UpdateHealthReport }`; no new exported API or compatibility parser.
 
 - [ ] **Step 1: Add the exact failing production regression**
 
@@ -94,26 +95,39 @@ pnpm vitest run apps/cli/test/integrations.test.ts -t "repairs stale management 
 
 Expected: FAIL because the first no-op update returns `UPDATE_ROLLBACK_UNAVAILABLE` from strict `update-state.json` parsing.
 
-- [ ] **Step 3: Implement the narrow orchestration branch**
+- [ ] **Step 3: Implement the narrow terminal-identity branch**
 
-In `apps/cli/src/program.ts`, keep health verification, current-context reconciliation, and management-state promotion in their existing order. After management promotion, return directly only for an ordinary no-op:
+In `packages/deployment/src/update.ts`, add a private schema that accepts only a terminal verified phase plus the existing strict release snapshot while leaving all other journal fields opaque:
 
 ```ts
-if (plan.noop && currentReleaseInspection.recovery === "none") {
-  return {
-    version: applied.version,
-    phase: "verified" as const,
-    health: applied.health,
-  };
-}
-return finalizeUpdate({ root, plan, applied });
+const verifiedTerminalSchema = z
+  .object({
+    phase: z.literal("verified"),
+    release: releaseSnapshotSchema,
+  })
+  .passthrough();
+
+const loadVerifiedTerminalRelease = async (
+  root: string,
+): Promise<VerifiedReleaseManifest | undefined> => {
+  try {
+    const parsed = verifiedTerminalSchema.safeParse(
+      JSON.parse(await readFile(updateStatePath(root), "utf8")),
+    );
+    return parsed.success ? parsed.data.release : undefined;
+  } catch {
+    return undefined;
+  }
+};
 ```
 
-Do not catch `UPDATE_ROLLBACK_UNAVAILABLE`, change the persisted schema, or remove the existing `finalizeUpdate` call for any recovery inspection.
+In `finalizeUpdate`, after the file-existence check and before `loadPersisted`, return the existing healthy result only when `plan.noop` and the terminal release exists and `sameRelease(terminal, plan.release)` is true. Otherwise continue through the unchanged strict parser and finalization logic.
+
+Do not catch `UPDATE_ROLLBACK_UNAVAILABLE`, change `persistedUpdateSchema`, or add a legacy rollback path.
 
 - [ ] **Step 4: Run GREEN and mutation proofs**
 
-Run the focused regression, then temporarily broaden the branch to all no-ops and confirm the existing interrupted-management recovery test fails because `update-state.json` remains `restarted`. Restore the exact `recovery === "none"` guard and rerun:
+Run the focused regression. Then temporarily allow the narrow schema to accept `phase: "restarted"` and confirm the existing interrupted-management recovery test fails because `update-state.json` remains `restarted`. Restore `z.literal("verified")` and rerun:
 
 ```bash
 pnpm vitest run apps/cli/test/integrations.test.ts
@@ -139,7 +153,7 @@ Expected: every command exits 0 under Node.js 24.19.0. Docker-backed live tests 
 Request a read-only review of the exact range against this spec. Resolve every Critical or Important finding, rerun affected gates, then commit only the production file and regression test (the approved spec and plan are already committed):
 
 ```bash
-git add apps/cli/src/program.ts apps/cli/test/integrations.test.ts
+git add packages/deployment/src/update.ts packages/deployment/test/update.test.ts apps/cli/test/integrations.test.ts
 git commit -m "fix: complete healthy no-op updates"
 ```
 
