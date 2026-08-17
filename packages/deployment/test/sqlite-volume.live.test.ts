@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import {
   access,
   lstat,
@@ -37,13 +36,6 @@ const createLiveExecutor = (): CommandExecutor => {
             exitCode: result.exitCode,
             timedOut: result.timedOut ?? false,
             stderr: result.stderr.slice(0, 4_000),
-          }),
-        );
-      } else if (args.includes("/backup/argus.db")) {
-        console.error(
-          JSON.stringify({
-            successfulSnapshotHelper: true,
-            stdout: result.stdout.slice(0, 4_000),
           }),
         );
       }
@@ -185,11 +177,8 @@ process.stdout.write(JSON.stringify({ records, rows }));
             const snapshotPath = join(backupRoot, "argus.db");
             const directory = await lstat(backupRoot).catch(() => undefined);
             const file = await lstat(snapshotPath).catch(() => undefined);
-            const snapshotBytes = await readFile(snapshotPath).catch(() => undefined);
-            const readError = snapshotBytes
-              ? undefined
-              : await readFile(snapshotPath)
-                  .then(() => undefined)
+            const readError = await readFile(snapshotPath)
+              .then(() => undefined)
               .catch((cause: NodeJS.ErrnoException) => cause.code ?? "UNKNOWN");
             console.error(
               JSON.stringify({
@@ -216,10 +205,6 @@ process.stdout.write(JSON.stringify({ records, rows }));
                         size: file.size,
                       },
                 readError: readError ?? null,
-                sha256:
-                  snapshotBytes === undefined
-                    ? null
-                    : createHash("sha256").update(snapshotBytes).digest("hex"),
               }),
             );
             throw error;

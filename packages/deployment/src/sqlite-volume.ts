@@ -162,7 +162,7 @@ process.stdout.write(JSON.stringify({
   bytes: metadata.size,
   quickCheck: "ok",
   counts,
-}) + "\\n");
+}) + "\n");
 `;
 
 const verifyHelper = String.raw`
@@ -185,7 +185,7 @@ process.stdout.write(JSON.stringify({
   bytes: metadata.size,
   quickCheck,
   counts,
-}) + "\\n");
+}) + "\n");
 `;
 
 const restoreHelper = String.raw`
@@ -257,7 +257,7 @@ try {
   const directory = await open("/data", "r");
   await directory.sync();
   await directory.close();
-  process.stdout.write(JSON.stringify({ restored: true, ...stagedReceipt }) + "\\n");
+  process.stdout.write(JSON.stringify({ restored: true, ...stagedReceipt }) + "\n");
 } catch (error) {
   if (!promoted) await rm(stagedPath, { force: true });
   throw error;
@@ -486,19 +486,6 @@ export const createSqliteSnapshot = async ({
       volume,
     };
   } catch (error) {
-    if (process.env.ARGUS_SQLITE_VOLUME_TEST === "1") {
-      const cause = error as NodeJS.ErrnoException;
-      console.error(
-        JSON.stringify({
-          sqliteSnapshotInternalDiagnostic: true,
-          name: cause.name,
-          code: cause.code ?? null,
-          syscall: cause.syscall ?? null,
-          message: cause.message,
-          stack: cause.stack?.split("\n").slice(0, 8) ?? [],
-        }),
-      );
-    }
     if (
       error instanceof DeploymentError &&
       error.code === "UPDATE_SQLITE_SNAPSHOT_FAILED"
