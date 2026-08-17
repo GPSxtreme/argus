@@ -523,6 +523,26 @@ describe("GitHub workflow toolchain", () => {
     expect(readme).toContain('vps-smoke.yml');
   });
 
+  it("validates the real persisted SQLite volume snapshot after a VPS update", () => {
+    const harness = readFileSync(
+      repositoryFile("scripts/e2e/vps-smoke.sh"),
+      "utf8",
+    );
+
+    expect(harness).toContain(".backup.sqliteSnapshot.quickCheck == \"ok\"");
+    expect(harness).toContain(".backup.sqliteSnapshot.volume.project == \"argus\"");
+    expect(harness).toContain(
+      ".backup.sqliteSnapshot.volume.logicalName == \"argus-data\"",
+    );
+    expect(harness).toContain(
+      ".backup.sqliteSnapshot.volume.destination == \"/app/data\"",
+    );
+    expect(harness).toContain("realpath -e");
+    expect(harness).toContain("sha256sum");
+    expect(harness).toContain("stat -c %s");
+    expect(harness).not.toContain(".backup.sqliteFiles");
+  });
+
   it.skipIf(!expectAvailable)(
     "drives the real onboarding secret prompt from a headless PTY",
     () => {
