@@ -146,6 +146,13 @@ const releaseSnapshotSchema = z
   })
   .passthrough();
 
+const verifiedTerminalSchema = z
+  .object({
+    phase: z.literal("verified"),
+    release: releaseSnapshotSchema,
+  })
+  .passthrough();
+
 const confinedRelativePathSchema = z
   .string()
   .refine(
@@ -250,6 +257,19 @@ const loadPersisted = async (root: string): Promise<PersistedUpdate> => {
       "No persisted Argus update backup is available for rollback.",
       { recovery: "Run 'argus doctor --json' and inspect the update state before retrying." },
     );
+  }
+};
+
+const loadVerifiedTerminalRelease = async (
+  root: string,
+): Promise<VerifiedReleaseManifest | undefined> => {
+  try {
+    const parsed = verifiedTerminalSchema.safeParse(
+      JSON.parse(await readFile(updateStatePath(root), "utf8")),
+    );
+    return parsed.success ? (parsed.data.release as unknown as VerifiedReleaseManifest) : undefined;
+  } catch {
+    return undefined;
   }
 };
 
@@ -674,6 +694,10 @@ export const finalizeUpdate = async ({ root, plan, applied }: FinalizeUpdateInpu
   if (!exists) {
     if (plan.noop) return { version: applied.version, phase: "verified", health: applied.health };
     throw finalizationUnavailable();
+  }
+  const terminal = await loadVerifiedTerminalRelease(root);
+  if (plan.noop && terminal !== undefined && sameRelease(terminal, plan.release)) {
+    return { version: applied.version, phase: "verified", health: applied.health };
   }
   const persisted = await loadPersisted(root);
   if (

@@ -466,6 +466,43 @@ describe("safe update state machine", () => {
     await expect(readFile(join(root, "update-state.json"), "utf8")).resolves.toBe(restartState);
   });
 
+  it("preserves an opaque verified terminal journal only for the exact no-op release", async () => {
+    const root = await rootWithState();
+    const currentRelease = release("1.0.0", 1, "f");
+    const plan = await planUpdate({
+      root,
+      release: currentRelease,
+      rollbackRelease: currentRelease,
+      executor: executor(),
+    });
+    const applied = await applyUpdate({ root, plan, executor: executor() });
+    const mismatchedTerminal = `${JSON.stringify({
+      phase: "verified",
+      release: release("1.0.0", 1, "g"),
+      obsolete: { sqliteFiles: [] },
+    }, null, 2)}\n`;
+    await writeFile(join(root, "update-state.json"), mismatchedTerminal);
+
+    await expect(finalizeUpdate({ root, plan, applied })).rejects.toMatchObject({
+      code: "UPDATE_ROLLBACK_UNAVAILABLE",
+    });
+    expect(await readFile(join(root, "update-state.json"), "utf8")).toBe(mismatchedTerminal);
+
+    const matchingTerminal = `${JSON.stringify({
+      phase: "verified",
+      release: currentRelease,
+      obsolete: { sqliteFiles: [] },
+    }, null, 2)}\n`;
+    await writeFile(join(root, "update-state.json"), matchingTerminal);
+
+    await expect(finalizeUpdate({ root, plan, applied })).resolves.toEqual({
+      version: currentRelease.manifest.version,
+      phase: "verified",
+      health: applied.health,
+    });
+    expect(await readFile(join(root, "update-state.json"), "utf8")).toBe(matchingTerminal);
+  });
+
   it("keeps a completed rollback transaction terminal during a later healthy no-op", async () => {
     const root = await rootWithState();
     const rollbackRelease = release("1.0.0", 1, "f");

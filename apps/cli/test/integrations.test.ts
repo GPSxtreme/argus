@@ -1788,6 +1788,39 @@ describe("production onboarding integration", () => {
       join(root, "management.state"),
       `schema=1\nversion=${stale.version}\ncli_image=ghcr.io/gpsxtreme/argus-cli@sha256:${digest("b")}\n`,
     );
+    const currentRelease = verifyReleaseManifestWithIdentity(
+      current.manifestBytes,
+      current.signature,
+      current.publicKeyPem,
+    );
+    const staleRelease = verifyReleaseManifestWithIdentity(
+      stale.manifestBytes,
+      stale.signature,
+      stale.publicKeyPem,
+    );
+    const deployed = await loadDeploymentState(root);
+    if (deployed === undefined) throw new Error("expected managed deployment state");
+    const priorRoot = await mkdtemp(join(tmpdir(), "argus-legacy-prior-state-"));
+    await saveManagedState(priorRoot, stale);
+    const priorState = await loadDeploymentState(priorRoot);
+    if (priorState === undefined) throw new Error("expected prior deployment state");
+    const legacyJournal = `${JSON.stringify({
+      phase: "verified",
+      plan: { currentVersion: stale.version, targetVersion: current.version },
+      previousState: priorState,
+      release: currentRelease,
+      rollbackRelease: staleRelease,
+      backup: {
+        path: join(root, "backups", `legacy-${stale.version}`),
+        state: priorState,
+        sqliteFiles: [],
+        signedContext: {
+          relativePath: `backups/legacy-${stale.version}/release-context.json`,
+          sha256: digest("9"),
+        },
+      },
+    }, null, 2)}\n`;
+    await writeFile(join(root, "update-state.json"), legacyJournal);
     const updateIntegration = createProductionUpdateIntegration({
       root,
       manifestUrl: "https://release.example/manifest.json",
@@ -1802,10 +1835,13 @@ describe("production onboarding integration", () => {
         return new Response(Uint8Array.from(bytes).buffer);
       },
     });
+    const executorCalls: string[][] = [];
+    let stdout = "";
     const dependencies = createNodeCliDependencies({
       root,
       executor: {
         async run(_command, args) {
+          executorCalls.push(args);
           return args.includes("ps")
             ? { exitCode: 0, stdout: '[{"Service":"argus","State":"running","Health":"healthy"}]', stderr: "" }
             : { exitCode: 0, stdout: "", stderr: "" };
@@ -1818,17 +1854,34 @@ describe("production onboarding integration", () => {
         async text() { return ""; },
         async secret() { return ""; },
       },
-      io: { stdout() {}, stderr() {} },
+      io: { stdout(value) { stdout += value; }, stderr() {} },
       updateIntegration,
       version: "test",
     });
 
-    const plan = await dependencies.deployment.inspectUpdate?.();
-    expect((plan as { noop: boolean }).noop).toBe(true);
-    await dependencies.deployment.applyUpdate?.(plan);
+    await createProgram(dependencies).parseAsync(["node", "argus", "update", "--json", "--yes"]);
+    expect(JSON.parse(stdout)).toMatchObject({
+      contractVersion: 1,
+      ok: true,
+      data: { version: current.version, health: { healthy: true } },
+    });
+    expect(executorCalls.filter((args) => !args.includes("ps"))).toEqual([]);
+    expect(await readFile(join(root, "update-state.json"), "utf8")).toBe(legacyJournal);
+    expect(await readFile(join(root, "release-context.json"), "utf8")).toBe(context);
     expect(await readFile(join(root, "management.state"), "utf8")).toBe(
       `schema=1\nversion=${current.version}\ncli_image=ghcr.io/gpsxtreme/argus-cli@sha256:${digest("b")}\n`,
     );
+
+    const managementState = await readFile(join(root, "management.state"), "utf8");
+    stdout = "";
+    await expect(
+      createProgram(dependencies).parseAsync(["node", "argus", "update", "--rollback", "--json", "--yes"]),
+    ).rejects.toMatchObject({ exitCode: 1 });
+    expect(JSON.parse(stdout)).toMatchObject({ error: { code: "UPDATE_ROLLBACK_UNAVAILABLE" } });
+    expect(await loadDeploymentState(root)).toEqual(deployed);
+    expect(await readFile(join(root, "release-context.json"), "utf8")).toBe(context);
+    expect(await readFile(join(root, "management.state"), "utf8")).toBe(managementState);
+    expect(await readFile(join(root, "update-state.json"), "utf8")).toBe(legacyJournal);
   });
 
   it("rejects an unhealthy no-op without promoting a different signed target context", async () => {
