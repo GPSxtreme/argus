@@ -1,5 +1,12 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  rm,
+  symlink,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -56,6 +63,39 @@ const createSqliteSnapshot = (): CreateSqliteSnapshot =>
       createSqliteSnapshot: CreateSqliteSnapshot;
     }
   ).createSqliteSnapshot;
+
+type VerifySqliteSnapshot = (input: {
+  root: string;
+  backupRoot: string;
+  snapshot: Awaited<ReturnType<CreateSqliteSnapshot>>;
+  executor: CommandExecutor;
+  environment: Record<string, string>;
+  image: string;
+}) => Promise<void>;
+
+type RestoreSqliteSnapshot = (input: {
+  root: string;
+  backupRoot: string;
+  snapshot: Awaited<ReturnType<CreateSqliteSnapshot>>;
+  executor: CommandExecutor;
+  environment: Record<string, string>;
+  image: string;
+  volume: Awaited<ReturnType<CreateSqliteSnapshot>>["volume"];
+}) => Promise<void>;
+
+const verifySqliteSnapshot = (): VerifySqliteSnapshot =>
+  (
+    deployment as typeof deployment & {
+      verifySqliteSnapshot: VerifySqliteSnapshot;
+    }
+  ).verifySqliteSnapshot;
+
+const restoreSqliteSnapshot = (): RestoreSqliteSnapshot =>
+  (
+    deployment as typeof deployment & {
+      restoreSqliteSnapshot: RestoreSqliteSnapshot;
+    }
+  ).restoreSqliteSnapshot;
 
 interface RecordedCall {
   command: string;
@@ -131,7 +171,7 @@ describe("managed SQLite volume discovery", () => {
     expect(calls).toEqual([
       {
         command: "docker",
-        args: ["compose", "-p", "argus", "ps", "-q", "argus"],
+        args: ["compose", "-p", "argus", "ps", "-q", "--all", "argus"],
         options: { cwd: root, env: environment, timeoutMs: 10_000 },
       },
       {
@@ -446,4 +486,225 @@ describe("managed SQLite snapshot creation", () => {
       }
     },
   );
+});
+
+describe("managed SQLite snapshot restore", () => {
+  it("verifies the persisted snapshot before invoking an atomic volume restore", async () => {
+    const systemRoot = await mkdtemp(join(tmpdir(), "argus-sqlite-restore-"));
+    const backupRoot = join(systemRoot, "backups", "test");
+    await mkdir(backupRoot, { recursive: true });
+    const bytes = Buffer.from("restorable SQLite snapshot");
+    await writeFile(join(backupRoot, "argus.db"), bytes);
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    const volume = {
+      name: "argus_argus-data",
+      project: "argus" as const,
+      logicalName: "argus-data" as const,
+      destination: "/app/data" as const,
+    };
+    const snapshot = {
+      relativePath: "backups/test/argus.db",
+      sha256,
+      bytes: bytes.byteLength,
+      quickCheck: "ok" as const,
+      counts: { records: 1, revisions: 2, jobs: 3 },
+      volume,
+    };
+    const calls: RecordedCall[] = [];
+    const executor: CommandExecutor = {
+      async run(command, args, options) {
+        calls.push({ command, args, options });
+        if (calls.length === 1) {
+          return result(
+            JSON.stringify({
+              sha256,
+              bytes: bytes.byteLength,
+              quickCheck: "ok",
+              counts: snapshot.counts,
+            }),
+          );
+        }
+        return result(
+          JSON.stringify({
+            restored: true,
+            sha256,
+            bytes: bytes.byteLength,
+            quickCheck: "ok",
+            counts: snapshot.counts,
+          }),
+        );
+      },
+    };
+    const image = `argus@sha256:${"a".repeat(64)}`;
+
+    try {
+      await verifySqliteSnapshot()({
+        root: systemRoot,
+        backupRoot,
+        snapshot,
+        executor,
+        environment,
+        image,
+      });
+      await restoreSqliteSnapshot()({
+        root: systemRoot,
+        backupRoot,
+        snapshot,
+        executor,
+        environment,
+        image,
+        volume,
+      });
+
+      expect(calls).toHaveLength(2);
+      expect(calls[0]?.args).toEqual([
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--user",
+        "0:0",
+        "--mount",
+        `type=bind,src=${backupRoot},dst=/backup,readonly`,
+        "--entrypoint",
+        "node",
+        image,
+        "--input-type=module",
+        "-e",
+        expect.any(String),
+        "--",
+        "/backup/argus.db",
+      ]);
+      expect(calls[1]?.args).toEqual([
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--user",
+        "0:0",
+        "--mount",
+        "type=volume,src=argus_argus-data,dst=/data",
+        "--mount",
+        `type=bind,src=${backupRoot},dst=/backup,readonly`,
+        "--entrypoint",
+        "node",
+        image,
+        "--input-type=module",
+        "-e",
+        expect.any(String),
+        "--",
+        "/backup/argus.db",
+        "/data/argus.db",
+        JSON.stringify({
+          sha256,
+          bytes: bytes.byteLength,
+          quickCheck: "ok",
+          counts: snapshot.counts,
+        }),
+      ]);
+    } finally {
+      await rm(systemRoot, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["missing", "symlink", "hash mismatch", "path escape"])(
+    "rejects a %s snapshot before Docker or live-volume access",
+    async (failure) => {
+      const systemRoot = await mkdtemp(join(tmpdir(), "argus-sqlite-restore-"));
+      const backupRoot = join(systemRoot, "backups", "test");
+      await mkdir(backupRoot, { recursive: true });
+      const path = join(backupRoot, "argus.db");
+      const bytes = Buffer.from("verified backup");
+      await writeFile(path, bytes);
+      const snapshot = {
+        relativePath: "backups/test/argus.db",
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+        bytes: bytes.byteLength,
+        quickCheck: "ok" as const,
+        counts: { records: 1, revisions: 2, jobs: 3 },
+        volume: {
+          name: "argus_argus-data",
+          project: "argus" as const,
+          logicalName: "argus-data" as const,
+          destination: "/app/data" as const,
+        },
+      };
+      if (failure === "missing") await unlink(path);
+      if (failure === "symlink") {
+        await unlink(path);
+        const target = join(systemRoot, "outside.db");
+        await writeFile(target, bytes);
+        await symlink(target, path);
+      }
+      if (failure === "hash mismatch") snapshot.sha256 = "f".repeat(64);
+      if (failure === "path escape") snapshot.relativePath = "../outside.db";
+      let calls = 0;
+
+      try {
+        await expect(
+          verifySqliteSnapshot()({
+            root: systemRoot,
+            backupRoot,
+            snapshot,
+            executor: {
+              async run() {
+                calls += 1;
+                return result();
+              },
+            },
+            environment,
+            image: `argus@sha256:${"a".repeat(64)}`,
+          }),
+        ).rejects.toMatchObject({ code: "UPDATE_ROLLBACK_BACKUP_INVALID" });
+        expect(calls).toBe(0);
+      } finally {
+        await rm(systemRoot, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("rejects SQLite receipt drift before restore", async () => {
+    const systemRoot = await mkdtemp(join(tmpdir(), "argus-sqlite-restore-"));
+    const backupRoot = join(systemRoot, "backups", "test");
+    await mkdir(backupRoot, { recursive: true });
+    const bytes = Buffer.from("verified backup");
+    await writeFile(join(backupRoot, "argus.db"), bytes);
+    const snapshot = {
+      relativePath: "backups/test/argus.db",
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      bytes: bytes.byteLength,
+      quickCheck: "ok" as const,
+      counts: { records: 1, revisions: 2, jobs: 3 },
+      volume: {
+        name: "argus_argus-data",
+        project: "argus" as const,
+        logicalName: "argus-data" as const,
+        destination: "/app/data" as const,
+      },
+    };
+
+    try {
+      await expect(
+        verifySqliteSnapshot()({
+          root: systemRoot,
+          backupRoot,
+          snapshot,
+          executor: scriptedExecutor(
+            result(
+              JSON.stringify({
+                sha256: snapshot.sha256,
+                bytes: snapshot.bytes,
+                quickCheck: "ok",
+                counts: { records: 999, revisions: 2, jobs: 3 },
+              }),
+            ),
+          ).executor,
+          environment,
+          image: `argus@sha256:${"a".repeat(64)}`,
+        }),
+      ).rejects.toMatchObject({ code: "UPDATE_ROLLBACK_BACKUP_INVALID" });
+    } finally {
+      await rm(systemRoot, { recursive: true, force: true });
+    }
+  });
 });

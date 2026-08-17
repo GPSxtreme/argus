@@ -40,6 +40,20 @@ export interface CreateSqliteSnapshotInput {
   volume: SqliteVolumeIdentity;
 }
 
+export interface VerifySqliteSnapshotInput {
+  root: string;
+  backupRoot: string;
+  snapshot: SqliteSnapshot;
+  executor: CommandExecutor;
+  environment: Record<string, string>;
+  image: string;
+}
+
+export interface RestoreSqliteSnapshotInput
+  extends VerifySqliteSnapshotInput {
+  volume: SqliteVolumeIdentity;
+}
+
 const containerIdSchema = z.string().regex(/^[a-f0-9]{12,64}$/u);
 const mountListSchema = z.array(
   z
@@ -125,6 +139,93 @@ process.stdout.write(JSON.stringify({
 }) + "\\n");
 `;
 
+const verifyHelper = String.raw`
+import Database from "better-sqlite3";
+import { createHash } from "node:crypto";
+import { readFile, stat } from "node:fs/promises";
+
+const [sourcePath] = process.argv.slice(1);
+if (!sourcePath) throw new Error("snapshot path is required");
+const database = new Database(sourcePath, { readonly: true, fileMustExist: true });
+const quickCheck = database.pragma("quick_check", { simple: true });
+if (quickCheck !== "ok") throw new Error("SQLite quick_check failed");
+const count = (table) => Number(database.prepare('SELECT COUNT(*) AS count FROM "' + table + '"').get().count);
+const counts = { records: count("records"), revisions: count("revisions"), jobs: count("jobs") };
+database.close();
+const bytes = await readFile(sourcePath);
+const metadata = await stat(sourcePath);
+process.stdout.write(JSON.stringify({
+  sha256: createHash("sha256").update(bytes).digest("hex"),
+  bytes: metadata.size,
+  quickCheck,
+  counts,
+}) + "\\n");
+`;
+
+const restoreHelper = String.raw`
+import Database from "better-sqlite3";
+import { createHash, randomUUID } from "node:crypto";
+import { constants } from "node:fs";
+import { chmod, chown, copyFile, open, readFile, rename, rm, stat } from "node:fs/promises";
+
+const [sourcePath, livePath, expectedJson] = process.argv.slice(1);
+if (!sourcePath || !livePath || !expectedJson) throw new Error("restore arguments are required");
+const expected = JSON.parse(expectedJson);
+const inspect = async (path) => {
+  const database = new Database(path, { readonly: true, fileMustExist: true });
+  const quickCheck = database.pragma("quick_check", { simple: true });
+  if (quickCheck !== "ok") throw new Error("SQLite quick_check failed");
+  const count = (table) => Number(database.prepare('SELECT COUNT(*) AS count FROM "' + table + '"').get().count);
+  const counts = { records: count("records"), revisions: count("revisions"), jobs: count("jobs") };
+  database.close();
+  const bytes = await readFile(path);
+  const metadata = await stat(path);
+  return {
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+    bytes: metadata.size,
+    quickCheck,
+    counts,
+  };
+};
+const matches = (left, right) => JSON.stringify(left) === JSON.stringify(right);
+const sourceReceipt = await inspect(sourcePath);
+if (!matches(sourceReceipt, expected)) throw new Error("snapshot receipt mismatch");
+
+const stagedPath = "/data/.argus-restore-" + randomUUID() + ".db";
+let promoted = false;
+try {
+  await copyFile(sourcePath, stagedPath, constants.COPYFILE_EXCL);
+  const stagedReceipt = await inspect(stagedPath);
+  if (!matches(stagedReceipt, expected)) throw new Error("staged snapshot mismatch");
+  const liveMetadata = await stat(livePath).catch((error) => {
+    if (error?.code === "ENOENT") return undefined;
+    throw error;
+  });
+  await chown(stagedPath, liveMetadata?.uid ?? 10001, liveMetadata?.gid ?? 10001);
+  await chmod(stagedPath, liveMetadata === undefined ? 0o600 : liveMetadata.mode & 0o777);
+  const staged = await open(stagedPath, "r");
+  await staged.sync();
+  await staged.close();
+
+  if (liveMetadata !== undefined) {
+    const live = new Database(livePath, { fileMustExist: true });
+    live.pragma("wal_checkpoint(TRUNCATE)");
+    live.close();
+  }
+  await rm(livePath + "-wal", { force: true });
+  await rm(livePath + "-shm", { force: true });
+  await rename(stagedPath, livePath);
+  promoted = true;
+  const directory = await open("/data", "r");
+  await directory.sync();
+  await directory.close();
+  process.stdout.write(JSON.stringify({ restored: true, ...stagedReceipt }) + "\\n");
+} catch (error) {
+  if (!promoted) await rm(stagedPath, { force: true });
+  throw error;
+}
+`;
+
 const unavailable = (): DeploymentError =>
   new DeploymentError(
     "UPDATE_SQLITE_VOLUME_UNAVAILABLE",
@@ -142,6 +243,26 @@ const snapshotFailed = (): DeploymentError =>
     {
       recovery:
         "Keep the current Argus instance stopped, inspect Docker and disk health, then retry 'argus update'.",
+    },
+  );
+
+const backupInvalid = (): DeploymentError =>
+  new DeploymentError(
+    "UPDATE_ROLLBACK_BACKUP_INVALID",
+    "The persisted SQLite rollback snapshot is missing or invalid.",
+    {
+      recovery:
+        "Preserve the instance backup and inspect its recorded hash before retrying rollback.",
+    },
+  );
+
+const restoreFailed = (): DeploymentError =>
+  new DeploymentError(
+    "UPDATE_ROLLBACK_RESTORE_FAILED",
+    "Argus could not atomically restore the verified SQLite snapshot.",
+    {
+      recovery:
+        "Keep Argus stopped and preserve the recorded snapshot before attempting manual recovery.",
     },
   );
 
@@ -179,7 +300,7 @@ export const inspectSqliteVolume = async ({
 }: InspectSqliteVolumeInput): Promise<SqliteVolumeIdentity> => {
   const serviceOutput = await run(
     executor,
-    ["compose", "-p", "argus", "ps", "-q", "argus"],
+    ["compose", "-p", "argus", "ps", "-q", "--all", "argus"],
     { cwd: root, env: environment, timeoutMs: 10_000 },
   );
   const containers = serviceOutput
@@ -309,5 +430,173 @@ export const createSqliteSnapshot = async ({
       throw error;
     }
     throw snapshotFailed();
+  }
+};
+
+const snapshotPath = async (
+  root: string,
+  backupRoot: string,
+  snapshot: SqliteSnapshot,
+): Promise<{ backupRoot: string; path: string }> => {
+  const resolvedRoot = resolve(root);
+  const resolvedBackupRoot = resolve(backupRoot);
+  const path = resolve(resolvedRoot, snapshot.relativePath);
+  const backupFromRoot = relative(resolvedRoot, resolvedBackupRoot);
+  const pathFromBackup = relative(resolvedBackupRoot, path);
+  if (
+    backupFromRoot === "" ||
+    backupFromRoot.startsWith("..") ||
+    isAbsolute(backupFromRoot) ||
+    pathFromBackup === "" ||
+    pathFromBackup.startsWith("..") ||
+    isAbsolute(pathFromBackup)
+  ) {
+    throw backupInvalid();
+  }
+  const backupMetadata = await lstat(resolvedBackupRoot);
+  const metadata = await lstat(path);
+  if (
+    !backupMetadata.isDirectory() ||
+    backupMetadata.isSymbolicLink() ||
+    !metadata.isFile() ||
+    metadata.isSymbolicLink()
+  ) {
+    throw backupInvalid();
+  }
+  const bytes = await readFile(path);
+  if (
+    metadata.size !== snapshot.bytes ||
+    createHash("sha256").update(bytes).digest("hex") !== snapshot.sha256
+  ) {
+    throw backupInvalid();
+  }
+  return { backupRoot: resolvedBackupRoot, path };
+};
+
+const receiptMatches = (
+  receipt: z.infer<typeof snapshotReceiptSchema>,
+  snapshot: SqliteSnapshot,
+): boolean =>
+  receipt.sha256 === snapshot.sha256 &&
+  receipt.bytes === snapshot.bytes &&
+  receipt.quickCheck === snapshot.quickCheck &&
+  receipt.counts.records === snapshot.counts.records &&
+  receipt.counts.revisions === snapshot.counts.revisions &&
+  receipt.counts.jobs === snapshot.counts.jobs;
+
+const strictReceipt = (
+  result: Awaited<ReturnType<CommandExecutor["run"]>>,
+  failure: () => DeploymentError,
+): z.infer<typeof snapshotReceiptSchema> => {
+  if (result.exitCode !== 0 || result.timedOut) throw failure();
+  const lines = result.stdout.trim().split(/\r?\n/u);
+  if (lines.length !== 1) throw failure();
+  const receipt = snapshotReceiptSchema.safeParse(parseJson(lines[0] ?? ""));
+  if (!receipt.success) throw failure();
+  return receipt.data;
+};
+
+export const verifySqliteSnapshot = async ({
+  root,
+  backupRoot,
+  snapshot,
+  executor,
+  image,
+}: VerifySqliteSnapshotInput): Promise<void> => {
+  try {
+    const confined = await snapshotPath(root, backupRoot, snapshot);
+    if (!digestPinnedImageSchema.safeParse(image).success) throw backupInvalid();
+    const result = await executor.run(
+      "docker",
+      [
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--user",
+        "0:0",
+        "--mount",
+        `type=bind,src=${confined.backupRoot},dst=/backup,readonly`,
+        "--entrypoint",
+        "node",
+        image,
+        "--input-type=module",
+        "-e",
+        verifyHelper,
+        "--",
+        `/backup/${relative(confined.backupRoot, confined.path)}`,
+      ],
+      { timeoutMs: 120_000 },
+    );
+    if (!receiptMatches(strictReceipt(result, backupInvalid), snapshot)) {
+      throw backupInvalid();
+    }
+  } catch (error) {
+    if (error instanceof DeploymentError) throw error;
+    throw backupInvalid();
+  }
+};
+
+export const restoreSqliteSnapshot = async ({
+  root,
+  backupRoot,
+  snapshot,
+  executor,
+  image,
+  volume,
+}: RestoreSqliteSnapshotInput): Promise<void> => {
+  try {
+    const confined = await snapshotPath(root, backupRoot, snapshot);
+    if (
+      !digestPinnedImageSchema.safeParse(image).success ||
+      JSON.stringify(volume) !== JSON.stringify(snapshot.volume)
+    ) {
+      throw restoreFailed();
+    }
+    const expected = {
+      sha256: snapshot.sha256,
+      bytes: snapshot.bytes,
+      quickCheck: snapshot.quickCheck,
+      counts: snapshot.counts,
+    };
+    const result = await executor.run(
+      "docker",
+      [
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--user",
+        "0:0",
+        "--mount",
+        `type=volume,src=${volume.name},dst=/data`,
+        "--mount",
+        `type=bind,src=${confined.backupRoot},dst=/backup,readonly`,
+        "--entrypoint",
+        "node",
+        image,
+        "--input-type=module",
+        "-e",
+        restoreHelper,
+        "--",
+        `/backup/${relative(confined.backupRoot, confined.path)}`,
+        "/data/argus.db",
+        JSON.stringify(expected),
+      ],
+      { timeoutMs: 120_000 },
+    );
+    if (result.exitCode !== 0 || result.timedOut) throw restoreFailed();
+    const lines = result.stdout.trim().split(/\r?\n/u);
+    if (lines.length !== 1) throw restoreFailed();
+    const restored = z
+      .object({ restored: z.literal(true), ...snapshotReceiptSchema.shape })
+      .strict()
+      .safeParse(parseJson(lines[0] ?? ""));
+    if (!restored.success || !receiptMatches(restored.data, snapshot)) {
+      throw restoreFailed();
+    }
+  } catch (error) {
+    if (error instanceof DeploymentError) throw error;
+    throw restoreFailed();
   }
 };
