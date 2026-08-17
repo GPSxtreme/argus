@@ -352,6 +352,8 @@ describe("managed SQLite snapshot creation", () => {
             "--",
             "/data/argus.db",
             "/backup/argus.db",
+            String(process.getuid?.() ?? 0),
+            String(process.getgid?.() ?? 0),
           ],
           options: { timeoutMs: 120_000 },
         },
@@ -360,6 +362,7 @@ describe("managed SQLite snapshot creation", () => {
       expect(helper).toContain('copyFile(sourcePath, stagedSourcePath)');
       expect(helper).toContain('copyFile(sourcePath + "-wal", stagedSourcePath + "-wal")');
       expect(helper).toContain('new Database(stagedSourcePath');
+      expect(helper).toContain("chown(destinationPath, ownerUid, ownerGid)");
       expect((await stat(backupRoot)).mode & 0o777).toBe(0o700);
       expect((await stat(join(backupRoot, "argus.db"))).mode & 0o777).toBe(
         0o600,
