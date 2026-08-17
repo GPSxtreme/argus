@@ -162,7 +162,7 @@ process.stdout.write(JSON.stringify({
   bytes: metadata.size,
   quickCheck: "ok",
   counts,
-}) + "\\n");
+}) + "\n");
 `;
 
 const verifyHelper = String.raw`
@@ -185,7 +185,7 @@ process.stdout.write(JSON.stringify({
   bytes: metadata.size,
   quickCheck,
   counts,
-}) + "\\n");
+}) + "\n");
 `;
 
 const restoreHelper = String.raw`
@@ -257,7 +257,7 @@ try {
   const directory = await open("/data", "r");
   await directory.sync();
   await directory.close();
-  process.stdout.write(JSON.stringify({ restored: true, ...stagedReceipt }) + "\\n");
+  process.stdout.write(JSON.stringify({ restored: true, ...stagedReceipt }) + "\n");
 } catch (error) {
   if (!promoted) await rm(stagedPath, { force: true });
   throw error;
