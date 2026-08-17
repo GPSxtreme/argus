@@ -382,6 +382,31 @@ describe("GitHub workflow toolchain", () => {
     expect(publish?.with?.overwrite_files).toBe(false);
   });
 
+  it("tests SQLite backup and restore against the built digest-pinned application image", () => {
+    const workflow = parse(
+      readFileSync(repositoryFile(".github/workflows/release.yml"), "utf8"),
+    ) as Workflow;
+    const steps = workflow.jobs.release?.steps ?? [];
+    const appBuild = steps.findIndex(
+      (step) => step.name === "Build and push application image",
+    );
+    const volumeTest = steps.findIndex(
+      (step) => step.name === "Verify SQLite named-volume backup and restore",
+    );
+    const step = steps[volumeTest];
+
+    expect(volumeTest).toBeGreaterThan(appBuild);
+    expect(step?.env).toEqual({
+      ARGUS_SQLITE_VOLUME_TEST: "1",
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: This is a literal workflow expression.
+      ARGUS_APP_IMAGE: "${{ env.APP_IMAGE }}@${{ steps.app.outputs.digest }}",
+    });
+    expect(step?.run).toContain('docker pull "$ARGUS_APP_IMAGE"');
+    expect(step?.run).toContain(
+      "pnpm vitest run packages/deployment/test/sqlite-volume.live.test.ts",
+    );
+  });
+
   it("exports every verified release input needed for one stable-bundle promotion", () => {
     const workflow = parse(
       readFileSync(repositoryFile(".github/workflows/release.yml"), "utf8"),
