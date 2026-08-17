@@ -356,6 +356,10 @@ describe("managed SQLite snapshot creation", () => {
           options: { timeoutMs: 120_000 },
         },
       ]);
+      const helper = calls[0]?.args[calls[0].args.indexOf("-e") + 1];
+      expect(helper).toContain('copyFile(sourcePath, stagedSourcePath)');
+      expect(helper).toContain('copyFile(sourcePath + "-wal", stagedSourcePath + "-wal")');
+      expect(helper).toContain('new Database(stagedSourcePath');
       expect((await stat(backupRoot)).mode & 0o777).toBe(0o700);
       expect((await stat(join(backupRoot, "argus.db"))).mode & 0o777).toBe(
         0o600,

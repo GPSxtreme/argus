@@ -96,7 +96,9 @@ const snapshotReceiptSchema = z
 const snapshotHelper = String.raw`
 import Database from "better-sqlite3";
 import { createHash } from "node:crypto";
-import { chmod, open, readFile, stat } from "node:fs/promises";
+import { chmod, copyFile, mkdtemp, open, readFile, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const [sourcePath, destinationPath] = process.argv.slice(1);
 if (!sourcePath || !destinationPath) throw new Error("snapshot paths are required");
@@ -108,10 +110,23 @@ const quickCheck = (database) => {
   }
 };
 
-const source = new Database(sourcePath, { readonly: true, fileMustExist: true });
-quickCheck(source);
-await source.backup(destinationPath);
-source.close();
+const stagedSourceRoot = await mkdtemp(join(tmpdir(), "argus-snapshot-"));
+const stagedSourcePath = join(stagedSourceRoot, "argus.db");
+try {
+  await copyFile(sourcePath, stagedSourcePath);
+  await copyFile(sourcePath + "-wal", stagedSourcePath + "-wal").catch((error) => {
+    if (error?.code !== "ENOENT") throw error;
+  });
+  const source = new Database(stagedSourcePath, { fileMustExist: true });
+  try {
+    quickCheck(source);
+    await source.backup(destinationPath);
+  } finally {
+    source.close();
+  }
+} finally {
+  await rm(stagedSourceRoot, { recursive: true, force: true });
+}
 
 const snapshot = new Database(destinationPath, { readonly: true, fileMustExist: true });
 quickCheck(snapshot);
