@@ -55,6 +55,7 @@ describe.skipIf(!enabled)(
         const seedScript = `
 import Database from "better-sqlite3";
 const database = new Database("/app/data/argus.db");
+database.pragma("journal_mode = WAL");
 database.exec("CREATE TABLE records (id TEXT PRIMARY KEY); CREATE TABLE revisions (id TEXT PRIMARY KEY); CREATE TABLE jobs (id TEXT PRIMARY KEY); CREATE TABLE markers (value TEXT PRIMARY KEY);");
 database.prepare("INSERT INTO records VALUES (?)").run("record-before");
 database.prepare("INSERT INTO revisions VALUES (?)").run("revision-before");
@@ -79,8 +80,28 @@ database.close();
 process.stdout.write(JSON.stringify({ rows, records }));
 `;
 
+        let ownsProject = false;
         try {
+          const existingContainers = await executor.run(
+            "docker",
+            [...compose, "ps", "-q", "--all"],
+            { cwd: root, timeoutMs: 10_000 },
+          );
+          const existingVolume = await executor.run(
+            "docker",
+            ["volume", "inspect", "argus_argus-data"],
+            { timeoutMs: 10_000 },
+          );
+          if (
+            existingContainers.stdout.trim().length > 0 ||
+            existingVolume.exitCode === 0
+          ) {
+            throw new Error(
+              "Refusing to run destructive SQLite live test while an argus Compose project already exists.",
+            );
+          }
           await run(executor, root, [...compose, "up", "-d"]);
+          ownsProject = true;
           await run(executor, root, [
             ...compose,
             "exec",
@@ -160,12 +181,14 @@ process.stdout.write(JSON.stringify({ rows, records }));
             records: 1,
           });
         } finally {
-          await run(executor, root, [
-            ...compose,
-            "down",
-            "--volumes",
-            "--remove-orphans",
-          ]).catch(() => undefined);
+          if (ownsProject) {
+            await run(executor, root, [
+              ...compose,
+              "down",
+              "--volumes",
+              "--remove-orphans",
+            ]).catch(() => undefined);
+          }
         }
       },
       180_000,

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { lstat, readFile } from "node:fs/promises";
+import { chmod, lstat, readFile, realpath } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { z } from "zod";
 import { DeploymentError } from "./errors.js";
@@ -96,7 +96,7 @@ const snapshotReceiptSchema = z
 const snapshotHelper = String.raw`
 import Database from "better-sqlite3";
 import { createHash } from "node:crypto";
-import { open, readFile, stat } from "node:fs/promises";
+import { chmod, open, readFile, stat } from "node:fs/promises";
 
 const [sourcePath, destinationPath] = process.argv.slice(1);
 if (!sourcePath || !destinationPath) throw new Error("snapshot paths are required");
@@ -125,6 +125,7 @@ snapshot.close();
 
 const bytes = await readFile(destinationPath);
 const metadata = await stat(destinationPath);
+await chmod(destinationPath, 0o600);
 const file = await open(destinationPath, "r");
 await file.sync();
 await file.close();
@@ -209,8 +210,20 @@ try {
 
   if (liveMetadata !== undefined) {
     const live = new Database(livePath, { fileMustExist: true });
-    live.pragma("wal_checkpoint(TRUNCATE)");
-    live.close();
+    try {
+      const checkpoints = live.pragma("wal_checkpoint(TRUNCATE)");
+      const checkpoint = checkpoints[0];
+      if (
+        checkpoints.length !== 1 ||
+        checkpoint === undefined ||
+        checkpoint.busy !== 0 ||
+        checkpoint.log !== checkpoint.checkpointed
+      ) {
+        throw new Error("live SQLite WAL checkpoint remained busy");
+      }
+    } finally {
+      live.close();
+    }
   }
   await rm(livePath + "-wal", { force: true });
   await rm(livePath + "-shm", { force: true });
@@ -374,6 +387,21 @@ export const createSqliteSnapshot = async ({
     ) {
       throw snapshotFailed();
     }
+    const backupMetadata = await lstat(resolvedBackupRoot);
+    if (!backupMetadata.isDirectory() || backupMetadata.isSymbolicLink()) {
+      throw snapshotFailed();
+    }
+    const canonicalRoot = await realpath(resolvedRoot);
+    const canonicalBackupRoot = await realpath(resolvedBackupRoot);
+    const canonicalRelative = relative(canonicalRoot, canonicalBackupRoot);
+    if (
+      canonicalRelative === "" ||
+      canonicalRelative.startsWith("..") ||
+      isAbsolute(canonicalRelative)
+    ) {
+      throw snapshotFailed();
+    }
+    await chmod(resolvedBackupRoot, 0o700);
 
     const destination = join(resolvedBackupRoot, "argus.db");
     const commandResult = await executor.run(
@@ -386,7 +414,7 @@ export const createSqliteSnapshot = async ({
         "--user",
         "0:0",
         "--mount",
-        `type=volume,src=${volume.name},dst=/data`,
+        `type=volume,src=${volume.name},dst=/data,readonly`,
         "--mount",
         `type=bind,src=${resolvedBackupRoot},dst=/backup`,
         "--entrypoint",
@@ -411,9 +439,17 @@ export const createSqliteSnapshot = async ({
 
     const metadata = await lstat(destination);
     if (!metadata.isFile() || metadata.isSymbolicLink()) throw snapshotFailed();
+    await chmod(destination, 0o600);
+    const securedMetadata = await lstat(destination);
+    if (!securedMetadata.isFile() || securedMetadata.isSymbolicLink()) {
+      throw snapshotFailed();
+    }
     const bytes = await readFile(destination);
     const hash = createHash("sha256").update(bytes).digest("hex");
-    if (metadata.size !== receipt.data.bytes || hash !== receipt.data.sha256) {
+    if (
+      securedMetadata.size !== receipt.data.bytes ||
+      hash !== receipt.data.sha256
+    ) {
       throw snapshotFailed();
     }
 
@@ -460,6 +496,21 @@ const snapshotPath = async (
     backupMetadata.isSymbolicLink() ||
     !metadata.isFile() ||
     metadata.isSymbolicLink()
+  ) {
+    throw backupInvalid();
+  }
+  const canonicalRoot = await realpath(resolvedRoot);
+  const canonicalBackupRoot = await realpath(resolvedBackupRoot);
+  const canonicalPath = await realpath(path);
+  const canonicalBackupFromRoot = relative(canonicalRoot, canonicalBackupRoot);
+  const canonicalPathFromBackup = relative(canonicalBackupRoot, canonicalPath);
+  if (
+    canonicalBackupFromRoot === "" ||
+    canonicalBackupFromRoot.startsWith("..") ||
+    isAbsolute(canonicalBackupFromRoot) ||
+    canonicalPathFromBackup === "" ||
+    canonicalPathFromBackup.startsWith("..") ||
+    isAbsolute(canonicalPathFromBackup)
   ) {
     throw backupInvalid();
   }

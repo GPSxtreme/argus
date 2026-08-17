@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, open, readFile, rename, stat } from "node:fs/promises";
+import { chmod, mkdir, open, readFile, rename, stat } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -468,7 +468,8 @@ export const backupInstance = async ({
     "backups",
     `${plan.currentVersion}-${Date.now()}-${crypto.randomUUID()}`,
   );
-  await mkdir(path, { recursive: true });
+  await mkdir(path, { recursive: true, mode: 0o700 });
+  await chmod(path, 0o700);
   await atomicWrite(join(path, "state.json"), `${JSON.stringify(plan.previousState, null, 2)}\n`);
   if (getRollbackContext === undefined) {
     throw new DeploymentError(
@@ -481,16 +482,18 @@ export const backupInstance = async ({
   await atomicWrite(signedContextPath, signedContextBytes);
   const environment = environmentFor(plan.previousState, plan.rollbackRelease);
   let sqliteSnapshot: SqliteSnapshot | undefined;
-  if (plan.previousState.compose?.storage === "sqlite") {
-    const volume = await inspectSqliteVolume({ root, executor, environment });
-    await command(
-      root,
-      executor,
-      ["stop", "argus"],
-      environment,
-      "Argus could not stop for its SQLite snapshot.",
-    );
-    try {
+  let sqliteStopped = false;
+  try {
+    if (plan.previousState.compose?.storage === "sqlite") {
+      const volume = await inspectSqliteVolume({ root, executor, environment });
+      await command(
+        root,
+        executor,
+        ["stop", "argus"],
+        environment,
+        "Argus could not stop for its SQLite snapshot.",
+      );
+      sqliteStopped = true;
       sqliteSnapshot = await createSqliteSnapshot({
         root,
         backupRoot: path,
@@ -499,40 +502,58 @@ export const backupInstance = async ({
         image: plan.rollbackRelease.manifest.images.app.reference,
         volume,
       });
-    } catch (error) {
+    }
+    const backup = {
+      path,
+      state: plan.previousState,
+      ...(sqliteSnapshot === undefined ? {} : { sqliteSnapshot }),
+      signedContext: {
+        relativePath: relative(root, signedContextPath),
+        sha256: sha256(signedContextBytes),
+      },
+    };
+    await persist(root, {
+      phase: "backed_up",
+      plan: {
+        currentVersion: plan.currentVersion,
+        targetVersion: plan.targetVersion,
+      },
+      previousState: plan.previousState,
+      release: plan.release,
+      rollbackRelease: plan.rollbackRelease,
+      backup,
+    });
+    return backup;
+  } catch (error) {
+    if (sqliteStopped) {
       try {
         await command(
           root,
           executor,
           ["up", "-d", "argus"],
           environment,
-          "Argus could not restart after its SQLite snapshot failed.",
+          "Argus could not restart after its SQLite backup failed.",
         );
-        await health(root, executor, plan.previousState, plan.rollbackRelease);
+        const report = await health(
+          root,
+          executor,
+          plan.previousState,
+          plan.rollbackRelease,
+        );
+        if (!report.healthy) throw new Error("Argus remained unhealthy");
       } catch {
-        // Preserve the original snapshot failure and its recovery guidance.
+        throw new DeploymentError(
+          "UPDATE_SQLITE_RECOVERY_FAILED",
+          "Argus could not recover the prior service after SQLite backup failed.",
+          {
+            recovery:
+              "Keep the verified volume and backup directory unchanged, then inspect 'argus doctor --json' before manual recovery.",
+          },
+        );
       }
-      throw error;
     }
+    throw error;
   }
-  const backup = {
-    path,
-    state: plan.previousState,
-    ...(sqliteSnapshot === undefined ? {} : { sqliteSnapshot }),
-    signedContext: {
-      relativePath: relative(root, signedContextPath),
-      sha256: sha256(signedContextBytes),
-    },
-  };
-  await persist(root, {
-    phase: "backed_up",
-    plan: { currentVersion: plan.currentVersion, targetVersion: plan.targetVersion },
-    previousState: plan.previousState,
-    release: plan.release,
-    rollbackRelease: plan.rollbackRelease,
-    backup,
-  });
-  return backup;
 };
 
 export const loadRollbackReleaseContext = async (root: string): Promise<Uint8Array> => {

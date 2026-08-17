@@ -4,6 +4,7 @@ import {
   mkdtemp,
   rm,
   symlink,
+  stat,
   unlink,
   writeFile,
 } from "node:fs/promises";
@@ -339,7 +340,7 @@ describe("managed SQLite snapshot creation", () => {
             "--user",
             "0:0",
             "--mount",
-            "type=volume,src=argus_argus-data,dst=/data",
+            "type=volume,src=argus_argus-data,dst=/data,readonly",
             "--mount",
             `type=bind,src=${backupRoot},dst=/backup`,
             "--entrypoint",
@@ -355,6 +356,10 @@ describe("managed SQLite snapshot creation", () => {
           options: { timeoutMs: 120_000 },
         },
       ]);
+      expect((await stat(backupRoot)).mode & 0o777).toBe(0o700);
+      expect((await stat(join(backupRoot, "argus.db"))).mode & 0o777).toBe(
+        0o600,
+      );
     } finally {
       await rm(systemRoot, { recursive: true, force: true });
     }
@@ -602,6 +607,11 @@ describe("managed SQLite snapshot restore", () => {
           counts: snapshot.counts,
         }),
       ]);
+      const restoreScript = calls[1]?.args[calls[1].args.indexOf("-e") + 1];
+      expect(restoreScript).toContain("checkpoint.busy !== 0");
+      expect(restoreScript).toContain(
+        "checkpoint.log !== checkpoint.checkpointed",
+      );
     } finally {
       await rm(systemRoot, { recursive: true, force: true });
     }

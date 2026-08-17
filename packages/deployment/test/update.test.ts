@@ -320,6 +320,71 @@ describe("safe update state machine", () => {
     });
   });
 
+  it("restarts the old service when durable snapshot publication fails", async () => {
+    const root = await rootWithState();
+    await mkdir(join(root, "update-state.json"));
+    const plan = await planUpdate({
+      root,
+      release: release(),
+      rollbackRelease: release("1.0.0", 1, "f"),
+      executor: executor(),
+    });
+    const calls: string[][] = [];
+    const baseExecutor = executor();
+    const recordingExecutor: CommandExecutor = {
+      async run(command, args, options) {
+        calls.push(args);
+        return baseExecutor.run(command, args, options);
+      },
+    };
+
+    await expect(
+      applyUpdate({
+        root,
+        plan,
+        executor: recordingExecutor,
+        getRollbackContext: rollbackContext,
+      }),
+    ).rejects.toBeDefined();
+    expect(calls.some((args) => args.includes("pull"))).toBe(false);
+    expect(
+      calls.some(
+        (args) => args.includes("up") && args.includes("argus"),
+      ),
+    ).toBe(true);
+  });
+
+  it("reports failed recovery when snapshot failure cannot restart a healthy old service", async () => {
+    const root = await rootWithState();
+    const plan = await planUpdate({
+      root,
+      release: release(),
+      rollbackRelease: release("1.0.0", 1, "f"),
+      executor: executor(),
+    });
+    const baseExecutor = executor();
+    const failingExecutor: CommandExecutor = {
+      async run(command, args, options) {
+        if (args[0] === "run" && args.includes("--network")) {
+          return { exitCode: 1, stdout: "", stderr: "snapshot failed" };
+        }
+        if (args.includes("--format") && args.includes("ps")) {
+          return { exitCode: 0, stdout: "[]", stderr: "" };
+        }
+        return baseExecutor.run(command, args, options);
+      },
+    };
+
+    await expect(
+      applyUpdate({
+        root,
+        plan,
+        executor: failingExecutor,
+        getRollbackContext: rollbackContext,
+      }),
+    ).rejects.toMatchObject({ code: "UPDATE_SQLITE_RECOVERY_FAILED" });
+  });
+
   it("does not stop or invoke SQLite helpers for PostgreSQL deployments", async () => {
     const root = await rootWithState({ storage: "postgres" });
     const plan = await planUpdate({

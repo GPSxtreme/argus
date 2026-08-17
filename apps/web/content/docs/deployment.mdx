@@ -64,7 +64,7 @@ docker compose -p argus config --volumes
 docker volume inspect argus_argus-data
 ```
 
-Argus update copies `state.json` and only eligible SQLite files it finds under `/opt/argus` or `/opt/argus/data` into `/opt/argus/backups/<version>-<timestamp>/`. It does not back up the managed named volume, so it cannot protect or restore the managed Compose SQLite database. Before an update, operators must make and verify their own Docker-volume backup of `argus_argus-data`; test a restore using the operator's backup process away from the live instance. Do not rely on `argus update --rollback` as a database-volume restore.
+For SQLite, a signed update proves that exact Compose-owned volume, stops the Argus writer, and creates a consistent snapshot beneath `/opt/argus/backups`. The updater records its hash, size, integrity result, table counts, and volume identity before pulling or migrating. `argus update --rollback` revalidates the snapshot and atomically restores it inside `argus_argus-data` before starting the prior signed release. Keep a separately verified operator-managed Docker-volume backup for disaster recovery; the update snapshot is not a substitute for an independent backup policy.
 
 For PostgreSQL, take regular `pg_dump`/`pg_restore` backups or provider snapshots and store them outside `/opt/argus`. Argus deployment backups do not contain a PostgreSQL dump. After a database restore, start the required runtime roles and verify with `argus status --json` and `argus doctor --json` on a managed VPS.
 

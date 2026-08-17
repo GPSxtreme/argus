@@ -223,7 +223,7 @@ describe("Argus documentation", () => {
       /curl -fsSL https:\/\/argus\.gpsxtre\.me\/install\.sh \| sh/u,
     );
     expect(backupCorpus).toMatch(
-      /(?:managed named volume|argus_argus-data)[\s\S]{0,240}(?:does not|cannot)[\s\S]{0,80}(?:back up|restore)/iu,
+      /argus_argus-data[\s\S]{0,300}(?:snapshot|back up)[\s\S]{0,300}(?:atomically restores|atomically select)/iu,
     );
     expect(backupCorpus).toMatch(
       /operator(?:-|\s)managed[\s\S]{0,120}(?:Docker(?:-|\s)volume|argus_argus-data)[\s\S]{0,80}backup/iu,
