@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  type CommandExecutor,
   createExecaExecutor,
   createSqliteSnapshot,
   inspectSqliteVolume,
@@ -14,6 +15,27 @@ const enabled = process.env.ARGUS_SQLITE_VOLUME_TEST === "1";
 const image = process.env.ARGUS_APP_IMAGE ?? "";
 const roots: string[] = [];
 
+const createLiveExecutor = (): CommandExecutor => {
+  const executor = createExecaExecutor();
+  return {
+    async run(command, args, options) {
+      const result = await executor.run(command, args, options);
+      if (result.exitCode !== 0 || result.timedOut) {
+        console.error(
+          JSON.stringify({
+            command,
+            operation: args.slice(0, 4),
+            exitCode: result.exitCode,
+            timedOut: result.timedOut ?? false,
+            stderr: result.stderr.slice(0, 4_000),
+          }),
+        );
+      }
+      return result;
+    },
+  };
+};
+
 afterEach(async () => {
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
@@ -21,7 +43,7 @@ afterEach(async () => {
 });
 
 const run = async (
-  executor: ReturnType<typeof createExecaExecutor>,
+  executor: CommandExecutor,
   root: string,
   args: string[],
 ) => {
@@ -50,7 +72,7 @@ describe.skipIf(!enabled)(
           join(root, "compose.yaml"),
           `services:\n  argus:\n    image: ${JSON.stringify(image)}\n    entrypoint: ["sh", "-c"]\n    command: ["sleep infinity"]\n    volumes:\n      - argus-data:/app/data\nvolumes:\n  argus-data: {}\n`,
         );
-        const executor = createExecaExecutor();
+        const executor = createLiveExecutor();
         const compose = ["compose", "-p", "argus"];
         const seedScript = `
 import Database from "better-sqlite3";
