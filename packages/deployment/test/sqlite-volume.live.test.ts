@@ -1,4 +1,12 @@
-import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import {
+  access,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -165,6 +173,41 @@ process.stdout.write(JSON.stringify({ records, rows }));
             environment,
             image,
             volume,
+          }).catch(async (error) => {
+            const snapshotPath = join(backupRoot, "argus.db");
+            const directory = await lstat(backupRoot).catch(() => undefined);
+            const file = await lstat(snapshotPath).catch(() => undefined);
+            const readError = await readFile(snapshotPath)
+              .then(() => undefined)
+              .catch((cause: NodeJS.ErrnoException) => cause.code ?? "UNKNOWN");
+            console.error(
+              JSON.stringify({
+                hostSnapshotDiagnostic: true,
+                caller: {
+                  uid: process.getuid?.() ?? null,
+                  gid: process.getgid?.() ?? null,
+                },
+                directory:
+                  directory === undefined
+                    ? null
+                    : {
+                        uid: directory.uid,
+                        gid: directory.gid,
+                        mode: directory.mode & 0o777,
+                      },
+                file:
+                  file === undefined
+                    ? null
+                    : {
+                        uid: file.uid,
+                        gid: file.gid,
+                        mode: file.mode & 0o777,
+                        size: file.size,
+                      },
+                readError: readError ?? null,
+              }),
+            );
+            throw error;
           });
 
           await run(executor, root, [...compose, "up", "-d", "argus"]);
