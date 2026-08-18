@@ -74,9 +74,12 @@ h2 { font-size: clamp(2rem, 4vw, 3.5rem); letter-spacing: -.06em; line-height: 1
 .hero-actions { display: flex; flex-wrap: wrap; gap: .75rem; margin: 2rem 0; }
 .button { border: 1px solid var(--line); border-radius: .25rem; padding: .7rem 1rem; background: transparent; color: var(--ink); font: inherit; text-decoration: none; }
 .primary { border-color: var(--accent); background: var(--accent); color: var(--accent-ink); font-weight: 700; }
-.install-box { display: grid; gap: .75rem; padding: 1rem; border: 1px solid var(--line); background: var(--surface); overflow-wrap: anywhere; }
-.install-note { margin: 0; color: var(--muted); font-size: .85rem; }
-.install-box code:last-child { color: var(--accent); }
+.install-box { max-width: 760px; margin-top: .5rem; }
+.install-line { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; }
+.install-box code { overflow-wrap: anywhere; color: var(--ink); }
+.copy-button { border: 0; background: none; color: var(--faint); font: inherit; font-size: .78rem; cursor: pointer; white-space: nowrap; }
+.copy-button:hover { color: var(--accent); }
+.install-note { margin: .5rem 0 0; color: var(--faint); font-size: .8rem; }
 
 .term { border: 1px solid var(--line); border-radius: 8px; background: var(--surface); overflow: hidden; font-size: .85rem; }
 .term-bar { display: flex; align-items: center; gap: .35rem; padding: .5rem .75rem; background: var(--raised); border-bottom: 1px solid var(--line-soft); color: var(--faint); font-size: .72rem; }

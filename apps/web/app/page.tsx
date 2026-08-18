@@ -1,3 +1,4 @@
+import { CopyButton } from "../components/copy-button";
 import { DataTrinity } from "../components/data-trinity";
 import { LiveLog } from "../components/live-log";
 import { Pipeline } from "../components/pipeline";
@@ -33,12 +34,21 @@ export default function Home() {
         <LiveLog />
       </section>
 
-      <section className="install-box" aria-label="Install Argus">
-        <code>{installCommand}</code>
-        <p className="install-note">
-          The installer downloads the signed release from the public repository and verifies the manifest signature before touching your system.
-        </p>
-        <code>argus onboard</code>
+      <section className="install-box term" aria-label="Install Argus">
+        <div className="term-bar">
+          <span className="term-dot" /><span className="term-dot" /><span className="term-dot" />
+          <span>install</span>
+        </div>
+        <div className="term-body">
+          <div className="install-line">
+            <code><span className="t-accent">$</span> {installCommand}</code>
+            <CopyButton text={installCommand} />
+          </div>
+          <code><span className="t-accent">$</span> argus onboard</code>
+          <p className="install-note">
+            The installer downloads the signed release from the public repository and verifies the manifest signature before touching your system.
+          </p>
+        </div>
       </section>
 
       <DataTrinity />
