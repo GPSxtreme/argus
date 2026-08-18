@@ -13,7 +13,7 @@ export function FlowDiagram() {
         <div className="flow-sources">
           {sources.map(([name, detail], i) => (
             <div className="flow-node" key={name}>
-              <span className="flow-node-name"><span className="flow-live" style={{ animationDelay: `${i * 0.8}s` }}>◉</span> {name}</span>
+              <span className="flow-node-name"><span className="flow-live" aria-hidden="true" style={{ animationDelay: `${i * 0.8}s` }}>◉</span> {name}</span>
               <span className="flow-node-detail">{detail}</span>
             </div>
           ))}

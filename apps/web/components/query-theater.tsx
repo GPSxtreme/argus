@@ -49,7 +49,7 @@ export function QueryTheater() {
           </div>
         </div>
       </div>
-      <p className="flow-caption">Deterministic answers with source links on every record. No LLM in the loop.</p>
+      <p className="query-caption">Deterministic answers with source links on every record. No LLM in the loop.</p>
     </section>
   );
 }
