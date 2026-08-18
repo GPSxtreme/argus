@@ -1,4 +1,5 @@
 import { DataTrinity } from "../components/data-trinity";
+import { LiveLog } from "../components/live-log";
 import { Pipeline } from "../components/pipeline";
 import { ThemeToggle } from "../components/theme-toggle";
 import { stableReleaseTag, stableReleaseUrl } from "../lib/release";
@@ -17,23 +18,27 @@ export default function Home() {
         </div>
       </nav>
 
-      <section className="hero">
-        <p className="eyebrow">Self-hosted intelligence for agents</p>
-        <h1>Know what changed. Keep the proof.</h1>
-        <p className="lede">
-          Argus collects public signals, normalizes them into revisioned records, and gives your agents deterministic answers with source links.
-        </p>
-        <div className="hero-actions">
-          <a className="button primary" href="/docs/quick-start">Get Started</a>
-          <a className="button" href="/docs">Read the Docs</a>
-        </div>
-        <section className="install-box" aria-label="Install Argus">
-          <code>{installCommand}</code>
-          <p className="install-note">
-            The installer downloads the signed release from the public repository and verifies the manifest signature before touching your system.
+      <section className="hero hero-split">
+        <div>
+          <p className="eyebrow">Self-hosted intelligence for agents</p>
+          <h1>Know what changed. Keep the proof.</h1>
+          <p className="lede">
+            Argus collects public signals, normalizes them into revisioned records, and gives your agents deterministic answers with source links.
           </p>
-          <code>argus onboard</code>
-        </section>
+          <div className="hero-actions">
+            <a className="button primary" href="/docs/quick-start">Get Started</a>
+            <a className="button" href="/docs">Read the Docs</a>
+          </div>
+        </div>
+        <LiveLog />
+      </section>
+
+      <section className="install-box" aria-label="Install Argus">
+        <code>{installCommand}</code>
+        <p className="install-note">
+          The installer downloads the signed release from the public repository and verifies the manifest signature before touching your system.
+        </p>
+        <code>argus onboard</code>
       </section>
 
       <DataTrinity />
