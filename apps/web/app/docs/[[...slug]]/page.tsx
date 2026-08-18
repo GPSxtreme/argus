@@ -1,4 +1,5 @@
 import { notFound } from "next/navigation";
+import defaultMdxComponents from "fumadocs-ui/mdx";
 import { DocsBody, DocsDescription, DocsPage, DocsTitle } from "fumadocs-ui/page";
 import { source } from "../../../lib/source";
 
@@ -21,7 +22,7 @@ export default async function DocumentationPage({
       <DocsTitle>{page.data.title}</DocsTitle>
       <DocsDescription>{page.data.description}</DocsDescription>
       <DocsBody>
-        <Content />
+        <Content components={defaultMdxComponents} />
       </DocsBody>
     </DocsPage>
   );

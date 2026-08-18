@@ -65,6 +65,7 @@ export default function Home() {
         <span>Argus</span>
         <div className="footer-links">
           <a href="/docs">Docs</a>
+          <a href="/llms.txt">llms.txt</a>
           <a href="https://github.com/GPSxtreme/argus">Source</a>
           <a href="https://github.com/GPSxtreme/argus/blob/main/LICENSE">License</a>
           <a href={stableReleaseUrl}>{stableReleaseTag}</a>
