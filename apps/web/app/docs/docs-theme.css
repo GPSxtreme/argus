@@ -18,6 +18,12 @@
   --color-fd-ring: var(--accent);
 }
 
-#nd-docs-layout, #nd-nav, body {
+.dark #nd-sidebar {
+  --color-fd-muted: var(--surface);
+  --color-fd-secondary: var(--raised);
+  --color-fd-muted-foreground: var(--muted);
+}
+
+#nd-docs-layout, #nd-nav {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
 }
