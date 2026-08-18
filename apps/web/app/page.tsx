@@ -1,5 +1,6 @@
 import { DataTrinity } from "../components/data-trinity";
 import { Pipeline } from "../components/pipeline";
+import { ThemeToggle } from "../components/theme-toggle";
 import { stableReleaseTag, stableReleaseUrl } from "../lib/release";
 
 const installCommand = "curl -fsSL https://argus.gpsxtre.me/install.sh | sh";
@@ -12,6 +13,7 @@ export default function Home() {
         <div className="nav-links">
           <a href="/docs">Docs</a>
           <a href="/skill">Agent Skill</a>
+          <ThemeToggle />
         </div>
       </nav>
 

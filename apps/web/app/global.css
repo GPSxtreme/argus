@@ -1,11 +1,35 @@
 :root {
   color-scheme: dark;
-  --ink: #f5f7fa;
-  --muted: #9aa5b1;
-  --canvas: #080b10;
-  --surface: #10161f;
-  --line: #263241;
-  --accent: #93e0c2;
+  --canvas: #07090d;
+  --surface: #0b1017;
+  --raised: #10161f;
+  --line: #223041;
+  --line-soft: #1a2532;
+  --ink: #eef2f6;
+  --muted: #8b98a5;
+  --faint: #5b6a78;
+  --accent: #6ee7b7;
+  --accent-ink: #05130d;
+  --accent-2: #56cfe1;
+  --accent-3: #f0c674;
+  --glow: rgba(110, 231, 183, 0.25);
+}
+
+html.light {
+  color-scheme: light;
+  --canvas: #fbfaf8;
+  --surface: #f1efe9;
+  --raised: #e8e5db;
+  --line: #ddd9cf;
+  --line-soft: #e5e1d7;
+  --ink: #1a2129;
+  --muted: #5c6773;
+  --faint: #8a8574;
+  --accent: #0d9488;
+  --accent-ink: #ffffff;
+  --accent-2: #0e7490;
+  --accent-3: #a16207;
+  --glow: rgba(13, 148, 136, 0.18);
 }
 
 * { box-sizing: border-box; }
@@ -23,6 +47,18 @@ body {
 
 a { color: inherit; }
 
+.theme-toggle {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.25rem 0.5rem;
+  cursor: pointer;
+}
+.theme-toggle:hover { color: var(--ink); border-color: var(--muted); }
+
 .landing { width: min(1120px, calc(100% - 3rem)); margin: 0 auto; }
 .site-nav, footer { display: flex; justify-content: space-between; align-items: center; padding: 1.5rem 0; }
 .nav-links, .footer-links { display: flex; gap: 1.25rem; color: var(--muted); }
@@ -35,7 +71,7 @@ h2 { font-size: clamp(2rem, 4vw, 3.5rem); letter-spacing: -.06em; line-height: 1
 .lede { color: var(--muted); font-size: 1.18rem; max-width: 680px; }
 .hero-actions { display: flex; flex-wrap: wrap; gap: .75rem; margin: 2rem 0; }
 .button { border: 1px solid var(--line); border-radius: .25rem; padding: .7rem 1rem; background: transparent; color: var(--ink); font: inherit; text-decoration: none; }
-.primary { border-color: var(--accent); background: var(--accent); color: #07110e; font-weight: 700; }
+.primary { border-color: var(--accent); background: var(--accent); color: var(--accent-ink); font-weight: 700; }
 .install-box { display: grid; gap: .75rem; padding: 1rem; border: 1px solid var(--line); background: var(--surface); overflow-wrap: anywhere; }
 .install-note { margin: 0; color: var(--muted); font-size: .85rem; }
 .install-box code:last-child { color: var(--accent); }
