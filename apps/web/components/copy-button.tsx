@@ -3,15 +3,19 @@
 import { useState } from "react";
 
 export function CopyButton({ text }: Readonly<{ text: string }>) {
-  const [copied, setCopied] = useState(false);
+  const [status, setStatus] = useState<"idle" | "copied" | "failed">("idle");
   const copy = async () => {
-    await navigator.clipboard.writeText(text);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
+    try {
+      await navigator.clipboard.writeText(text);
+      setStatus("copied");
+    } catch {
+      setStatus("failed");
+    }
+    setTimeout(() => setStatus("idle"), 1500);
   };
   return (
     <button type="button" className="copy-button" onClick={copy}>
-      {copied ? "copied" : "⧉ copy"}
+      {status === "idle" ? "⧉ copy" : status}
     </button>
   );
 }
