@@ -8,6 +8,19 @@ export const metadata: Metadata = {
   title: { default: "Argus", template: "%s · Argus" },
   description: site.description,
   alternates: { canonical: "/" },
+  openGraph: {
+    title: "Argus",
+    description: site.description,
+    url: site.url,
+    siteName: site.name,
+    type: "website",
+    locale: "en_US",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Argus",
+    description: site.description,
+  },
 };
 
 export default function RootLayout({ children }: Readonly<{ children: ReactNode }>) {
