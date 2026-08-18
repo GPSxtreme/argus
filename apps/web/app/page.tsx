@@ -1,6 +1,7 @@
 import { CopyButton } from "../components/copy-button";
 import { FlowDiagram } from "../components/flow-diagram";
 import { LiveLog } from "../components/live-log";
+import { QueryTheater } from "../components/query-theater";
 import { ThemeToggle } from "../components/theme-toggle";
 import { stableReleaseTag, stableReleaseUrl } from "../lib/release";
 
@@ -51,6 +52,8 @@ export default function Home() {
       </section>
 
       <FlowDiagram />
+
+      <QueryTheater />
 
       <section className="agent-callout">
         <p className="eyebrow">For coding agents</p>
