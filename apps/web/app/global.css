@@ -137,7 +137,9 @@ footer { margin-top: 2rem; border-top: 1px solid var(--line); color: var(--muted
 
 .query-theater { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 2rem; }
 .query-theater .term-body { min-height: 7.5rem; }
-.typeline { display: inline-block; white-space: nowrap; overflow: hidden; vertical-align: bottom; max-width: 100%; border-right: .5em solid var(--accent); animation: typing 2.2s steps(40) forwards; }
+.qt-prompt { display: flex; align-items: baseline; gap: .5ch; min-width: 0; }
+.qt-prompt .t-accent { flex-shrink: 0; }
+.typeline { display: inline-block; white-space: nowrap; overflow: hidden; min-width: 0; border-right: .5em solid var(--accent); animation: typing 2.2s steps(40) forwards; }
 .qt-late { opacity: 0; animation: log-reveal .4s steps(2) 2.4s forwards; }
-@keyframes typing { from { width: 0; } to { width: 100%; } }
+@keyframes typing { from { max-width: 0; } to { max-width: 100%; } }
 @media (prefers-reduced-motion: reduce) { .qt-late { opacity: 1; } .typeline { border-right: 0; } }

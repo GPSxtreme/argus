@@ -35,7 +35,7 @@ export function QueryTheater() {
         <div className="term">
           <div className="term-bar"><span>you → argus</span></div>
           <div className="term-body">
-            <div><span className="t-accent">$</span> <span className="typeline">{demo.query}</span></div>
+            <div className="qt-prompt"><span className="t-accent">$</span> <span className="typeline">{demo.query}</span></div>
             <div className="t-faint qt-late">→ searching x · telegram · web</div>
           </div>
         </div>
