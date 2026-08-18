@@ -14,8 +14,16 @@ describe("Argus landing page", () => {
     expect(html).not.toContain("Copy install command");
   });
 
-  it("explains the supported sources and processing pipeline", () => {
-    for (const label of ["X", "Telegram", "Web", "Collect", "Normalize", "Store", "Query"]) {
+  it("explains the supported sources and the signal flow", () => {
+    for (const label of [
+      "Signals in. Receipts out.",
+      "X",
+      "Telegram",
+      "Web",
+      "ARGUS",
+      "Your agent",
+      "Revisioned records and deterministic queries keep every result traceable to its source.",
+    ]) {
       expect(html).toContain(label);
     }
     expect(html).toContain('href="/skill"');
