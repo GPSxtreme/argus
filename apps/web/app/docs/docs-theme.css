@@ -1,0 +1,23 @@
+/* Argus brand overrides for fumadocs; imported after fumadocs-ui/style.css so these win. */
+:root {
+  --color-fd-background: var(--canvas);
+  --color-fd-foreground: var(--ink);
+  --color-fd-card: var(--surface);
+  --color-fd-card-foreground: var(--ink);
+  --color-fd-popover: var(--raised);
+  --color-fd-popover-foreground: var(--ink);
+  --color-fd-muted: var(--surface);
+  --color-fd-muted-foreground: var(--muted);
+  --color-fd-border: var(--line);
+  --color-fd-primary: var(--accent);
+  --color-fd-primary-foreground: var(--accent-ink);
+  --color-fd-secondary: var(--raised);
+  --color-fd-secondary-foreground: var(--ink);
+  --color-fd-accent: var(--raised);
+  --color-fd-accent-foreground: var(--ink);
+  --color-fd-ring: var(--accent);
+}
+
+#nd-docs-layout, #nd-nav, body {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}

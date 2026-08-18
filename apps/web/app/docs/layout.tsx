@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import "fumadocs-ui/style.css";
+import "./docs-theme.css";
 import { DocsLayout } from "fumadocs-ui/layouts/docs";
 import { RootProvider } from "fumadocs-ui/provider/next";
 import { source } from "../../lib/source";
