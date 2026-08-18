@@ -13,10 +13,11 @@ Before touching anything, ask the user:
 
 - What do they want to monitor? (X accounts or searches, public Telegram
   announcement channels, web pages/RSS feeds, or SearXNG-backed web queries)
-- Where will Argus run? It needs a fresh VPS: Ubuntu 22.04/24.04 or
-  Debian 12/13, AMD64 or ARM64, sudo shell access, outbound HTTPS, and at
-  least 5 GiB free disk. It must NOT run on their workstation or an existing
-  Argus host.
+- Where will Argus run? Testing or just trying it out on their own machine
+  is fine. For production, use a VPS or deployment service: Ubuntu
+  22.04/24.04 or Debian 12/13, AMD64 or ARM64, sudo shell access, outbound
+  HTTPS, and at least 5 GiB free disk. Never install onto a host already
+  running Argus.
 - Simple or separated deployment? SQLite suits a one-process deployment;
   PostgreSQL suits separated runtime roles.
 
