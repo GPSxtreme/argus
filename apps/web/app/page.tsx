@@ -1,7 +1,6 @@
 import { CopyButton } from "../components/copy-button";
-import { DataTrinity } from "../components/data-trinity";
+import { FlowDiagram } from "../components/flow-diagram";
 import { LiveLog } from "../components/live-log";
-import { Pipeline } from "../components/pipeline";
 import { ThemeToggle } from "../components/theme-toggle";
 import { stableReleaseTag, stableReleaseUrl } from "../lib/release";
 
@@ -51,8 +50,7 @@ export default function Home() {
         </div>
       </section>
 
-      <DataTrinity />
-      <Pipeline />
+      <FlowDiagram />
 
       <section className="agent-callout">
         <p className="eyebrow">For coding agents</p>
