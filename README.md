@@ -1,4 +1,14 @@
-# Argus
+<div align="center">
+  <img src=".github/assets/logo.svg" width="88" alt="Argus logo" />
+  <h1>Argus</h1>
+  <p><strong>Know what changed. Keep the proof.</strong></p>
+  <p>
+    <a href="https://argus.gpsxtre.me">Website</a> ·
+    <a href="https://argus.gpsxtre.me/docs">Docs</a> ·
+    <a href="https://argus.gpsxtre.me/skill">Agent Skill</a> ·
+    <a href="https://argus.gpsxtre.me/llms.txt">llms.txt</a>
+  </p>
+</div>
 
 Argus is a self-hosted data layer for AI agents. It collects from X, public
 Telegram announcement channels, and the Web; stores canonical revisioned
