@@ -6,6 +6,7 @@ import { ThemeToggle } from "../components/theme-toggle";
 import { stableReleaseTag, stableReleaseUrl } from "../lib/release";
 
 const installCommand = "curl -fsSL https://argus.gpsxtre.me/install.sh | sh";
+const agentPrompt = "Read https://argus.gpsxtre.me/agent.md and walk me through setting up Argus.";
 
 export default function Home() {
   return (
@@ -34,22 +35,40 @@ export default function Home() {
         <LiveLog />
       </section>
 
-      <section className="install-box term" aria-label="Install Argus">
-        <div className="term-bar">
-          <span className="term-dot" /><span className="term-dot" /><span className="term-dot" />
-          <span>install</span>
-        </div>
-        <div className="term-body">
-          <div className="install-line">
-            <code><span className="t-accent">$</span> {installCommand}</code>
-            <CopyButton text={installCommand} />
+      <div className="cta-row">
+        <section className="install-box term" aria-label="Install Argus">
+          <div className="term-bar">
+            <span className="term-dot" /><span className="term-dot" /><span className="term-dot" />
+            <span>install yourself</span>
           </div>
-          <code><span className="t-accent">$</span> argus onboard</code>
-          <p className="install-note">
-            The installer downloads the signed release from the public repository and verifies the manifest signature before touching your system.
-          </p>
-        </div>
-      </section>
+          <div className="term-body">
+            <div className="install-line">
+              <code><span className="t-accent">$</span> {installCommand}</code>
+              <CopyButton text={installCommand} />
+            </div>
+            <code><span className="t-accent">$</span> argus onboard</code>
+            <p className="install-note">
+              The installer downloads the signed release from the public repository and verifies the manifest signature before touching your system.
+            </p>
+          </div>
+        </section>
+
+        <section className="agent-cta term" aria-label="Set up with your AI agent">
+          <div className="term-bar">
+            <span className="term-dot" /><span className="term-dot" /><span className="term-dot" />
+            <span>or let your agent do it</span>
+          </div>
+          <div className="term-body">
+            <div className="install-line">
+              <code className="t-accent">{agentPrompt}</code>
+              <CopyButton text={agentPrompt} />
+            </div>
+            <p className="install-note">
+              Copy this into Claude Code, Cursor, or any coding agent. It walks your agent through what Argus is, what you want to watch, and a guided install.
+            </p>
+          </div>
+        </section>
+      </div>
 
       <FlowDiagram />
 

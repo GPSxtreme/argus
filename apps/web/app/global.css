@@ -93,7 +93,8 @@ a { color: inherit; }
 .hero-actions { display: flex; flex-wrap: wrap; gap: .75rem; margin: 2rem 0; }
 .button { border: 1px solid var(--line); border-radius: .25rem; padding: .7rem 1rem; background: transparent; color: var(--ink); font: inherit; text-decoration: none; }
 .primary { border-color: var(--accent); background: var(--accent); color: var(--accent-ink); font-weight: 700; }
-.install-box { max-width: 760px; margin-top: .5rem; }
+.cta-row { display: grid; grid-template-columns: 1.15fr 1fr; gap: 1rem; align-items: stretch; margin-top: .5rem; }
+.agent-cta { border-color: color-mix(in srgb, var(--accent) 35%, var(--line)); box-shadow: 0 0 24px var(--glow); }
 .install-line { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; }
 .install-box code { overflow-wrap: anywhere; color: var(--ink); }
 .copy-button { border: 0; background: none; color: var(--faint); font: inherit; font-size: .78rem; cursor: pointer; white-space: nowrap; }
@@ -158,7 +159,7 @@ footer { margin-top: 2rem; border-top: 1px solid var(--line); color: var(--muted
 @media (max-width: 860px) {
   .landing { width: min(100% - 2rem, 1120px); }
   .hero { padding: 3.5rem 0 3rem; }
-  .hero-split, .query-theater { grid-template-columns: 1fr; gap: 1.5rem; }
+  .hero-split, .query-theater, .cta-row { grid-template-columns: 1fr; gap: 1.5rem; }
   .flow { grid-template-columns: 1fr; gap: 1rem; }
   .flow-wires { display: none; }
   .flow-core { text-align: left; }
