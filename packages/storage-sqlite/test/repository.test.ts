@@ -2,14 +2,14 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { RecordEnvelope } from "@argus/contracts";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
-import type { RecordEnvelope } from "@argus/contracts";
+import { openSqlite } from "../src/db.js";
 import {
   createSqliteRepository,
   SqliteRepository,
 } from "../src/index.js";
-import { openSqlite } from "../src/db.js";
 
 const repositories: SqliteRepository[] = [];
 const temporaryDirectories: string[] = [];
@@ -311,6 +311,44 @@ describe("SQLite repository", () => {
     ).resolves.toBe(true);
     const retry = (await repo.claimJobs("worker-b", 1, 30_000))[0];
     expect(retry?.attempt).toBe(1);
+  });
+
+  it("clears a retry error when the job later completes", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "argus-sqlite-job-"));
+    temporaryDirectories.push(directory);
+    const filename = join(directory, "argus.db");
+    const repo = await createSqliteRepository({ filename });
+    repositories.push(repo);
+    const id = randomUUID();
+    await repo.enqueueJob({
+      id,
+      targetId: "target-1",
+      source: "web",
+      status: "queued",
+      attempt: 0,
+      runAt: "2026-07-31T00:00:00.000Z",
+    });
+    const first = (await repo.claimJobs("worker-a", 1, 30_000))[0];
+    if (!first?.leaseToken) throw new Error("Expected a fenced lease");
+    await repo.failJob(
+      id,
+      "worker-a",
+      first.leaseToken,
+      "temporary outage",
+      "2026-07-31T00:00:00.000Z",
+    );
+    const retry = (await repo.claimJobs("worker-b", 1, 30_000))[0];
+    if (!retry?.leaseToken) throw new Error("Expected a retry lease");
+    await repo.completeJob(id, "worker-b", retry.leaseToken);
+
+    const observer = new Database(filename, { readonly: true });
+    try {
+      expect(
+        observer.prepare("SELECT status,error FROM jobs WHERE id=?").get(id),
+      ).toEqual({ status: "complete", error: null });
+    } finally {
+      observer.close();
+    }
   });
 
   it("does not reclaim an expired job after its retry budget is exhausted", async () => {

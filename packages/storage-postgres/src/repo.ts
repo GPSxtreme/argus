@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { Pool, type PoolClient } from "pg";
 import type {
   AppliedConfig,
   CreateDiagnosticWatchInput,
@@ -9,8 +8,8 @@ import type {
   IngestionCommitResult,
   Job,
   Page,
-  QueryRecordsInput,
   QueryArtifactsInput,
+  QueryRecordsInput,
   RecordEnvelope,
   RecordRevision,
   StorageRepository,
@@ -20,6 +19,7 @@ import {
   encodeRecordsCursor,
   escapeSubstringPattern,
 } from "@argus/contracts";
+import { Pool, type PoolClient } from "pg";
 import { POSTGRES_SCHEMA } from "./schema.js";
 
 type Row = Record<string, unknown>;
@@ -392,8 +392,8 @@ export class PostgresRepository implements StorageRepository {
     leaseToken: string,
   ): Promise<boolean> {
     const result = await this.pool.query(
-      `UPDATE jobs SET status='complete',lease_owner=NULL,lease_token=NULL,
-       lease_expires_at=NULL
+      `UPDATE jobs SET status='complete',error=NULL,lease_owner=NULL,
+       lease_token=NULL,lease_expires_at=NULL
        WHERE id=$1 AND status='running' AND lease_owner=$2 AND lease_token=$3`,
       [id, owner, leaseToken],
     );

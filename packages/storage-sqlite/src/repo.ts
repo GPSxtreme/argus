@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import type Database from "better-sqlite3";
 import type {
   AppliedConfig,
   CreateDiagnosticWatchInput,
@@ -9,8 +8,8 @@ import type {
   IngestionCommitResult,
   Job,
   Page,
-  QueryRecordsInput,
   QueryArtifactsInput,
+  QueryRecordsInput,
   RecordEnvelope,
   RecordRevision,
   StorageRepository,
@@ -20,6 +19,7 @@ import {
   encodeRecordsCursor,
   escapeSubstringPattern,
 } from "@argus/contracts";
+import type Database from "better-sqlite3";
 
 type RecordRow = {
   id: string;
@@ -366,8 +366,8 @@ export class SqliteRepository implements StorageRepository {
   ): Promise<boolean> {
     return this.database
       .prepare(
-        `UPDATE jobs SET status='complete',lease_owner=NULL,lease_token=NULL,
-         lease_expires_at=NULL
+        `UPDATE jobs SET status='complete',error=NULL,lease_owner=NULL,
+         lease_token=NULL,lease_expires_at=NULL
          WHERE id=? AND status='running' AND lease_owner=? AND lease_token=?`,
       )
       .run(id, owner, leaseToken).changes === 1;

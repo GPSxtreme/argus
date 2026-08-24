@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
+import type { RecordEnvelope } from "@argus/contracts";
 import {
   PostgreSqlContainer,
   type StartedPostgreSqlContainer,
 } from "@testcontainers/postgresql";
-import type { RecordEnvelope } from "@argus/contracts";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -216,6 +216,42 @@ describe.skipIf(
       ),
     ).resolves.toBe(true);
     expect((await repo.claimJobs("worker-c", 1, 30_000))[0]?.attempt).toBe(2);
+  });
+
+  it("clears a retry error when the job later completes", async () => {
+    const id = randomUUID();
+    await repo.enqueueJob({
+      id,
+      targetId: randomUUID(),
+      source: "web",
+      status: "queued",
+      attempt: 0,
+      runAt: "2026-07-31T00:00:00.000Z",
+    });
+    const first = (await repo.claimJobs("worker-a", 1, 30_000))[0];
+    if (!first?.leaseToken) throw new Error("Expected a fenced lease");
+    await repo.failJob(
+      id,
+      "worker-a",
+      first.leaseToken,
+      "temporary outage",
+      "2026-07-31T00:00:00.000Z",
+    );
+    const retry = (await repo.claimJobs("worker-b", 1, 30_000))[0];
+    if (!retry?.leaseToken) throw new Error("Expected a retry lease");
+    await repo.completeJob(id, "worker-b", retry.leaseToken);
+
+    const client = new Pool({ connectionString: testConnectionString });
+    try {
+      const result = await client.query(
+        "SELECT status,error FROM jobs WHERE id=$1",
+        [id],
+      );
+      expect(result.rows).toEqual([{ status: "complete", error: null }]);
+    } finally {
+      await client.query("DELETE FROM jobs WHERE id=$1", [id]);
+      await client.end();
+    }
   });
 
   it("does not reclaim an expired job after its retry budget is exhausted", async () => {

@@ -1,18 +1,24 @@
 import { hostname } from "node:os";
-import { serve, type ServerType } from "@hono/node-server";
-import { loadConfig, reconcileConfig, type ArgusConfig } from "@argus/config";
+import { type ArgusConfig, loadConfig, reconcileConfig } from "@argus/config";
 import type { StorageRepository } from "@argus/contracts";
 import { backoffDelay, enqueueDueTargets } from "@argus/scheduler";
 import { SAFE_HTTP_MAX_TIMEOUT_MS } from "@argus/source-web";
-import pino from "pino";
+import { type ServerType, serve } from "@hono/node-server";
 import { Cron } from "croner";
+import pino from "pino";
 import { createApp } from "./app.js";
 import { runSummaryProcessor } from "./processor.js";
 import { openRepository, type RepositoryHandle } from "./repository.js";
-import { createAdapterFactory, findDiagnosticTarget, findTarget, runTarget, type AdapterFactory } from "./worker.js";
+import { type AdapterFactory, createAdapterFactory, findDiagnosticTarget, findTarget, runTarget } from "./worker.js";
 
 const logger = pino({ name: "argus" });
 export const JOB_LEASE_MS = SAFE_HTTP_MAX_TIMEOUT_MS * 3;
+
+interface JobLogger {
+  info(bindings: Record<string, unknown>, message: string): void;
+  warn(bindings: Record<string, unknown>, message: string): void;
+  error(bindings: Record<string, unknown>, message: string): void;
+}
 
 const isLoopbackHost = (host: string): boolean =>
   host === "127.0.0.1" ||
@@ -67,12 +73,18 @@ export interface ProcessNextJobDependencies {
   runTarget?: typeof runTarget;
   adapterFactory?: AdapterFactory;
   workerId?: string;
+  logger?: JobLogger;
 }
 
 export const processNextJob = async (
   config: ArgusConfig,
   repository: StorageRepository,
-  { runTarget: execute = runTarget, adapterFactory, workerId = `${hostname()}:${process.pid}` }: ProcessNextJobDependencies = {},
+  {
+    runTarget: execute = runTarget,
+    adapterFactory,
+    workerId = `${hostname()}:${process.pid}`,
+    logger: jobLogger = logger,
+  }: ProcessNextJobDependencies = {},
 ): Promise<{ status: "idle" | "complete" | "failed" | "cancelled" }> => {
   const adapters = adapterFactory ?? createAdapterFactory(config);
   const job = (await repository.claimJobs(workerId, 1, JOB_LEASE_MS))[0];
@@ -116,7 +128,7 @@ export const processNextJob = async (
     if (!isDiagnostic || result.diagnosticCommitted === undefined) {
       await repository.completeJob(job.id, workerId, job.leaseToken);
     }
-    logger.info(
+    jobLogger.info(
       { jobId: job.id, targetId: job.targetId, ...result },
       "job complete",
     );
@@ -140,14 +152,40 @@ export const processNextJob = async (
               }),
           ).toISOString()
         : undefined;
-    await repository.failJob(
+    const failureSettled = await repository.failJob(
       job.id,
       workerId,
       job.leaseToken,
       message,
       retryAt,
     );
-    logger.error({ jobId: job.id, error: message }, "job failed");
+    if (!failureSettled) {
+      jobLogger.warn(
+        {
+          jobId: job.id,
+          targetId: job.targetId,
+          source: job.source,
+          attempt: job.attempt + 1,
+          error: message,
+        },
+        "job failure settlement lost lease",
+      );
+      return { status: "failed" };
+    }
+    const logContext = {
+      jobId: job.id,
+      targetId: job.targetId,
+      source: job.source,
+      attempt: job.attempt + 1,
+      maxAttempts: 6,
+      ...(retryAt ? { retryAt } : {}),
+      error: message,
+    };
+    if (retryAt) {
+      jobLogger.warn(logContext, "job retry scheduled");
+    } else {
+      jobLogger.error(logContext, "job failed permanently");
+    }
     return { status: "failed" };
   }
 };
