@@ -745,6 +745,7 @@ export const createProgram = (dependencies: CliDependencies): Command => {
           throw new DeploymentError(
             "LOG_TAIL_INVALID",
             "Log tail must be a positive integer no greater than 10000.",
+            { recovery: "Run 'argus logs --tail 200'." },
           );
         }
         const tail = Number(options.tail);
@@ -752,6 +753,7 @@ export const createProgram = (dependencies: CliDependencies): Command => {
           throw new DeploymentError(
             "LOG_TAIL_INVALID",
             "Log tail must be a positive integer no greater than 10000.",
+            { recovery: "Run 'argus logs --tail 200'." },
           );
         }
         const logs = await dependencies.deployment.logs(service, {
@@ -789,6 +791,7 @@ export const createProgram = (dependencies: CliDependencies): Command => {
         throw new DeploymentError(
           "REPAIR_SERVICE_INVALID",
           "Repair supports argus, postgres, or searxng only.",
+          { recovery: "Run 'argus repair argus --dry-run'." },
         );
       }
       const plan = await dependencies.deployment.inspectRepair(service);
@@ -1269,6 +1272,7 @@ const createDeploymentAdapter = (
         throw new DeploymentError(
           "LOG_SERVICE_INVALID",
           "Logs supports argus, postgres, or searxng only.",
+          { recovery: "Run 'argus logs --tail 200'." },
         );
       }
       const result = await executor.run(

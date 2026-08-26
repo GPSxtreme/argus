@@ -56,11 +56,16 @@ ARGUS_INSTALL_DOCKER=1 sh /tmp/argus-install.sh
 
 ## Onboard one controlled Web watch
 
-Start interactive onboarding:
+Open Argus:
 
 ```bash
-argus onboard
+argus
 ```
+
+Choose **Set up Argus**. The home menu is the recommended way to use Argus
+from a terminal; it also gives you status, readable logs, configuration,
+diagnostics, updates, service controls, and secrets without memorizing
+commands. `argus onboard` starts the same setup directly.
 
 Choose **SQLite** for this single-host start, accept port `8788`, select **Web**,
 and provide a watch ID such as `argus-homepage` with this controlled URL:
@@ -82,13 +87,17 @@ the owner-only instance secrets file.
 
 ## Verify
 
-Check the deployment and diagnostics. Each JSON response uses the stable
-versioned CLI envelope; a healthy result has `ok: true`.
+Check the deployment and diagnostics in the human-readable view:
 
 ```bash
-argus status --json
-argus doctor --json
+argus status
+argus doctor
+argus logs --tail 50
 ```
+
+For scripts and AI agents, add `--json`. That returns the stable versioned CLI
+envelope; a healthy result has `ok: true`. Human logs are compact by default;
+`argus logs --raw` shows the exact bounded service output.
 
 The scheduler evaluates enabled watches every 30 seconds and workers poll for
 queued jobs every 5 seconds, so allow the configured five-minute schedule to
@@ -113,7 +122,7 @@ unset ARGUS_API_TOKEN
 
 The response contains `items` with each source URL, canonical record identity,
 content hash, and ingestion timestamp. An empty result means the scheduled or
-immediate job has not completed yet; inspect `argus doctor --json` before
+immediate job has not completed yet; inspect `argus doctor` before
 changing the host.
 
 ## Next step

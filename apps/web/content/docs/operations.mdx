@@ -5,11 +5,14 @@ description: Inspect, apply, verify, back up, update, and recover a managed Argu
 
 Use the CLI as the control plane for a managed `/opt/argus` VPS. It inspects before every mutation, applies the inspected plan, then verifies the result. Do not edit `compose.yaml`, `state.json`, `release-context.json`, managed SearXNG settings, or update state by hand.
 
+Run `argus` in a terminal for the guided menu. The direct commands below are
+useful when you know the operation already or are writing automation.
+
 ## Safety flags and output
 
 `--dry-run` is available on mutating commands and prints the plan without changing the instance. `--yes` accepts the current inspected plan without an interactive confirmation. In non-interactive or `--json` use, a mutation without `--yes` fails with `CONFIRMATION_REQUIRED`; inspect with `--dry-run` first.
 
-`--json` emits the versioned command boundary: successful responses contain `contractVersion`, `ok`, and `data`; failures contain `contractVersion`, `ok`, and an `error` with a stable code, message, and any recovery guidance. Human output renders the same information as a plan or report. `status`, `logs`, and `doctor` inspect only and do not accept `--dry-run` or `--yes`.
+`--json` emits the versioned command boundary for scripts and agents: successful responses contain `contractVersion`, `ok`, and `data`; failures contain `contractVersion`, `ok`, and an `error` with a stable code, message, and any recovery guidance. Without it, output is formatted for people. `status`, `logs`, and `doctor` inspect only and do not accept `--dry-run` or `--yes`.
 
 ## Lifecycle
 
@@ -27,13 +30,13 @@ argus restart --dry-run --json
 argus restart --yes --json
 
 # Non-mutating state and bounded logs.
-argus status --json
-argus logs --tail 200 --json
-argus logs argus --tail 200 --json
-argus doctor --json
+argus status
+argus logs --tail 200
+argus logs argus --tail 200
+argus doctor
 ```
 
-`status --json` returns `{ state: "running" | "degraded", services: { ... } }`. `state` is `running` only when every selected service is running and not unhealthy; otherwise it is `degraded`. Each service value is Docker health when present, otherwise Docker state. The human summary uses the same public state and service values. `logs` accepts only `argus`, `postgres`, or `searxng`; its tail must be a positive integer no larger than 10,000 and is time-bounded. An invalid tail is `LOG_TAIL_INVALID`; an unsupported service is `LOG_SERVICE_INVALID`.
+`status --json` returns `{ state: "running" | "degraded", services: { ... } }`. `state` is `running` only when every selected service is running and not unhealthy; otherwise it is `degraded`. Each service value is Docker health when present, otherwise Docker state. The human summary uses the same public state and service values. Human `logs` removes container prefixes and noisy runtime metadata; use `logs --raw` for exact bounded Docker Compose output. `logs` accepts only `argus`, `postgres`, or `searxng`; its tail must be a positive integer no larger than 10,000 and is time-bounded. An invalid tail is `LOG_TAIL_INVALID`; an unsupported service is `LOG_SERVICE_INVALID`.
 
 `doctor` runs independent bounded checks for Docker, the authenticated Argus API, selected storage, SearXNG, FxEmbed, and enabled source smoke targets. A check is `healthy`, `unhealthy`, or `skipped`; the complete report is healthy only when no check is unhealthy. It supplies an error code, bounded log command, and recovery text when available. Source smoke checks create an isolated temporary diagnostic watch, poll it within a deadline, then remove it; they do not use or alter normal watch records.
 
@@ -42,13 +45,13 @@ argus doctor --json
 Validate an intended YAML document before asking the live service to inspect, apply, and verify it. Applying an installed configuration requires the authenticated local management integration, and the service rejects a stale plan with `CONFIG_SERVICE_PLAN_STALE` or a failed verification with `CONFIG_APPLY_VERIFY_FAILED`.
 
 ```bash
-argus config validate /opt/argus/argus.yaml --json
-argus config show /opt/argus/argus.yaml --json
-argus config apply --dry-run --json
-argus config apply --yes --json
+argus config validate /opt/argus/argus.yaml
+argus config show /opt/argus/argus.yaml
+argus config apply --dry-run
+argus config apply
 ```
 
-Without a path, `config apply` uses `/opt/argus/argus.yaml`; pass an explicit path when inspecting another file. `config show` structurally redacts API tokens, intelligence keys, and URL credentials. Configuration uses complete `${NAME}` references, while values live in the owner-only secrets file. Set one secret through a hidden prompt; the value is never a command argument:
+Without a path, `config apply` uses `/opt/argus/argus.yaml`; pass an explicit path when inspecting another file. Human `config show` prints redacted YAML; `--json` returns the structured object. It structurally redacts API tokens, intelligence keys, and URL credentials in both modes. Configuration uses complete `${NAME}` references, while values live in the owner-only secrets file. Set one secret through a hidden prompt; the value is never a command argument:
 
 ```bash
 argus secrets set ARGUS_API_TOKEN --dry-run --json

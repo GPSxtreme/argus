@@ -3,10 +3,11 @@ title: Configuration
 description: Define validated Argus storage, sources, watches, intelligence, and API access.
 ---
 
-Argus reads one strict, versioned YAML document. Unknown fields are rejected. Put secret values in the instance secrets environment and reference them as `${NAME}`; Argus resolves an entire string only when it has that form, and fails if the named variable is missing. `argus config show` redacts API keys, tokens, and credentials in configured URLs.
+Argus reads one strict, versioned YAML document. Unknown fields are rejected. Put secret values in the instance secrets environment and reference them as `${NAME}`; Argus resolves an entire string only when it has that form, and fails if the named variable is missing. `argus config show` prints readable YAML and redacts API keys, tokens, and credentials in configured URLs. Add `--json` when a script or agent needs the structured object.
 
 ```bash
 argus config validate /opt/argus/argus.yaml
+argus config show /opt/argus/argus.yaml
 argus config apply /opt/argus/argus.yaml
 argus config schema --json
 ```

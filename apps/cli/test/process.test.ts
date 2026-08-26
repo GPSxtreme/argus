@@ -59,6 +59,38 @@ const runProcess = async (
   });
 
 describe("direct CLI process contracts", () => {
+  it("shows help instead of failing when bare Argus has no TTY", async () => {
+    const result = await runProcess([]);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain("Usage: argus [options] [command]");
+    expect(result.stdout).toContain("Commands:");
+  });
+
+  it("returns bare help through the JSON contract", async () => {
+    const result = await runProcess(["--json"]);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      contractVersion: 1,
+      ok: true,
+      data: { help: expect.stringContaining("Usage: argus") },
+    });
+  });
+
+  it("renders usage errors as actionable human guidance", async () => {
+    const result = await runProcess(["logs", "--tail", "nope"]);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain(
+      "Error: Log tail must be a positive integer no greater than 10000.",
+    );
+    expect(result.stderr).toContain("Code: LOG_TAIL_INVALID");
+  });
+
   it("renders injected build version in human and JSON modes", async () => {
     const human = await runProcess(["--version"], {
       environment: { ARGUS_VERSION: "9.8.7-test" },
