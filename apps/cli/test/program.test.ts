@@ -123,7 +123,7 @@ describe("CLI JSON contract", () => {
       },
     });
     harness.dependencies.prompt.select = async ({ message, options }) => {
-      expect(message).toBe("What would you like to do?");
+      expect(message).toBe("What do you want to do?");
       expect(options.map((option) => option.value)).toContain("status");
       return "status";
     };
@@ -318,6 +318,43 @@ describe("CLI JSON contract", () => {
     expect(harness.output().stdout).not.toContain("secret-value");
     expect(JSON.parse(harness.output().stdout).data.logs).toBe(
       "before [REDACTED] after",
+    );
+  });
+
+  it("renders readable logs by default and preserves exact output with --raw", async () => {
+    const raw =
+      'argus-1 | {"level":30,"time":1787743134312,"targetId":"news:web:query:movies","inserted":2,"msg":"job complete"}';
+    const readable = createHarness({
+      async logs() {
+        return raw;
+      },
+    });
+    await run(["logs"], readable.dependencies);
+    expect(readable.output().stdout).toContain(
+      "INFO  job complete  source=web",
+    );
+    expect(readable.output().stdout).not.toContain('"level":30');
+
+    const exact = createHarness({
+      async logs() {
+        return raw;
+      },
+    });
+    await run(["logs", "--raw"], exact.dependencies);
+    expect(exact.output().stdout).toBe(`${raw}\n`);
+  });
+
+  it("shows human configuration as YAML", async () => {
+    const harness = createHarness();
+    harness.dependencies.config.show = async () => ({
+      storage: { adapter: "sqlite" },
+      api: { token: "[REDACTED]" },
+    });
+
+    await run(["config", "show"], harness.dependencies);
+
+    expect(harness.output().stdout).toBe(
+      'storage:\n  adapter: sqlite\napi:\n  token: "[REDACTED]"\n',
     );
   });
 
