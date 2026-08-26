@@ -46,6 +46,13 @@ import { parse } from "yaml";
 import { z } from "zod";
 import type { ProductionUpdateIntegration } from "./integrations.js";
 import {
+  renderHumanConfig,
+  renderHumanDoctor,
+  renderHumanLogs,
+  renderHumanPlan,
+  renderHumanStatus,
+} from "./human.js";
+import {
   CliExitError,
   type CliIO,
   redactValue,
@@ -369,35 +376,6 @@ const mutationOptions = (command: Command): Command =>
     "apply the inspected plan without an interactive confirmation",
   ).option("--dry-run", "inspect and print the plan without applying changes");
 
-const renderHumanPlan = (plan: unknown): string =>
-  `Plan:\n${JSON.stringify(plan, null, 2)}`;
-
-const renderHumanStatus = (status: unknown): string => {
-  if (!status || typeof status !== "object") return "Argus status unavailable.";
-  const value = status as {
-    state?: unknown;
-    services?: unknown;
-  };
-  const lines = [`Argus: ${String(value.state ?? "unknown")}`];
-  if (value.services && typeof value.services === "object") {
-    for (const [service, state] of Object.entries(value.services)) {
-      lines.push(`${service}: ${String(state)}`);
-    }
-  }
-  return lines.join("\n");
-};
-
-const renderHumanDoctor = (report: DiagnosticReport): string =>
-  [
-    `Argus diagnostics: ${report.healthy ? "healthy" : "unhealthy"}`,
-    ...report.checks.map(
-      (check) =>
-        `${check.component}: ${check.status} — ${check.message}${
-          check.recovery ? `\n  recovery: ${check.recovery}` : ""
-        }`,
-    ),
-  ].join("\n");
-
 export const onboardingJsonSchema = (): Record<string, unknown> => {
   const base = z.toJSONSchema(onboardingAnswersSchema) as Record<
     string,
@@ -556,7 +534,7 @@ const registerConfig = (
       const shown = await dependencies.config.show(path);
       return {
         data: shown,
-        human: JSON.stringify(shown, null, 2),
+        human: renderHumanConfig(shown),
       };
     });
   });
@@ -754,11 +732,12 @@ export const createProgram = (dependencies: CliDependencies): Command => {
       .command("logs")
       .argument("[service]", "argus, postgres, or searxng")
       .option("--tail <lines>", "maximum log lines", "200")
+      .option("--raw", "show the exact bounded service output")
       .description("Read bounded service logs"),
   ).action(
     async (
       service: string | undefined,
-      options: CommonOptions & { tail: string },
+      options: CommonOptions & { tail: string; raw?: boolean },
     ) => {
       await execute(dependencies, options, async () => {
         if (!/^[1-9]\d*$/u.test(options.tail)) {
@@ -778,7 +757,10 @@ export const createProgram = (dependencies: CliDependencies): Command => {
           tail,
           timeoutMs: 30_000,
         });
-        return { data: { service: service ?? "all", logs }, human: logs };
+        return {
+          data: { service: service ?? "all", logs },
+          human: options.raw ? logs : renderHumanLogs(logs),
+        };
       });
     },
   );
@@ -1253,7 +1235,7 @@ const createDeploymentAdapter = (
         services: Object.fromEntries(
           status.services.map((service) => [
             service.name,
-            service.health ?? service.state,
+            service.health?.trim() || service.state?.trim() || "unknown",
           ]),
         ),
       };

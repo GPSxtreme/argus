@@ -353,7 +353,7 @@ describe("CLI JSON contract", () => {
     harness.dependencies.interactive = true;
     harness.dependencies.prompt.confirm = async () => {
       expect(harness.output().stdout).toContain("Plan:");
-      expect(harness.output().stdout).toContain('"action": "start"');
+      expect(harness.output().stdout).toContain("- start");
       return true;
     };
 
@@ -388,7 +388,7 @@ describe("CLI JSON contract", () => {
     await run(["doctor"], doctorHarness.dependencies);
     expect(doctorHarness.output().stdout).toContain("Argus is down.");
     expect(doctorHarness.output().stdout).toContain(
-      "recovery: Run argus repair argus.",
+      "Try: Run argus repair argus.",
     );
   });
 });
