@@ -131,11 +131,11 @@ export const writeFailure = (
     };
     io.stdout(`${JSON.stringify(envelope)}\n`);
   } else {
-    io.stderr(
-      `${serialized.code}: ${serialized.message}${
-        serialized.recovery ? `\n${serialized.recovery}` : ""
-      }\n`,
-    );
+    io.stderr(`${[
+      `Error: ${serialized.message}`,
+      ...(serialized.recovery ? [`Try: ${serialized.recovery}`] : []),
+      `Code: ${serialized.code}`,
+    ].join("\n")}\n`);
   }
   return new CliExitError(errorExitCode(error));
 };
