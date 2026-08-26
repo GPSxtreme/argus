@@ -22,28 +22,48 @@ const common = {
   },
 };
 const bootstrap = createNodeCliDependencies(common);
-const secrets = await bootstrap.secretValues();
-const installedConfig = await loadConfig(join(root, "argus.yaml"), {
-  ...process.env,
-  ...secrets,
-}).catch(() => undefined);
-const composition = createReleaseComposition({
-  root,
-  executor,
-  environment: process.env,
-  ...(secrets.ARGUS_API_TOKEN === undefined
-    ? {}
-    : { apiToken: secrets.ARGUS_API_TOKEN }),
-  ...(installedConfig === undefined ? {} : { apiPort: installedConfig.api.port }),
-});
-const dependencies = createNodeCliDependencies({
-  ...common,
-  ...composition,
-});
-const program = createProgram(dependencies);
+const argumentsList = process.argv.slice(2);
+const commandArguments = argumentsList.filter((value) => value !== "--json");
+const bareCommand = commandArguments.length === 0;
+const namespaceHelp =
+  commandArguments.length === 1 &&
+  (commandArguments[0] === "config" || commandArguments[0] === "secrets");
+const informationalCommand =
+  argumentsList.includes("--help") ||
+  argumentsList.includes("-h") ||
+  argumentsList.includes("--version") ||
+  argumentsList.includes("-V") ||
+  namespaceHelp ||
+  (bareCommand &&
+    (argumentsList.includes("--json") ||
+      process.stdin.isTTY !== true ||
+      process.stdout.isTTY !== true));
+let dependencies = bootstrap;
 
 try {
-  await program.parseAsync(process.argv);
+  if (!informationalCommand) {
+    const secrets = await bootstrap.secretValues();
+    const installedConfig = await loadConfig(join(root, "argus.yaml"), {
+      ...process.env,
+      ...secrets,
+    }).catch(() => undefined);
+    const composition = createReleaseComposition({
+      root,
+      executor,
+      environment: process.env,
+      ...(secrets.ARGUS_API_TOKEN === undefined
+        ? {}
+        : { apiToken: secrets.ARGUS_API_TOKEN }),
+      ...(installedConfig === undefined
+        ? {}
+        : { apiPort: installedConfig.api.port }),
+    });
+    dependencies = createNodeCliDependencies({
+      ...common,
+      ...composition,
+    });
+  }
+  await createProgram(dependencies).parseAsync(process.argv);
 } catch (error) {
   if (error instanceof CliExitError) {
     process.exitCode = error.exitCode;

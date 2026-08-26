@@ -11,15 +11,22 @@ const text = (value: unknown): string | undefined =>
     ? value.trim()
     : undefined;
 
+export const humanServiceStates = Symbol("argus.humanServiceStates");
+
 export const renderHumanStatus = (status: unknown): string => {
   const value = record(status);
   if (!value) return "Argus status unavailable.";
 
   const lines = [`Argus: ${text(value.state) ?? "unknown"}`];
   const services = record(value.services);
+  const serviceStates = record(
+    (value as Record<PropertyKey, unknown>)[humanServiceStates],
+  );
   if (services) {
     for (const [service, state] of Object.entries(services)) {
-      lines.push(`${service}: ${text(state) ?? "unknown"}`);
+      lines.push(
+        `${service}: ${text(state) ?? text(serviceStates?.[service]) ?? "unknown"}`,
+      );
     }
   }
   return lines.join("\n");
@@ -117,8 +124,9 @@ export const renderHumanConfig = (value: unknown): string =>
   stringify(value).trimEnd();
 
 export const renderHumanPlan = (plan: unknown): string => {
-  const value = record(plan);
-  if (!value) return "Plan unavailable.";
+  const container = record(plan);
+  if (!container) return "Plan unavailable.";
+  const value = record(container.plan) ?? container;
 
   const current = text(value.currentVersion);
   const target = text(value.targetVersion);

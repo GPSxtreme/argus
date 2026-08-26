@@ -5,6 +5,7 @@ import {
   renderHumanLogs,
   renderHumanPlan,
   renderHumanStatus,
+  humanServiceStates,
 } from "../src/human.js";
 
 describe("human CLI renderers", () => {
@@ -15,6 +16,21 @@ describe("human CLI renderers", () => {
         services: { argus: "healthy", searxng: "" },
       }),
     ).toBe("Argus: running\nargus: healthy\nsearxng: unknown");
+  });
+
+  it("falls back to the runtime state without changing enumerable JSON data", () => {
+    const status = {
+      state: "running",
+      services: { argus: "healthy", searxng: "" },
+    };
+    Object.defineProperty(status, humanServiceStates, {
+      value: { argus: "running", searxng: "running" },
+    });
+
+    expect(renderHumanStatus(status)).toContain("searxng: running");
+    expect(JSON.stringify(status)).toBe(
+      '{"state":"running","services":{"argus":"healthy","searxng":""}}',
+    );
   });
 
   it("turns Pino compose logs into readable event lines", () => {
@@ -121,10 +137,13 @@ describe("human CLI renderers", () => {
     expect(renderHumanPlan({ operations: [] })).toBe("Nothing to change.");
     expect(
       renderHumanPlan({
-        deployment: {
-          changes: [
-            { component: "argus", action: "create", summary: "Create Argus" },
-          ],
+        release: { manifest: "private" },
+        plan: {
+          deployment: {
+            changes: [
+              { component: "argus", action: "create", summary: "Create Argus" },
+            ],
+          },
         },
       }),
     ).toBe("Plan:\n  - Create Argus");

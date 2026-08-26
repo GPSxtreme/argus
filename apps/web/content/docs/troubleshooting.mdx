@@ -11,6 +11,16 @@ Run a `--dry-run` plan before every CLI mutation that supports it, then add
 CLI or doctor codes to retain when escalating. Use `argus logs --raw` only when
 the compact log view leaves out detail you need.
 
+```bash
+# Readable first look
+argus status
+argus logs argus --tail 200
+argus doctor
+
+# Readable example plan; this does not change the instance
+argus config apply /opt/argus/argus.yaml --dry-run
+```
+
 ### Installer failure
 
 **Inspect:** `ARGUS_INSTALL_INSPECT=1 sh /tmp/argus-install.sh` after downloading the installer with `curl -fsSLo /tmp/argus-install.sh https://argus.gpsxtre.me/install.sh`.

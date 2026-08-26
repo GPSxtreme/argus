@@ -339,6 +339,30 @@ argus_vps_onboard "$argus_vps_second"
 jq -e '.data.plan.deployment.changes == []' \
   "$argus_vps_second.json" >/dev/null
 
+argus_vps_menu_output=$argus_vps_work/menu-status.log
+ARGUS_VPS_MENU_OUTPUT=$argus_vps_menu_output expect <<'ARGUS_VPS_MENU_EXPECT'
+log_user 0
+log_file -noappend $env(ARGUS_VPS_MENU_OUTPUT)
+set timeout 60
+spawn sh -c {stty rows 40 columns 120; exec argus}
+expect "What do you want to do?"
+send "\r"
+expect "Argus: running"
+expect eof
+set result [wait]
+exit [lindex $result 3]
+ARGUS_VPS_MENU_EXPECT
+grep -F "Set up Argus" "$argus_vps_menu_output" >/dev/null
+grep -F "Manage secrets" "$argus_vps_menu_output" >/dev/null
+grep -F "Argus: running" "$argus_vps_menu_output" >/dev/null
+
+argus status > "$argus_vps_work/status.txt"
+grep -F "Argus: running" "$argus_vps_work/status.txt" >/dev/null
+argus config show > "$argus_vps_work/config.yaml"
+grep -F "version: 1" "$argus_vps_work/config.yaml" >/dev/null
+argus config validate > "$argus_vps_work/config-validate.txt"
+grep -F "Configuration is valid." "$argus_vps_work/config-validate.txt" >/dev/null
+
 argus_vps_parse_management_state /opt/argus/management.state
 [ "$argus_vps_management_version" = "$ARGUS_EXPECTED_VERSION" ] &&
   [ "$argus_vps_management_cli_image" = "$argus_vps_initial_cli_image" ] ||

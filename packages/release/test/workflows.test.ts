@@ -601,6 +601,10 @@ describe("GitHub workflow toolchain", () => {
     expect(harness).toContain('.data.healthy == true');
     expect(harness).not.toContain('--network argus_argus-private');
     expect(harness).toContain('argus status --json');
+    expect(harness).toContain('spawn sh -c {stty rows 40 columns 120; exec argus}');
+    expect(harness).toContain('expect "Argus: running"');
+    expect(harness).toContain('argus config show >');
+    expect(harness).toContain('argus config validate >');
     expect(harness).toContain('changes == []');
     expect(harness).toContain('controlled-web-page');
     expect(harness).toContain('8788');

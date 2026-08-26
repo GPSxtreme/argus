@@ -80,6 +80,24 @@ describe("direct CLI process contracts", () => {
     });
   });
 
+  it("shows bare help before touching unsafe instance secrets", async () => {
+    const installRoot = await mkdtemp(join(tmpdir(), "argus-help-root-"));
+    temporaryDirectories.push(installRoot);
+    await writeFile(join(installRoot, "secrets.env"), "ARGUS_API_TOKEN=secret\n", {
+      mode: 0o644,
+    });
+
+    const human = await runProcess([], { installRoot });
+    expect(human.exitCode).toBe(0);
+    expect(human.stderr).toBe("");
+    expect(human.stdout).toContain("Usage: argus");
+
+    const json = await runProcess(["--json"], { installRoot });
+    expect(json.exitCode).toBe(0);
+    expect(json.stderr).toBe("");
+    expect(JSON.parse(json.stdout).data.help).toContain("Usage: argus");
+  });
+
   it("renders usage errors as actionable human guidance", async () => {
     const result = await runProcess(["logs", "--tail", "nope"]);
 

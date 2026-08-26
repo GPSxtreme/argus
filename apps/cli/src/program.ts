@@ -51,6 +51,7 @@ import {
   renderHumanLogs,
   renderHumanPlan,
   renderHumanStatus,
+  humanServiceStates,
 } from "./human.js";
 import { selectMenuInvocation } from "./menu.js";
 import {
@@ -1265,7 +1266,7 @@ const createDeploymentAdapter = (
     },
     async status() {
       const status = await getDeploymentStatus(context);
-      return {
+      const result = {
         state: status.healthy ? "running" : "degraded",
         services: Object.fromEntries(
           status.services.map((service) => [
@@ -1274,6 +1275,12 @@ const createDeploymentAdapter = (
           ]),
         ),
       };
+      Object.defineProperty(result, humanServiceStates, {
+        value: Object.fromEntries(
+          status.services.map((service) => [service.name, service.state]),
+        ),
+      });
+      return result;
     },
     async logs(service, options) {
       if (
