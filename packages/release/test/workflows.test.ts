@@ -107,6 +107,79 @@ exec pnpm tsx ${shellQuote(join(repositoryRoot, "apps/cli/src/main.ts"))} onboar
   }
 };
 
+const runCliMenuExpect = (selection: "status" | "exit" | "cancel") => {
+  const directory = mkdtempSync(join(tmpdir(), "argus-cli-menu-"));
+  try {
+    const bin = join(directory, "bin");
+    mkdirSync(bin);
+    const digest = "a".repeat(64);
+    writeFileSync(
+      join(directory, "state.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        argusVersion: "0.1.0-test",
+        composeProject: "argus",
+        configHash: "fixture",
+        services: {
+          argus: {
+            image: `ghcr.io/gpsxtreme/argus@sha256:${digest}`,
+            healthy: true,
+          },
+        },
+        compose: {
+          version: "0.1.0-test",
+          apiPort: 8788,
+          storage: "sqlite",
+          searxng: false,
+          images: {
+            argus: `ghcr.io/gpsxtreme/argus@sha256:${digest}`,
+            postgres: `docker.io/library/postgres@sha256:${digest}`,
+            searxng: `docker.io/searxng/searxng@sha256:${digest}`,
+          },
+        },
+        updatedAt: "2026-08-26T00:00:00.000Z",
+      }),
+    );
+    writeFileSync(
+      join(bin, "docker"),
+      "#!/bin/sh\nprintf '%s\\n' '[{\"Service\":\"argus\",\"State\":\"running\",\"Health\":\"healthy\"}]'\n",
+      { mode: 0o755 },
+    );
+
+    const navigation =
+      selection === "status"
+        ? 'after 100\nsend "\\r"'
+        : selection === "exit"
+          ? 'for {set i 0} {$i < 7} {incr i} { send -- "\\033\\[B"; after 75 }\nsend "\\r"'
+          : 'after 100\nsend -- "\\003"';
+    const expectedExit = selection === "cancel" ? 130 : 0;
+    const expectProgram = `
+set timeout 20
+spawn -noecho sh -c {stty rows 40 columns 120; exec pnpm tsx apps/cli/src/main.ts}
+expect "What do you want to do?"
+${navigation}
+expect eof
+set status [wait]
+set code [lindex $status 3]
+if {$code != ${expectedExit}} { exit 1 }
+exit 0
+`;
+    return spawnSync("expect", [], {
+      cwd: repositoryRoot,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        ARGUS_INSTALL_ROOT: directory,
+        PATH: `${bin}:${process.env.PATH ?? ""}`,
+      },
+      input: expectProgram,
+      timeout: 25_000,
+    });
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+};
+
 const runFailingVpsOnboard = () => {
   const harness = readFileSync(
     repositoryFile("scripts/e2e/vps-smoke.sh"),
@@ -221,7 +294,47 @@ describe("GitHub workflow toolchain", () => {
 
     expect(workflow).toContain("sudo apt-get install -y expect");
     expect(workflow).toContain("ARGUS_REQUIRE_EXPECT_TESTS=1 pnpm test");
+
+    const releaseWorkflow = readFileSync(
+      repositoryFile(".github/workflows/release.yml"),
+      "utf8",
+    );
+    expect(releaseWorkflow).toContain("sudo apt-get install -y expect");
+    expect(releaseWorkflow).toContain("ARGUS_REQUIRE_EXPECT_TESTS=1 pnpm test");
   });
+
+  it.runIf(expectAvailable)(
+    "executes status from the real terminal menu",
+    () => {
+      const result = runCliMenuExpect("status");
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain("Set up Argus");
+      expect(result.stdout).toContain("Manage secrets");
+      expect(result.stdout).toContain("Argus: running");
+    },
+    30_000,
+  );
+
+  it.runIf(expectAvailable)(
+    "exits cleanly from the real terminal menu",
+    () => {
+      const result = runCliMenuExpect("exit");
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain("Goodbye.");
+    },
+    30_000,
+  );
+
+  it.runIf(expectAvailable)(
+    "cancels the real terminal menu without a stack trace",
+    () => {
+      const result = runCliMenuExpect("cancel");
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain("Argus was cancelled.");
+      expect(result.stdout).not.toContain("CliExitError");
+    },
+    30_000,
+  );
 
   it("enforces complete stable bundle changes on both pull requests and pushes", () => {
     const workflow = parse(

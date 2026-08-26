@@ -56,6 +56,9 @@ jobs:
           test "$(pnpm --version)" = "${PNPM_VERSION}"
           pnpm install --frozen-lockfile
 
+      - name: Install terminal test dependency
+        run: sudo apt-get install -y expect
+
       - name: Validate immutable release identity
         id: release
         shell: bash
@@ -102,7 +105,7 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
       - name: Test
-        run: pnpm test
+        run: ARGUS_REQUIRE_EXPECT_TESTS=1 pnpm test
       - name: Build
         run: pnpm build
 
