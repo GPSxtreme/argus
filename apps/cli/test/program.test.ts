@@ -114,6 +114,53 @@ const run = async (args: string[], dependencies: CliDependencies) => {
 };
 
 describe("CLI JSON contract", () => {
+  it("opens an actionable home menu for an interactive bare command", async () => {
+    let statusCalls = 0;
+    const harness = createHarness({
+      async status() {
+        statusCalls += 1;
+        return { state: "running", services: { argus: "healthy" } };
+      },
+    });
+    harness.dependencies.prompt.select = async ({ message, options }) => {
+      expect(message).toBe("What would you like to do?");
+      expect(options.map((option) => option.value)).toContain("status");
+      return "status";
+    };
+
+    await run([], harness.dependencies);
+
+    expect(statusCalls).toBe(1);
+    expect(harness.output().stdout).toContain("Argus: running");
+  });
+
+  it("shows help for a non-interactive bare command", async () => {
+    const harness = createHarness();
+    harness.dependencies.interactive = false;
+    harness.dependencies.prompt.select = async () => {
+      throw new Error("menu must not open without a TTY");
+    };
+
+    await run([], harness.dependencies);
+
+    expect(harness.output()).toMatchObject({ stderr: "" });
+    expect(harness.output().stdout).toContain("Usage: argus [options] [command]");
+    expect(harness.output().stdout).toContain("Commands:");
+  });
+
+  it("returns bare command help through the JSON contract", async () => {
+    const harness = createHarness();
+
+    await run(["--json"], harness.dependencies);
+
+    expect(harness.output().stderr).toBe("");
+    expect(JSON.parse(harness.output().stdout)).toMatchObject({
+      contractVersion: 1,
+      ok: true,
+      data: { help: expect.stringContaining("Usage: argus") },
+    });
+  });
+
   it("registers the complete lifecycle and management command surface", () => {
     const harness = createHarness();
     const names = createProgram(harness.dependencies).commands.map(

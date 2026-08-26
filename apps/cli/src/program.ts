@@ -611,6 +611,39 @@ const registerSecrets = (
   });
 };
 
+const selectHomeCommand = async (
+  prompt: PromptAdapter,
+): Promise<string[] | undefined> => {
+  const selection = await prompt.select({
+    message: "What would you like to do?",
+    options: [
+      { value: "onboard", label: "Set up Argus", hint: "guided setup" },
+      { value: "status", label: "Check status" },
+      { value: "logs", label: "View logs" },
+      { value: "config", label: "Manage configuration" },
+      { value: "doctor", label: "Run diagnostics" },
+      { value: "update", label: "Update Argus" },
+      { value: "services", label: "Start, stop, or restart services" },
+      { value: "secrets", label: "Manage secrets" },
+      { value: "exit", label: "Exit" },
+    ],
+    initialValue: "status",
+  });
+  if (selection === "exit") return undefined;
+  if (selection !== "services") return [selection];
+
+  const lifecycle = await prompt.select({
+    message: "Manage Argus services",
+    options: [
+      { value: "start", label: "Start services" },
+      { value: "stop", label: "Stop services" },
+      { value: "restart", label: "Restart services" },
+    ],
+    initialValue: "restart",
+  });
+  return [lifecycle];
+};
+
 export const createProgram = (dependencies: CliDependencies): Command => {
   let capturedOutput = "";
   const program = new Command()
@@ -874,6 +907,26 @@ export const createProgram = (dependencies: CliDependencies): Command => {
 
   registerConfig(program, dependencies);
   registerSecrets(program, dependencies);
+
+  program.action(async () => {
+    const help = program.helpInformation().trimEnd();
+    if (program.opts().json === true || dependencies.interactive !== true) {
+      writeSuccess(
+        dependencies.io,
+        program.opts().json === true,
+        { help },
+        help,
+      );
+      return;
+    }
+
+    const command = await selectHomeCommand(dependencies.prompt);
+    if (command === undefined) {
+      writeSuccess(dependencies.io, false, { exited: true }, "Goodbye.");
+      return;
+    }
+    await createProgram(dependencies).parseAsync(["node", "argus", ...command]);
+  });
 
   const commanderParseAsync = program.parseAsync.bind(program);
   program.parseAsync = async (argv, parseOptions) => {
