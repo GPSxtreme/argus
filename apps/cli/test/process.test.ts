@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import {
   access,
   chmod,
@@ -8,7 +9,6 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawn } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 
 const repositoryRoot = fileURLToPath(new URL("../../..", import.meta.url));
@@ -114,6 +114,18 @@ describe("direct CLI process contracts", () => {
       data: { help: expect.stringContaining("Usage:") },
     });
   });
+
+  it.each(["config", "secrets"])(
+    "renders %s subcommand help when invoked without a subcommand",
+    async (command) => {
+      const result = await runProcess([command]);
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain(`Usage: argus ${command} [options] [command]`);
+      expect(result.stdout).toContain("Commands:");
+    },
+  );
 
   it("redacts process-env, file, overlapping, and derived config secrets from a fresh cwd", async () => {
     const installRoot = await mkdtemp(join(tmpdir(), "argus-process-root-"));

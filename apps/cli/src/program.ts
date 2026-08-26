@@ -23,8 +23,8 @@ import {
   type CommandExecutor,
   createArgusDoctorApi,
   DeploymentError,
-  finalizeUpdate,
   type DiagnosticReport,
+  finalizeUpdate,
   getDeploymentStatus,
   inspectHost,
   loadDeploymentState,
@@ -480,6 +480,15 @@ const registerConfig = (
   const config = program
     .command("config")
     .description("Manage Argus configuration");
+  config.action(() => {
+    const help = config.helpInformation().trimEnd();
+    writeSuccess(
+      dependencies.io,
+      config.optsWithGlobals().json === true,
+      { help },
+      help,
+    );
+  });
 
   commonOptions(
     config
@@ -560,6 +569,15 @@ const registerSecrets = (
   const secrets = program
     .command("secrets")
     .description("Manage instance secrets without exposing values");
+  secrets.action(() => {
+    const help = secrets.helpInformation().trimEnd();
+    writeSuccess(
+      dependencies.io,
+      secrets.optsWithGlobals().json === true,
+      { help },
+      help,
+    );
+  });
   mutationOptions(
     secrets
       .command("set")
