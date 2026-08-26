@@ -159,6 +159,25 @@ describe("direct CLI process contracts", () => {
     },
   );
 
+  it.each(["config", "secrets"])(
+    "preserves the %s namespace JSON usage failure",
+    async (command) => {
+      const result = await runProcess([command, "--json"]);
+
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toBe("");
+      expect(JSON.parse(result.stdout)).toEqual({
+        contractVersion: 1,
+        ok: false,
+        error: {
+          code: "CLI_USAGE_ERROR",
+          message: "The command arguments are invalid.",
+          recovery: "Run 'argus --help' to inspect valid commands.",
+        },
+      });
+    },
+  );
+
   it("redacts process-env, file, overlapping, and derived config secrets from a fresh cwd", async () => {
     const installRoot = await mkdtemp(join(tmpdir(), "argus-process-root-"));
     const freshCwd = await mkdtemp(join(tmpdir(), "argus-process-cwd-"));

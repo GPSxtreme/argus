@@ -36,8 +36,8 @@ export interface PromptAdapter {
 const cancelled = (): never => {
   throw new DeploymentError(
     "PROMPT_CANCELLED",
-    "Argus was cancelled.",
-    { recovery: "Run the command again when ready." },
+    "Onboarding was cancelled.",
+    { recovery: "Run 'argus onboard' to continue when ready." },
   );
 };
 

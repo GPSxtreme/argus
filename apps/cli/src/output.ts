@@ -101,6 +101,9 @@ const stableError = (
 };
 
 const humanRecovery = (error: DeploymentErrorJSON): string | undefined => {
+  if (error.code === "PROMPT_CANCELLED") {
+    return "Run the command again when ready.";
+  }
   if (error.recovery) return error.recovery;
   switch (error.code) {
     case "LOG_TAIL_INVALID":
@@ -112,6 +115,9 @@ const humanRecovery = (error: DeploymentErrorJSON): string | undefined => {
       return undefined;
   }
 };
+
+const humanMessage = (error: DeploymentErrorJSON): string =>
+  error.code === "PROMPT_CANCELLED" ? "Argus was cancelled." : error.message;
 
 export const errorExitCode = (error: unknown): number => {
   if (
@@ -146,7 +152,7 @@ export const writeFailure = (
   } else {
     const recovery = humanRecovery(serialized);
     io.stderr(`${[
-      `Error: ${serialized.message}`,
+      `Error: ${humanMessage(serialized)}`,
       ...(recovery ? [`Try: ${recovery}`] : []),
       `Code: ${serialized.code}`,
     ].join("\n")}\n`);

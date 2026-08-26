@@ -460,6 +460,13 @@ const registerConfig = (
     .command("config")
     .description("Manage Argus configuration");
   config.action(() => {
+    if (config.optsWithGlobals().json === true) {
+      throw new DeploymentError(
+        "CLI_USAGE_ERROR",
+        "The command arguments are invalid.",
+        { recovery: "Run 'argus --help' to inspect valid commands." },
+      );
+    }
     const help = config.helpInformation().trimEnd();
     writeSuccess(
       dependencies.io,
@@ -549,6 +556,13 @@ const registerSecrets = (
     .command("secrets")
     .description("Manage instance secrets without exposing values");
   secrets.action(() => {
+    if (secrets.optsWithGlobals().json === true) {
+      throw new DeploymentError(
+        "CLI_USAGE_ERROR",
+        "The command arguments are invalid.",
+        { recovery: "Run 'argus --help' to inspect valid commands." },
+      );
+    }
     const help = secrets.helpInformation().trimEnd();
     writeSuccess(
       dependencies.io,
