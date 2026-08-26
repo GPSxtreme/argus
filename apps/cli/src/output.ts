@@ -100,6 +100,19 @@ const stableError = (
   };
 };
 
+const humanRecovery = (error: DeploymentErrorJSON): string | undefined => {
+  if (error.recovery) return error.recovery;
+  switch (error.code) {
+    case "LOG_TAIL_INVALID":
+    case "LOG_SERVICE_INVALID":
+      return "Run 'argus logs --tail 200'.";
+    case "REPAIR_SERVICE_INVALID":
+      return "Run 'argus repair argus --dry-run'.";
+    default:
+      return undefined;
+  }
+};
+
 export const errorExitCode = (error: unknown): number => {
   if (
     error instanceof DeploymentError &&
@@ -131,9 +144,10 @@ export const writeFailure = (
     };
     io.stdout(`${JSON.stringify(envelope)}\n`);
   } else {
+    const recovery = humanRecovery(serialized);
     io.stderr(`${[
       `Error: ${serialized.message}`,
-      ...(serialized.recovery ? [`Try: ${serialized.recovery}`] : []),
+      ...(recovery ? [`Try: ${recovery}`] : []),
       `Code: ${serialized.code}`,
     ].join("\n")}\n`);
   }

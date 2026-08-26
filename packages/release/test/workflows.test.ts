@@ -107,7 +107,9 @@ exec pnpm tsx ${shellQuote(join(repositoryRoot, "apps/cli/src/main.ts"))} onboar
   }
 };
 
-const runCliMenuExpect = (selection: "status" | "exit" | "cancel") => {
+const runCliMenuExpect = (
+  selection: "status" | "exit" | "cancel" | "eof",
+) => {
   const directory = mkdtempSync(join(tmpdir(), "argus-cli-menu-"));
   try {
     const bin = join(directory, "bin");
@@ -151,8 +153,10 @@ const runCliMenuExpect = (selection: "status" | "exit" | "cancel") => {
         ? 'after 100\nsend "\\r"'
         : selection === "exit"
           ? 'for {set i 0} {$i < 7} {incr i} { send -- "\\033\\[B"; after 75 }\nsend "\\r"'
-          : 'after 100\nsend -- "\\003"';
-    const expectedExit = selection === "cancel" ? 130 : 0;
+          : selection === "cancel"
+            ? 'after 100\nsend -- "\\003"'
+            : 'after 100\nsend -- "\\004"';
+    const expectedExit = selection === "cancel" || selection === "eof" ? 130 : 0;
     const expectProgram = `
 set timeout 20
 spawn -noecho sh -c {stty rows 40 columns 120; exec pnpm tsx apps/cli/src/main.ts}
@@ -332,6 +336,17 @@ describe("GitHub workflow toolchain", () => {
       expect(result.status, result.stderr).toBe(0);
       expect(result.stdout).toContain("Argus was cancelled.");
       expect(result.stdout).not.toContain("CliExitError");
+    },
+    30_000,
+  );
+
+  it.runIf(expectAvailable)(
+    "treats terminal EOF as a clean cancellation",
+    () => {
+      const result = runCliMenuExpect("eof");
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain("Argus was cancelled.");
+      expect(result.stdout).not.toContain("unsettled top-level await");
     },
     30_000,
   );

@@ -59,4 +59,23 @@ describe("CLI failure output", () => {
     });
     expect(test.output().stderr).toBe("");
   });
+
+  it("adds safe human guidance without changing JSON errors", () => {
+    const test = harness();
+
+    writeFailure(
+      test.io,
+      false,
+      new DeploymentError(
+        "LOG_TAIL_INVALID",
+        "Log tail must be a positive integer no greater than 10000.",
+      ),
+    );
+
+    expect(test.output().stderr).toBe(
+      "Error: Log tail must be a positive integer no greater than 10000.\n" +
+        "Try: Run 'argus logs --tail 200'.\n" +
+        "Code: LOG_TAIL_INVALID\n",
+    );
+  });
 });

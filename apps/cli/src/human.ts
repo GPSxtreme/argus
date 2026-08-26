@@ -71,9 +71,12 @@ const logDetails = (value: Record<string, unknown>): string[] => {
   return details;
 };
 
-const renderLogLine = (line: string): string => {
+const renderLogLine = (
+  line: string,
+  previousService: string,
+): { rendered: string; service: string } => {
   const compose = line.match(/^(.+?)-\d+\s+\|\s?(.*)$/u);
-  const service = text(compose?.[1]) ?? "argus";
+  const service = text(compose?.[1]) ?? previousService;
   const content = compose?.[2] ?? line;
 
   try {
@@ -81,22 +84,34 @@ const renderLogLine = (line: string): string => {
     if (parsed) {
       const message = text(parsed.msg) ?? text(parsed.message) ?? "event";
       const details = logDetails(parsed);
-      return `${logTime(parsed.time)}  ${service.padEnd(7)}  ${logLevel(parsed.level).padEnd(4)}  ${message}${details.length > 0 ? `  ${details.join(" ")}` : ""}`;
+      return {
+        rendered: `${logTime(parsed.time)}  ${service.padEnd(7)}  ${logLevel(parsed.level).padEnd(4)}  ${message}${details.length > 0 ? `  ${details.join(" ")}` : ""}`,
+        service,
+      };
     }
   } catch {
     // Service output is commonly plain text. It is still useful once its
     // Compose prefix is normalized.
   }
 
-  return `--:--:--  ${service.padEnd(7)}  LOG   ${content}`;
+  return {
+    rendered: `--:--:--  ${service.padEnd(7)}  LOG   ${content}`,
+    service,
+  };
 };
 
-export const renderHumanLogs = (raw: string): string =>
-  raw
+export const renderHumanLogs = (raw: string): string => {
+  let service = "argus";
+  return raw
     .split(/\r?\n/u)
     .filter((line) => line.length > 0)
-    .map(renderLogLine)
+    .map((line) => {
+      const result = renderLogLine(line, service);
+      service = result.service;
+      return result.rendered;
+    })
     .join("\n");
+};
 
 export const renderHumanConfig = (value: unknown): string =>
   stringify(value).trimEnd();
@@ -112,20 +127,39 @@ export const renderHumanPlan = (plan: unknown): string => {
     return version ? `Already up to date (${version}).` : "Nothing to change.";
   }
 
+  const deployment = record(value.deployment);
+  const hasChangeCollection =
+    Array.isArray(value.changes) ||
+    Array.isArray(value.operations) ||
+    Array.isArray(deployment?.changes);
+  const changes = Array.isArray(value.changes)
+    ? value.changes
+    : Array.isArray(value.operations)
+      ? value.operations
+      : Array.isArray(deployment?.changes)
+        ? deployment.changes
+        : [];
+  if (hasChangeCollection && changes.length === 0) return "Nothing to change.";
+
   const lines = ["Plan:"];
   if (current || target) {
     lines.push(`  ${current ?? "unknown"} -> ${target ?? "unknown"}`);
   }
-  if (Array.isArray(value.changes) && value.changes.length > 0) {
-    for (const change of value.changes) {
+  if (changes.length > 0) {
+    for (const change of changes) {
       const item = record(change);
       if (!item) continue;
       const summary = text(item.summary);
-      const fallback = [text(item.action), text(item.component)]
+      const fallback = [
+        text(item.action),
+        text(item.component) ?? text(item.resource),
+      ]
         .filter(Boolean)
         .join(" ");
-      lines.push(`  - ${summary ?? fallback ?? "Change deployment"}`);
+      lines.push(`  - ${(summary ?? fallback) || "Change deployment"}`);
     }
+  } else if (value.snapshot !== undefined) {
+    lines.push("  - Restore the verified rollback snapshot");
   } else if (text(value.action)) {
     lines.push(`  - ${text(value.action)}`);
   }

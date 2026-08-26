@@ -372,9 +372,10 @@ describe("CLI JSON contract", () => {
           "--json",
         ]),
       ).rejects.toMatchObject({ exitCode: 1 });
-      expect(JSON.parse(harness.output().stdout).error.code).toBe(
-        "LOG_TAIL_INVALID",
-      );
+      expect(JSON.parse(harness.output().stdout).error).toEqual({
+        code: "LOG_TAIL_INVALID",
+        message: "Log tail must be a positive integer no greater than 10000.",
+      });
     },
   );
 

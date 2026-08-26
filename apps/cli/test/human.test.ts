@@ -32,6 +32,35 @@ describe("human CLI renderers", () => {
     ).toBe("--:--:--  searxng  LOG   Too many requests from upstream");
   });
 
+  it("preserves service attribution across multiline non-JSON output", () => {
+    expect(
+      renderHumanLogs(
+        "searxng-1 | Traceback (most recent call last):\n  File \"search.py\", line 7\nargus-1 | worker recovered",
+      ),
+    ).toBe(
+      '--:--:--  searxng  LOG   Traceback (most recent call last):\n--:--:--  searxng  LOG     File "search.py", line 7\n--:--:--  argus    LOG   worker recovered',
+    );
+  });
+
+  it.each([
+    [10, "TRACE"],
+    [20, "DEBUG"],
+    [30, "INFO"],
+    [40, "WARN"],
+    [50, "ERROR"],
+    [60, "FATAL"],
+  ])("maps Pino level %s to %s", (level, label) => {
+    expect(
+      renderHumanLogs(`argus-1 | {"level":${level},"msg":"event"}`),
+    ).toMatch(new RegExp(`\\s${label}\\s+event$`, "u"));
+  });
+
+  it("keeps malformed JSON readable", () => {
+    expect(renderHumanLogs('argus-1 | {"level":30')).toBe(
+      '--:--:--  argus    LOG   {"level":30',
+    );
+  });
+
   it("shows retry context without leaking noisy runtime fields", () => {
     const raw =
       'argus-1 | {"level":40,"time":1787743134312,"pid":7,"hostname":"container","name":"argus","targetId":"news:x:account:FilmUpdates","attempt":2,"maxAttempts":4,"retryAt":"2026-08-26T11:20:00.000Z","msg":"source fetch failed; retry scheduled"}';
@@ -78,6 +107,29 @@ describe("human CLI renderers", () => {
       }),
     ).toBe(
       "Plan:\n  v0.1.22 -> v0.1.23\n  - Update Argus\n  - Restart SearXNG",
+    );
+  });
+
+  it("summarizes configuration, onboarding, and rollback plan shapes", () => {
+    expect(
+      renderHumanPlan({
+        operations: [
+          { resource: "applied-config", action: "update", toContentHash: "private" },
+        ],
+      }),
+    ).toBe("Plan:\n  - update applied-config");
+    expect(renderHumanPlan({ operations: [] })).toBe("Nothing to change.");
+    expect(
+      renderHumanPlan({
+        deployment: {
+          changes: [
+            { component: "argus", action: "create", summary: "Create Argus" },
+          ],
+        },
+      }),
+    ).toBe("Plan:\n  - Create Argus");
+    expect(renderHumanPlan({ snapshot: { release: { manifest: "private" } } })).toBe(
+      "Plan:\n  - Restore the verified rollback snapshot",
     );
   });
 

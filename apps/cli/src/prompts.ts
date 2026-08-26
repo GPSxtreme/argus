@@ -37,19 +37,41 @@ const cancelled = (): never => {
   throw new DeploymentError(
     "PROMPT_CANCELLED",
     "Argus was cancelled.",
-    { recovery: "Try the command again when ready." },
+    { recovery: "Run the command again when ready." },
   );
 };
 
 const unwrap = <Value>(value: Value | symbol): Value =>
   clack.isCancel(value) ? cancelled() : value;
 
+const runClackPrompt = async <Value>(
+  start: (signal: AbortSignal) => Promise<Value | symbol>,
+): Promise<Value> => {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  const abortOnEof = (chunk: Buffer | string) => {
+    if (Buffer.from(chunk).includes(4)) abort();
+  };
+  process.stdin.on("data", abortOnEof);
+  process.stdin.once("end", abort);
+  try {
+    return unwrap(await start(controller.signal));
+  } catch (error) {
+    if (controller.signal.aborted) return cancelled();
+    throw error;
+  } finally {
+    process.stdin.off("data", abortOnEof);
+    process.stdin.off("end", abort);
+  }
+};
+
 /** The only adapter allowed to depend on the terminal prompt implementation. */
 export const createClackPromptAdapter = (): PromptAdapter => ({
   async confirm(options) {
-    return unwrap(
-      await clack.confirm({
+    return runClackPrompt((signal) =>
+      clack.confirm({
         message: options.message,
+        signal,
         ...(options.initialValue === undefined
           ? {}
           : { initialValue: options.initialValue }),
@@ -57,30 +79,33 @@ export const createClackPromptAdapter = (): PromptAdapter => ({
     );
   },
   async select(options) {
-    return unwrap(
-      await clack.select({
+    return (await runClackPrompt((signal) =>
+      clack.select({
         message: options.message,
         options: options.options,
         initialValue: options.initialValue,
+        signal,
       }),
-    ) as string;
+    )) as string;
   },
   async multiselect(options) {
-    return unwrap(
-      await clack.multiselect({
+    return (await runClackPrompt((signal) =>
+      clack.multiselect({
         message: options.message,
         options: options.options,
+        signal,
         ...(options.initialValues === undefined
           ? {}
           : { initialValues: options.initialValues }),
         required: false,
       }),
-    ) as string[];
+    )) as string[];
   },
   async text(options) {
-    return unwrap(
-      await clack.text({
+    return runClackPrompt((signal) =>
+      clack.text({
         message: options.message,
+        signal,
         ...(options.initialValue === undefined
           ? {}
           : { initialValue: options.initialValue }),
@@ -91,7 +116,9 @@ export const createClackPromptAdapter = (): PromptAdapter => ({
     );
   },
   async secret(options) {
-    return unwrap(await clack.password({ message: options.message }));
+    return runClackPrompt((signal) =>
+      clack.password({ message: options.message, signal }),
+    );
   },
 });
 

@@ -29,6 +29,29 @@ const promptQueue = (...answers: string[]): PromptAdapter => {
 };
 
 describe("interactive home menu routing", () => {
+  it("presents the complete beginner-readable home surface", async () => {
+    let labels: string[] = [];
+    const prompt = promptQueue("exit");
+    prompt.select = async (options) => {
+      labels = options.options.map((option) => option.label);
+      return "exit";
+    };
+
+    await selectMenuInvocation(prompt);
+
+    expect(labels).toEqual([
+      "Set up Argus",
+      "Check status",
+      "View logs",
+      "Manage configuration",
+      "Run diagnostics",
+      "Update Argus",
+      "Start, stop, or restart services",
+      "Manage secrets",
+      "Exit",
+    ]);
+  });
+
   it.each([
     ["onboard", ["onboard"]],
     ["status", ["status"]],
