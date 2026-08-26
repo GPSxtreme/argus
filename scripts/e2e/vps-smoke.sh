@@ -356,12 +356,56 @@ grep -F "Set up Argus" "$argus_vps_menu_output" >/dev/null
 grep -F "Manage secrets" "$argus_vps_menu_output" >/dev/null
 grep -F "Argus: running" "$argus_vps_menu_output" >/dev/null
 
+# Exercise every safe public command through the installed launcher. These are
+# deliberately human-mode calls: the smoke should catch ugly terminal output,
+# parser regressions, and release-wrapper differences that JSON API checks miss.
+argus --help > "$argus_vps_work/help.txt"
+grep -F "Commands:" "$argus_vps_work/help.txt" >/dev/null
+argus config > "$argus_vps_work/config-help.txt"
+grep -F "Usage: argus config" "$argus_vps_work/config-help.txt" >/dev/null
+argus secrets > "$argus_vps_work/secrets-help.txt"
+grep -F "Usage: argus secrets" "$argus_vps_work/secrets-help.txt" >/dev/null
 argus status > "$argus_vps_work/status.txt"
 grep -F "Argus: running" "$argus_vps_work/status.txt" >/dev/null
+argus logs argus --tail 10 > "$argus_vps_work/logs.txt"
+argus logs argus --tail 10 --raw > "$argus_vps_work/logs-raw.txt"
+[ -s "$argus_vps_work/logs.txt" ] || argus_vps_die "compact logs were blank"
+grep -Eq '^[0-9]{2}:[0-9]{2}:[0-9]{2}  argus + (TRACE|DEBUG|INFO|WARN|ERROR|FATAL|LOG) ' \
+  "$argus_vps_work/logs.txt" || argus_vps_die "compact logs were not human-readable"
+grep -Eq '^argus-[0-9]+[[:space:]]+\|' "$argus_vps_work/logs.txt" &&
+  argus_vps_die "compact logs exposed Docker Compose prefixes"
+grep -F '"level":' "$argus_vps_work/logs.txt" >/dev/null &&
+  argus_vps_die "compact logs exposed raw structured JSON"
+grep -Eq '^argus-[0-9]+[[:space:]]+\|' "$argus_vps_work/logs-raw.txt" ||
+  argus_vps_die "raw logs did not preserve Docker prefixes"
+grep -F '"level":' "$argus_vps_work/logs-raw.txt" >/dev/null ||
+  argus_vps_die "raw logs did not preserve structured service output"
+argus doctor > "$argus_vps_work/doctor.txt"
+grep -F "Argus diagnostics: healthy" "$argus_vps_work/doctor.txt" >/dev/null
 argus config show > "$argus_vps_work/config.yaml"
 grep -F "version: 1" "$argus_vps_work/config.yaml" >/dev/null
 argus config validate > "$argus_vps_work/config-validate.txt"
 grep -F "Configuration is valid." "$argus_vps_work/config-validate.txt" >/dev/null
+argus start --dry-run > "$argus_vps_work/start-plan.txt"
+argus stop --dry-run > "$argus_vps_work/stop-plan.txt"
+argus restart --dry-run > "$argus_vps_work/restart-plan.txt"
+argus repair argus --dry-run > "$argus_vps_work/repair-plan.txt"
+argus update --dry-run > "$argus_vps_work/update-plan.txt"
+for argus_vps_plan in \
+  "$argus_vps_work/start-plan.txt" \
+  "$argus_vps_work/stop-plan.txt" \
+  "$argus_vps_work/restart-plan.txt" \
+  "$argus_vps_work/repair-plan.txt" \
+  "$argus_vps_work/update-plan.txt"
+do
+  [ -s "$argus_vps_plan" ] || argus_vps_die "a human dry-run plan was blank"
+  grep -Eq '^(Plan:|Nothing to change\.|Already up to date)' "$argus_vps_plan" ||
+    argus_vps_die "a human dry-run plan was not readable"
+  grep -Eiq '(currentReleaseInspection|manifest|signature|backup|api[_ -]?token)' \
+    "$argus_vps_plan" && argus_vps_die "a human dry-run plan exposed internal state"
+  grep -F "$argus_vps_token" "$argus_vps_plan" >/dev/null &&
+    argus_vps_die "a human dry-run plan exposed the API token"
+done
 
 argus_vps_parse_management_state /opt/argus/management.state
 [ "$argus_vps_management_version" = "$ARGUS_EXPECTED_VERSION" ] &&
