@@ -171,9 +171,12 @@ describe("Argus documentation", () => {
     const quickStart = await readFile(path.join(docsRoot, "quick-start.mdx"), "utf8");
     for (const command of [
       "curl -fsSL https://argus.gpsxtre.me/install.sh | sh",
+      "argus\n",
       "argus onboard",
-      "argus status --json",
-      "argus doctor --json",
+      "argus status",
+      "argus doctor",
+      "argus logs --raw",
+      "--json",
     ]) {
       expect(quickStart).toContain(command);
     }
@@ -188,13 +191,14 @@ describe("Argus documentation", () => {
       "argus start",
       "argus stop",
       "argus restart",
-      "argus status --json",
+      "argus status",
       "argus logs",
-      "argus doctor --json",
+      "argus logs --raw",
+      "argus doctor",
       "argus repair",
       "argus update --dry-run --json",
       "argus update --rollback --dry-run --json",
-      "argus config apply --dry-run --json",
+      "argus config apply --dry-run",
       "argus secrets set",
     ]) {
       expect(operationsCorpus).toContain(command);
