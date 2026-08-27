@@ -425,6 +425,41 @@ const preparePendingRecovery = async (
   };
 };
 
+describe("production CLI dependencies", () => {
+  it("uses the running state when Compose reports an empty health value", async () => {
+    const root = await mkdtemp(join(tmpdir(), "argus-status-empty-health-"));
+    const release = releaseFixture();
+    await saveManagedState(root, release);
+    const dependencies = createNodeCliDependencies({
+      root,
+      executor: {
+        async run() {
+          return {
+            exitCode: 0,
+            stdout:
+              '[{"Service":"argus","State":"running","Health":"healthy"},{"Service":"searxng","State":"running","Health":""}]',
+            stderr: "",
+          };
+        },
+      },
+      prompt: {
+        async confirm() { return true; },
+        async select() { return ""; },
+        async multiselect() { return []; },
+        async text() { return ""; },
+        async secret() { return ""; },
+      },
+      io: { stdout() {}, stderr() {} },
+      version: "test",
+    });
+
+    await expect(dependencies.deployment.status()).resolves.toEqual({
+      state: "running",
+      services: { argus: "healthy", searxng: "running" },
+    });
+  });
+});
+
 describe("production onboarding integration", () => {
   it("uses the protected GHCR token only for exact Argus GitHub release URLs and strips it on redirects", async () => {
     const root = await mkdtemp(join(tmpdir(), "argus-release-auth-"));

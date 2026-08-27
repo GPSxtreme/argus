@@ -1271,7 +1271,7 @@ const createDeploymentAdapter = (
         services: Object.fromEntries(
           status.services.map((service) => [
             service.name,
-            service.health ?? service.state,
+            service.health || service.state,
           ]),
         ),
       };
