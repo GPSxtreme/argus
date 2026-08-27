@@ -622,6 +622,9 @@ describe("GitHub workflow toolchain", () => {
     expect(harness).toContain('argus update --dry-run >');
     expect(harness).toContain('a human dry-run plan was blank');
     expect(harness).toContain('a human dry-run plan exposed internal state');
+    expect(harness.indexOf('argus_vps_menu_output=')).toBeGreaterThan(
+      harness.indexOf('argus update --json --yes >'),
+    );
     expect(harness).toContain('changes == []');
     expect(harness).toContain('controlled-web-page');
     expect(harness).toContain('8788');
