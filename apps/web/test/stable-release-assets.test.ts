@@ -10,17 +10,17 @@ const stableAsset = (name: "install.sh" | "manifest.json" | "manifest.sig") =>
   resolve(process.cwd(), "apps/web/public/releases/stable", name);
 
 describe("stable release artifacts", () => {
-  it("preserves the v0.1.22 signed release bytes exactly", async () => {
+  it("preserves the v0.1.23 signed release bytes exactly", async () => {
     const [manifest, signature] = await Promise.all([
       readFile(stableAsset("manifest.json")),
       readFile(stableAsset("manifest.sig")),
     ]);
 
     expect(createHash("sha256").update(manifest).digest("hex")).toBe(
-      "3dd87af7ca1c314d4b252a15c509029e90291148583e53a04723ea0f489e8dfa",
+      "c2619eade39016d84e0a32828fcc62130d5dd0c7091ae15c050ab552242fa654",
     );
     expect(signature).toEqual(
-      Buffer.from("7/DQ7dMy2nME13PmYrnPkGt5arA0rD9ZdUJ6tMmdYXJyDfhKt5Z4/qSKYWdLlvE4e5s1yiYpINupVF9DADl0Cw==", "base64"),
+      Buffer.from("NZz2xnbHg5QUmLnwv9PdOB5BOqxDJg4I81frlP2oF8mQWAhekWa1RnhOzxMJul8APemr9ZKNRtBHuKY4WjhrBQ==", "base64"),
     );
     expect(signature).toHaveLength(64);
     expect(verify(null, manifest, releasePublicKey, signature)).toBe(true);
