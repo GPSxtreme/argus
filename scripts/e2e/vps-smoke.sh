@@ -574,14 +574,24 @@ argus doctor --json > "$argus_vps_doctor" ||
   argus_vps_die "JSON doctor failed"
 argus status --json > "$argus_vps_status_json" ||
   argus_vps_die "JSON status failed"
-jq -e \
+if ! jq -e \
   '.contractVersion == 1 and .ok == true and .data.healthy == true' \
-  "$argus_vps_doctor" >/dev/null || argus_vps_die "JSON doctor was unhealthy"
-jq -e \
+  "$argus_vps_doctor" >/dev/null
+then
+  printf '%s\n' "argus VPS smoke: JSON doctor was unhealthy" >&2
+  argus_vps_redact_json "$argus_vps_doctor" >&2
+  exit 1
+fi
+if ! jq -e \
   '.contractVersion == 1 and .ok == true and .data.state == "running" and
     (.data.services | length >= 2) and
     ([.data.services[] | select(. != "healthy" and . != "running")] | length == 0)' \
-  "$argus_vps_status_json" >/dev/null || argus_vps_die "JSON status was unhealthy"
+  "$argus_vps_status_json" >/dev/null
+then
+  printf '%s\n' "argus VPS smoke: JSON status was unhealthy" >&2
+  argus_vps_redact_json "$argus_vps_status_json" >&2
+  exit 1
+fi
 
 curl --fail --silent --show-error \
   --request POST \
