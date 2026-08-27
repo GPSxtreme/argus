@@ -544,11 +544,16 @@ argus config validate > "$argus_vps_work/config-validate.txt" ||
   argus_vps_die "argus config validate failed"
 grep -F "Configuration is valid." "$argus_vps_work/config-validate.txt" >/dev/null ||
   argus_vps_die "argus config validate was not readable"
-argus start --dry-run > "$argus_vps_work/start-plan.txt"
-argus stop --dry-run > "$argus_vps_work/stop-plan.txt"
-argus restart --dry-run > "$argus_vps_work/restart-plan.txt"
-argus repair argus --dry-run > "$argus_vps_work/repair-plan.txt"
-argus update --dry-run > "$argus_vps_work/update-plan.txt"
+argus start --dry-run > "$argus_vps_work/start-plan.txt" ||
+  argus_vps_die "argus start --dry-run failed"
+argus stop --dry-run > "$argus_vps_work/stop-plan.txt" ||
+  argus_vps_die "argus stop --dry-run failed"
+argus restart --dry-run > "$argus_vps_work/restart-plan.txt" ||
+  argus_vps_die "argus restart --dry-run failed"
+argus repair argus --dry-run > "$argus_vps_work/repair-plan.txt" ||
+  argus_vps_die "argus repair --dry-run failed"
+argus update --dry-run > "$argus_vps_work/update-plan.txt" ||
+  argus_vps_die "argus update --dry-run failed"
 for argus_vps_plan in \
   "$argus_vps_work/start-plan.txt" \
   "$argus_vps_work/stop-plan.txt" \
@@ -565,16 +570,18 @@ do
     argus_vps_die "a human dry-run plan exposed the API token"
 done
 
-argus doctor --json > "$argus_vps_doctor"
-argus status --json > "$argus_vps_status_json"
+argus doctor --json > "$argus_vps_doctor" ||
+  argus_vps_die "JSON doctor failed"
+argus status --json > "$argus_vps_status_json" ||
+  argus_vps_die "JSON status failed"
 jq -e \
   '.contractVersion == 1 and .ok == true and .data.healthy == true' \
-  "$argus_vps_doctor" >/dev/null
+  "$argus_vps_doctor" >/dev/null || argus_vps_die "JSON doctor was unhealthy"
 jq -e \
   '.contractVersion == 1 and .ok == true and .data.state == "running" and
     (.data.services | length >= 2) and
     ([.data.services[] | select(. != "healthy" and . != "running")] | length == 0)' \
-  "$argus_vps_status_json" >/dev/null
+  "$argus_vps_status_json" >/dev/null || argus_vps_die "JSON status was unhealthy"
 
 curl --fail --silent --show-error \
   --request POST \
