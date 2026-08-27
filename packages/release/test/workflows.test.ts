@@ -382,6 +382,52 @@ argus_vps_update ${shellQuote(output)}
   }
 };
 
+const runInvalidVpsUpdateContract = () => {
+  const harness = readFileSync(
+    repositoryFile("scripts/e2e/vps-smoke.sh"),
+    "utf8",
+  );
+  const updateFunctions = harness.match(
+    /(argus_vps_redact_json\(\) \{[\s\S]*?\n\}\n\nargus_vps_update\(\) \{[\s\S]*?\n\})\n\nargus_vps_onboard/u,
+  )?.[1];
+  expect(updateFunctions).toBeDefined();
+
+  const directory = mkdtempSync(join(tmpdir(), "argus-vps-invalid-update-"));
+  try {
+    const bin = join(directory, "bin");
+    const output = join(directory, "update.json");
+    mkdirSync(bin);
+    writeFileSync(
+      join(bin, "argus"),
+      "#!/bin/sh\nprintf '%s\\n' '{\"contractVersion\":1,\"ok\":true,\"data\":{\"version\":\"0.1.22\",\"health\":{\"healthy\":true}}}'\n",
+      { mode: 0o755 },
+    );
+
+    return spawnSync(
+      "sh",
+      [
+        "-c",
+        `set -eu
+${updateFunctions}
+argus_vps_token=argus_vps_test_secret
+ARGUS_UPDATE_EXPECTED_VERSION=0.1.23
+argus_vps_update ${shellQuote(output)}
+`,
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH ?? ""}`,
+        },
+        timeout: 5_000,
+      },
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+};
+
 const runAnsiPrefixedSuccessfulVpsOnboard = () => {
   const harness = readFileSync(
     repositoryFile("scripts/e2e/vps-smoke.sh"),
@@ -889,6 +935,15 @@ describe("GitHub workflow toolchain", () => {
     expect(result.stderr).toContain('"code": "UPDATE_FAILED"');
     expect(result.stderr).toContain("[REDACTED]");
     expect(result.stderr).not.toContain(token);
+  });
+
+  it("reports an invalid successful update contract", () => {
+    const result = runInvalidVpsUpdateContract();
+
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("update returned an invalid contract");
+    expect(result.stderr).toContain('"version": "0.1.22"');
   });
 
   it("reports an invalid onboarding contract without exposing secrets", () => {
