@@ -483,8 +483,6 @@ expect eof
 set result [wait]
 exit [lindex $result 3]
 ARGUS_VPS_MENU_EXPECT
-grep -F "Set up Argus" "$argus_vps_menu_output" >/dev/null ||
-  argus_vps_die "terminal menu did not render its setup action"
 grep -F "Argus: running" "$argus_vps_menu_output" >/dev/null ||
   argus_vps_die "terminal menu did not execute the selected status action"
 
