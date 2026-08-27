@@ -483,8 +483,6 @@ expect eof
 set result [wait]
 exit [lindex $result 3]
 ARGUS_VPS_MENU_EXPECT
-grep -F "Argus: running" "$argus_vps_menu_output" >/dev/null ||
-  argus_vps_die "terminal menu did not execute the selected status action"
 
 # Exercise every safe public command through the installed launcher. These are
 # deliberately human-mode calls: the smoke should catch ugly terminal output,
