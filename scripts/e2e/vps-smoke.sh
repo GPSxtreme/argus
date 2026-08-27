@@ -487,16 +487,26 @@ ARGUS_VPS_MENU_EXPECT
 # Exercise every safe public command through the installed launcher. These are
 # deliberately human-mode calls: the smoke should catch ugly terminal output,
 # parser regressions, and release-wrapper differences that JSON API checks miss.
-argus --help > "$argus_vps_work/help.txt"
-grep -F "Commands:" "$argus_vps_work/help.txt" >/dev/null
-argus config > "$argus_vps_work/config-help.txt"
-grep -F "Usage: argus config" "$argus_vps_work/config-help.txt" >/dev/null
-argus secrets > "$argus_vps_work/secrets-help.txt"
-grep -F "Usage: argus secrets" "$argus_vps_work/secrets-help.txt" >/dev/null
-argus status > "$argus_vps_work/status.txt"
-grep -F "Argus: running" "$argus_vps_work/status.txt" >/dev/null
-argus logs argus --tail 10 > "$argus_vps_work/logs.txt"
-argus logs argus --tail 10 --raw > "$argus_vps_work/logs-raw.txt"
+argus --help > "$argus_vps_work/help.txt" ||
+  argus_vps_die "argus --help failed"
+grep -F "Commands:" "$argus_vps_work/help.txt" >/dev/null ||
+  argus_vps_die "argus --help was not readable"
+argus config > "$argus_vps_work/config-help.txt" ||
+  argus_vps_die "bare argus config failed"
+grep -F "Usage: argus config" "$argus_vps_work/config-help.txt" >/dev/null ||
+  argus_vps_die "bare argus config did not show help"
+argus secrets > "$argus_vps_work/secrets-help.txt" ||
+  argus_vps_die "bare argus secrets failed"
+grep -F "Usage: argus secrets" "$argus_vps_work/secrets-help.txt" >/dev/null ||
+  argus_vps_die "bare argus secrets did not show help"
+argus status > "$argus_vps_work/status.txt" ||
+  argus_vps_die "human argus status failed"
+grep -F "Argus: running" "$argus_vps_work/status.txt" >/dev/null ||
+  argus_vps_die "human argus status was not readable"
+argus logs argus --tail 10 > "$argus_vps_work/logs.txt" ||
+  argus_vps_die "compact argus logs failed"
+argus logs argus --tail 10 --raw > "$argus_vps_work/logs-raw.txt" ||
+  argus_vps_die "raw argus logs failed"
 [ -s "$argus_vps_work/logs.txt" ] || argus_vps_die "compact logs were blank"
 grep -Eq '^[0-9]{2}:[0-9]{2}:[0-9]{2}  argus + (TRACE|DEBUG|INFO|WARN|ERROR|FATAL|LOG) ' \
   "$argus_vps_work/logs.txt" || argus_vps_die "compact logs were not human-readable"
@@ -508,12 +518,18 @@ grep -Eq '^argus-[0-9]+[[:space:]]+\|' "$argus_vps_work/logs-raw.txt" ||
   argus_vps_die "raw logs did not preserve Docker prefixes"
 grep -F '"level":' "$argus_vps_work/logs-raw.txt" >/dev/null ||
   argus_vps_die "raw logs did not preserve structured service output"
-argus doctor > "$argus_vps_work/doctor.txt"
-grep -F "Argus diagnostics: healthy" "$argus_vps_work/doctor.txt" >/dev/null
-argus config show > "$argus_vps_work/config.yaml"
-grep -F "version: 1" "$argus_vps_work/config.yaml" >/dev/null
-argus config validate > "$argus_vps_work/config-validate.txt"
-grep -F "Configuration is valid." "$argus_vps_work/config-validate.txt" >/dev/null
+argus doctor > "$argus_vps_work/doctor.txt" ||
+  argus_vps_die "human argus doctor failed"
+grep -F "Argus diagnostics: healthy" "$argus_vps_work/doctor.txt" >/dev/null ||
+  argus_vps_die "human argus doctor was not readable"
+argus config show > "$argus_vps_work/config.yaml" ||
+  argus_vps_die "argus config show failed"
+grep -F "version: 1" "$argus_vps_work/config.yaml" >/dev/null ||
+  argus_vps_die "argus config show did not return YAML"
+argus config validate > "$argus_vps_work/config-validate.txt" ||
+  argus_vps_die "argus config validate failed"
+grep -F "Configuration is valid." "$argus_vps_work/config-validate.txt" >/dev/null ||
+  argus_vps_die "argus config validate was not readable"
 argus start --dry-run > "$argus_vps_work/start-plan.txt"
 argus stop --dry-run > "$argus_vps_work/stop-plan.txt"
 argus restart --dry-run > "$argus_vps_work/restart-plan.txt"
