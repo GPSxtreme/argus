@@ -238,6 +238,100 @@ argus_vps_onboard ${shellQuote(output)}
   }
 };
 
+const runInvalidVpsOnboardContract = () => {
+  const harness = readFileSync(
+    repositoryFile("scripts/e2e/vps-smoke.sh"),
+    "utf8",
+  );
+  const onboardFunctions = harness.match(
+    /(argus_vps_redact_json\(\) \{[\s\S]*?\n\}\n\nargus_vps_update\(\) \{[\s\S]*?\n\}\n\nargus_vps_onboard\(\) \{[\s\S]*?\n\})\n\nargus_vps_onboard/u,
+  )?.[1];
+  expect(onboardFunctions).toBeDefined();
+
+  const directory = mkdtempSync(join(tmpdir(), "argus-vps-invalid-onboard-"));
+  const token = "argus_vps_invalid_contract_secret";
+  try {
+    const bin = join(directory, "bin");
+    const output = join(directory, "onboard.log");
+    mkdirSync(bin);
+    writeFileSync(
+      join(bin, "argus"),
+      `#!/bin/sh
+printf '%s\n' '{"contractVersion":1,"ok":false,"error":{"code":"INVALID_FIXTURE","message":"fixture failed with ${token}"}}'
+`,
+      { mode: 0o755 },
+    );
+
+    const result = spawnSync(
+      "sh",
+      [
+        "-c",
+        `set -eu
+${onboardFunctions}
+argus_vps_token=${shellQuote(token)}
+argus_vps_onboard ${shellQuote(output)}
+`,
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH ?? ""}`,
+        },
+        timeout: 5_000,
+      },
+    );
+    return { result, token };
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+};
+
+const runVpsOnboardIdempotenceAssertion = () => {
+  const harness = readFileSync(
+    repositoryFile("scripts/e2e/vps-smoke.sh"),
+    "utf8",
+  );
+  const assertionFunction = harness.match(
+    /(argus_vps_assert_idempotent_onboard\(\) \{[\s\S]*?\n\})\n\nargus_vps_onboard/u,
+  )?.[1];
+  expect(assertionFunction).toBeDefined();
+
+  const directory = mkdtempSync(join(tmpdir(), "argus-vps-idempotence-"));
+  try {
+    const output = join(directory, "onboard.json");
+    writeFileSync(
+      output,
+      JSON.stringify({
+        contractVersion: 1,
+        ok: true,
+        data: {
+          plan: {
+            release: { manifest: { version: "0.1.23" } },
+            plan: { deployment: { changes: [] } },
+          },
+          result: { deployment: { changes: [] } },
+        },
+      }),
+    );
+
+    return spawnSync(
+      "sh",
+      [
+        "-c",
+        `set -eu
+argus_vps_redact_json() { cat "$1"; }
+${assertionFunction}
+argus_vps_assert_idempotent_onboard ${shellQuote(output)}
+`,
+      ],
+      { encoding: "utf8", timeout: 5_000 },
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+};
+
 const runFailingVpsUpdate = () => {
   const harness = readFileSync(
     repositoryFile("scripts/e2e/vps-smoke.sh"),
@@ -795,6 +889,24 @@ describe("GitHub workflow toolchain", () => {
     expect(result.stderr).toContain('"code": "UPDATE_FAILED"');
     expect(result.stderr).toContain("[REDACTED]");
     expect(result.stderr).not.toContain(token);
+  });
+
+  it("reports an invalid onboarding contract without exposing secrets", () => {
+    const { result, token } = runInvalidVpsOnboardContract();
+
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("onboard returned an invalid contract");
+    expect(result.stderr).toContain('"code": "INVALID_FIXTURE"');
+    expect(result.stderr).toContain("[REDACTED]");
+    expect(result.stderr).not.toContain(token);
+  });
+
+  it("accepts the production-shaped idempotent onboarding plan", () => {
+    const result = runVpsOnboardIdempotenceAssertion();
+
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(0);
   });
 
   it.skipIf(!expectAvailable)(

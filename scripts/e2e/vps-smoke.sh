@@ -348,14 +348,36 @@ ARGUS_VPS_EXPECT
     fi
     return "$argus_vps_onboard_status"
   fi
-  jq -e '.contractVersion == 1 and .ok == true' \
+  if jq -e '.contractVersion == 1 and .ok == true' \
     "$argus_vps_output.json" >/dev/null
+  then
+    return 0
+  fi
+  printf '%s\n' "argus VPS smoke: onboard returned an invalid contract" >&2
+  if jq -e . "$argus_vps_output.json" >/dev/null 2>&1; then
+    argus_vps_redact_json "$argus_vps_output.json" >&2
+  else
+    printf '%s\n' \
+      "argus VPS smoke: no structured onboarding result was captured" >&2
+  fi
+  return 1
+}
+
+argus_vps_assert_idempotent_onboard() {
+  argus_vps_output=$1
+  if jq -e '.data.plan.plan.deployment.changes == []' \
+    "$argus_vps_output" >/dev/null
+  then
+    return 0
+  fi
+  printf '%s\n' "argus VPS smoke: second onboarding was not idempotent" >&2
+  argus_vps_redact_json "$argus_vps_output" >&2
+  return 1
 }
 
 argus_vps_onboard "$argus_vps_first"
 argus_vps_onboard "$argus_vps_second"
-jq -e '.data.plan.deployment.changes == []' \
-  "$argus_vps_second.json" >/dev/null
+argus_vps_assert_idempotent_onboard "$argus_vps_second.json"
 
 argus_vps_parse_management_state /opt/argus/management.state
 [ "$argus_vps_management_version" = "$ARGUS_EXPECTED_VERSION" ] &&
