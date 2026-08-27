@@ -807,6 +807,11 @@ describe("GitHub workflow toolchain", () => {
     );
     expect(harness).not.toContain('--network argus_argus-private');
     expect(harness).toContain('argus status --json');
+    expect(harness).toContain('argus_vps_status_attempt=0');
+    expect(harness).toContain(
+      '[ "$argus_vps_status_attempt" -ge 30 ]',
+    );
+    expect(harness).toContain('JSON status did not become healthy');
     expect(harness).toContain('spawn sh -c {stty rows 40 columns 120; exec argus}');
     expect(harness).toContain('expect "Argus: running"');
     expect(harness).toContain('argus --help >');

@@ -572,8 +572,6 @@ done
 
 argus doctor --json > "$argus_vps_doctor" ||
   argus_vps_die "JSON doctor failed"
-argus status --json > "$argus_vps_status_json" ||
-  argus_vps_die "JSON status failed"
 if ! jq -e \
   '.contractVersion == 1 and .ok == true and .data.healthy == true' \
   "$argus_vps_doctor" >/dev/null
@@ -582,16 +580,26 @@ then
   argus_vps_redact_json "$argus_vps_doctor" >&2
   exit 1
 fi
-if ! jq -e \
-  '.contractVersion == 1 and .ok == true and .data.state == "running" and
-    (.data.services | length >= 2) and
-    ([.data.services[] | select(. != "healthy" and . != "running")] | length == 0)' \
-  "$argus_vps_status_json" >/dev/null
-then
-  printf '%s\n' "argus VPS smoke: JSON status was unhealthy" >&2
-  argus_vps_redact_json "$argus_vps_status_json" >&2
-  exit 1
-fi
+argus_vps_status_attempt=0
+while :; do
+  argus status --json > "$argus_vps_status_json" ||
+    argus_vps_die "JSON status failed"
+  if jq -e \
+    '.contractVersion == 1 and .ok == true and .data.state == "running" and
+      (.data.services | length >= 2) and
+      ([.data.services[] | select(. != "healthy" and . != "running")] | length == 0)' \
+    "$argus_vps_status_json" >/dev/null
+  then
+    break
+  fi
+  argus_vps_status_attempt=$((argus_vps_status_attempt + 1))
+  if [ "$argus_vps_status_attempt" -ge 30 ]; then
+    printf '%s\n' "argus VPS smoke: JSON status did not become healthy" >&2
+    argus_vps_redact_json "$argus_vps_status_json" >&2
+    exit 1
+  fi
+  sleep 2
+done
 
 curl --fail --silent --show-error \
   --request POST \
