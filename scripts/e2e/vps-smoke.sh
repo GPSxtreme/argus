@@ -321,9 +321,9 @@ argus_vps_onboard() {
     expect <<'ARGUS_VPS_EXPECT'
 log_user 0
 log_file -a -noappend $env(ARGUS_VPS_OUTPUT)
-match_max 1000000
 set timeout 900
 spawn sh -c {stty rows 24 columns 80; exec argus onboard --from /opt/argus/.vps-smoke-onboard.yaml --yes --json}
+match_max 1000000
 expect {
   -re {Argus API token} { send -- "$env(ARGUS_VPS_TOKEN)\r"; exp_continue }
   eof {

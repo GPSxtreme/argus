@@ -442,6 +442,19 @@ const runAnsiPrefixedSuccessfulVpsOnboard = () => {
   try {
     const bin = join(directory, "bin");
     const output = join(directory, "onboard.log");
+    const response = JSON.stringify({
+      contractVersion: 1,
+      ok: true,
+      data: {
+        plan: {
+          release: "0.1.23",
+          plan: {
+            deployment: { changes: [] },
+            diagnostics: "x".repeat(8_192),
+          },
+        },
+      },
+    });
     mkdirSync(bin);
     writeFileSync(
       join(bin, "argus"),
@@ -450,7 +463,7 @@ stty -echo
 printf 'Argus API token'
 IFS= read -r ignored
 stty echo
-printf '\\r\\n\\033[?25h%s\\n' '{"contractVersion":1,"ok":true,"data":{"plan":{"deployment":{"changes":[]}}}}'
+printf '\\r\\n\\033[?25h%s\\n' ${shellQuote(response)}
 `,
       { mode: 0o755 },
     );
