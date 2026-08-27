@@ -171,9 +171,14 @@ argus_vps_doctor=$argus_vps_work/doctor.json
 argus_vps_status_json=$argus_vps_work/status.json
 argus_vps_token="argus_vps_$(openssl rand -hex 24)"
 argus_vps_headers=
+argus_vps_phase=initialization
 
 argus_vps_cleanup_inner() {
   argus_vps_status=$?
+  if [ "$argus_vps_status" -ne 0 ]; then
+    printf '%s\n' \
+      "argus VPS smoke: failed during $argus_vps_phase (exit $argus_vps_status)" >&2
+  fi
   if [ -f /opt/argus/state.json ]; then
     argus stop --yes --json >/dev/null 2>&1 || true
   fi
@@ -210,6 +215,7 @@ argus_vps_download() {
   fi
 }
 
+argus_vps_phase="release download"
 argus_vps_download "$ARGUS_INSTALLER_URL" "$argus_vps_installer"
 argus_vps_download "$ARGUS_MANIFEST_ASSET_URL" "$argus_vps_manifest"
 if [ "$ARGUS_VPS_SMOKE_MODE" = update ]; then
@@ -227,6 +233,7 @@ ARGUS_INSTALL_DOCKER=0 \
 ARGUS_INSTALL_INSPECT=0 \
 sh "$argus_vps_installer"
 
+argus_vps_phase="installed version verification"
 [ "$(argus --version)" = "$ARGUS_EXPECTED_VERSION" ] ||
   argus_vps_die "installed wrapper reported the wrong release"
 
@@ -257,6 +264,7 @@ argus_vps_controlled_url=${ARGUS_CONTROLLED_WEB_URL:-https://argus.gpsxtre.me/}
 printf '%s\n' "$argus_vps_controlled_url" |
   grep -Eq '^https://[A-Za-z0-9.-]+(:[0-9]+)?/[A-Za-z0-9._~/%?=-]*$' ||
   argus_vps_die "ARGUS_CONTROLLED_WEB_URL must be a credential-free HTTPS URL ending in a path"
+argus_vps_phase="onboarding fixture preparation"
 sed "s#https://argus.gpsxtre.me/#$argus_vps_controlled_url#" \
   /workspace/scripts/e2e/fixtures/onboard-web.yaml \
   > /opt/argus/.vps-smoke-onboard.yaml
@@ -389,8 +397,11 @@ argus_vps_assert_idempotent_onboard() {
   return 1
 }
 
+argus_vps_phase="first onboarding"
 argus_vps_onboard "$argus_vps_first"
+argus_vps_phase="second onboarding"
 argus_vps_onboard "$argus_vps_second"
+argus_vps_phase="onboarding idempotence verification"
 argus_vps_assert_idempotent_onboard "$argus_vps_second.json"
 
 argus_vps_parse_management_state /opt/argus/management.state
@@ -398,6 +409,7 @@ argus_vps_parse_management_state /opt/argus/management.state
   [ "$argus_vps_management_cli_image" = "$argus_vps_initial_cli_image" ] ||
   argus_vps_die "installed management state did not match the signed baseline"
 if [ "$ARGUS_VPS_SMOKE_MODE" = update ]; then
+argus_vps_phase="signed update"
 argus_vps_launcher_before=$(sha256sum /usr/local/bin/argus)
 argus_vps_management_version_before=$argus_vps_management_version
 argus_vps_management_cli_image_before=$argus_vps_management_cli_image
@@ -470,6 +482,7 @@ argus_vps_parse_management_state /opt/argus/management.state
   argus_vps_die "launcher changed during signed update"
 fi
 
+argus_vps_phase="interactive menu verification"
 argus_vps_menu_output=$argus_vps_work/menu-status.log
 ARGUS_VPS_MENU_OUTPUT=$argus_vps_menu_output expect <<'ARGUS_VPS_MENU_EXPECT'
 log_user 0
@@ -487,6 +500,7 @@ ARGUS_VPS_MENU_EXPECT
 # Exercise every safe public command through the installed launcher. These are
 # deliberately human-mode calls: the smoke should catch ugly terminal output,
 # parser regressions, and release-wrapper differences that JSON API checks miss.
+argus_vps_phase="installed CLI command verification"
 argus --help > "$argus_vps_work/help.txt" ||
   argus_vps_die "argus --help failed"
 grep -F "Commands:" "$argus_vps_work/help.txt" >/dev/null ||

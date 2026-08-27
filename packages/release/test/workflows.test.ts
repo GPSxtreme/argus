@@ -190,7 +190,7 @@ const runFailingVpsOnboard = () => {
     "utf8",
   );
   const onboardFunction = harness.match(
-    /(argus_vps_redact_json\(\) \{[\s\S]*?\n\}\n\nargus_vps_onboard\(\) \{[\s\S]*?\n\})\n\nargus_vps_onboard/u,
+    /(argus_vps_redact_json\(\) \{[\s\S]*?\n\}\n\nargus_vps_onboard\(\) \{[\s\S]*?\n\})\n\nargus_vps_assert_idempotent_onboard/u,
   )?.[1];
   expect(onboardFunction).toBeDefined();
 
@@ -244,7 +244,7 @@ const runInvalidVpsOnboardContract = () => {
     "utf8",
   );
   const onboardFunctions = harness.match(
-    /(argus_vps_redact_json\(\) \{[\s\S]*?\n\}\n\nargus_vps_update\(\) \{[\s\S]*?\n\}\n\nargus_vps_onboard\(\) \{[\s\S]*?\n\})\n\nargus_vps_onboard/u,
+    /(argus_vps_redact_json\(\) \{[\s\S]*?\n\}\n\nargus_vps_update\(\) \{[\s\S]*?\n\}\n\nargus_vps_onboard\(\) \{[\s\S]*?\n\})\n\nargus_vps_assert_idempotent_onboard/u,
   )?.[1];
   expect(onboardFunctions).toBeDefined();
 
@@ -293,7 +293,7 @@ const runVpsOnboardIdempotenceAssertion = () => {
     "utf8",
   );
   const assertionFunction = harness.match(
-    /(argus_vps_assert_idempotent_onboard\(\) \{[\s\S]*?\n\})\n\nargus_vps_onboard/u,
+    /(argus_vps_assert_idempotent_onboard\(\) \{[\s\S]*?\n\})\n\nargus_vps_phase=/u,
   )?.[1];
   expect(assertionFunction).toBeDefined();
 
@@ -434,7 +434,7 @@ const runAnsiPrefixedSuccessfulVpsOnboard = () => {
     "utf8",
   );
   const onboardFunctions = harness.match(
-    /(argus_vps_redact_json\(\) \{[\s\S]*?\n\}\n\nargus_vps_onboard\(\) \{[\s\S]*?\n\})\n\nargus_vps_onboard/u,
+    /(argus_vps_redact_json\(\) \{[\s\S]*?\n\}\n\nargus_vps_onboard\(\) \{[\s\S]*?\n\})\n\nargus_vps_assert_idempotent_onboard/u,
   )?.[1];
   expect(onboardFunctions).toBeDefined();
 
@@ -802,6 +802,9 @@ describe("GitHub workflow toolchain", () => {
     );
     expect(harness).toContain('argus doctor --json');
     expect(harness).toContain('.data.healthy == true');
+    expect(harness).toContain(
+      'argus VPS smoke: failed during $argus_vps_phase (exit $argus_vps_status)',
+    );
     expect(harness).not.toContain('--network argus_argus-private');
     expect(harness).toContain('argus status --json');
     expect(harness).toContain('spawn sh -c {stty rows 40 columns 120; exec argus}');
