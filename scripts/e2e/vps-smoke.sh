@@ -281,6 +281,24 @@ argus_vps_redact_json() {
     sed "s#$argus_vps_token#[REDACTED]#g"
 }
 
+argus_vps_update() {
+  argus_vps_output=$1
+  if argus update --json --yes > "$argus_vps_output" 2>&1; then
+    return 0
+  else
+    argus_vps_update_status=$?
+  fi
+  printf '%s\n' \
+    "argus VPS smoke: update failed with exit code $argus_vps_update_status" >&2
+  if jq -e . "$argus_vps_output" >/dev/null 2>&1; then
+    argus_vps_redact_json "$argus_vps_output" >&2
+  else
+    printf '%s\n' \
+      "argus VPS smoke: no structured update failure was captured" >&2
+  fi
+  return "$argus_vps_update_status"
+}
+
 argus_vps_onboard() {
   argus_vps_output=$1
   if ARGUS_VPS_TOKEN=$argus_vps_token \
@@ -347,7 +365,7 @@ if [ "$ARGUS_VPS_SMOKE_MODE" = update ]; then
 argus_vps_launcher_before=$(sha256sum /usr/local/bin/argus)
 argus_vps_management_version_before=$argus_vps_management_version
 argus_vps_management_cli_image_before=$argus_vps_management_cli_image
-argus update --json --yes > "$argus_vps_work/update.json"
+argus_vps_update "$argus_vps_work/update.json"
 jq -e --arg version "$ARGUS_UPDATE_EXPECTED_VERSION" '
   .contractVersion == 1 and .ok == true and .data.version == $version and
   .data.health.healthy == true

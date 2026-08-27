@@ -238,6 +238,56 @@ argus_vps_onboard ${shellQuote(output)}
   }
 };
 
+const runFailingVpsUpdate = () => {
+  const harness = readFileSync(
+    repositoryFile("scripts/e2e/vps-smoke.sh"),
+    "utf8",
+  );
+  const updateFunctions = harness.match(
+    /(argus_vps_redact_json\(\) \{[\s\S]*?\n\}\n\nargus_vps_update\(\) \{[\s\S]*?\n\})\n\nargus_vps_onboard/u,
+  )?.[1];
+  expect(updateFunctions).toBeDefined();
+
+  const directory = mkdtempSync(join(tmpdir(), "argus-vps-update-failure-"));
+  const token = "argus_vps_update_test_secret";
+  try {
+    const bin = join(directory, "bin");
+    const output = join(directory, "update.json");
+    mkdirSync(bin);
+    writeFileSync(
+      join(bin, "argus"),
+      `#!/bin/sh
+printf '%s\n' '{"contractVersion":1,"ok":false,"error":{"code":"UPDATE_FAILED","message":"fixture failed with ${token}","details":{"apiToken":"${token}"}}}'
+exit 4
+`,
+      { mode: 0o755 },
+    );
+
+    const result = spawnSync(
+      "sh",
+      [
+        "-c",
+        `set -eu
+${updateFunctions}
+argus_vps_token=${shellQuote(token)}
+argus_vps_update ${shellQuote(output)}
+`,
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH ?? ""}`,
+        },
+        timeout: 5_000,
+      },
+    );
+    return { result, token };
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+};
+
 const runAnsiPrefixedSuccessfulVpsOnboard = () => {
   const harness = readFileSync(
     repositoryFile("scripts/e2e/vps-smoke.sh"),
@@ -623,7 +673,7 @@ describe("GitHub workflow toolchain", () => {
     expect(harness).toContain('a human dry-run plan was blank');
     expect(harness).toContain('a human dry-run plan exposed internal state');
     expect(harness.indexOf('argus_vps_menu_output=')).toBeGreaterThan(
-      harness.indexOf('argus update --json --yes >'),
+      harness.indexOf('argus_vps_update "$argus_vps_work/update.json"'),
     );
     expect(harness).toContain('changes == []');
     expect(harness).toContain('controlled-web-page');
@@ -735,6 +785,17 @@ describe("GitHub workflow toolchain", () => {
       expect(result.stderr).not.toContain(token);
     },
   );
+
+  it("reports a structured update failure without exposing secrets", () => {
+    const { result, token } = runFailingVpsUpdate();
+
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(4);
+    expect(result.stderr).toContain("update failed with exit code 4");
+    expect(result.stderr).toContain('"code": "UPDATE_FAILED"');
+    expect(result.stderr).toContain("[REDACTED]");
+    expect(result.stderr).not.toContain(token);
+  });
 
   it.skipIf(!expectAvailable)(
     "extracts successful JSON prefixed by terminal cursor state",
