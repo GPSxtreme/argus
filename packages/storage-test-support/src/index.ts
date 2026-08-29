@@ -49,6 +49,21 @@ export const storageContract = (factory: RepositoryFactory): void => {
       const media = (await repository.getRecord(record.id))?.media;
       expect(media?.map(({ kind, position }) => [kind, position])).toEqual([["image", 0], ["video", 1]]);
       expect(JSON.stringify(media)).not.toContain("data:");
+
+      await repository.upsertRecord({
+        ...record,
+        media: [
+          { kind: "video", url: "https://cdn.example/trailer.mp4", previewUrl: "https://cdn.example/new-trailer.jpg" },
+          { kind: "image", url: "https://cdn.example/replacement.jpg" },
+        ],
+        lastSeenAt: "2026-08-29T00:05:00.000Z",
+      });
+      expect(
+        (await repository.getRecord(record.id))?.media.map(({ kind, position, url }) => [kind, position, url]),
+      ).toEqual([
+        ["video", 0, "https://cdn.example/trailer.mp4"],
+        ["image", 1, "https://cdn.example/replacement.jpg"],
+      ]);
     });
 
     it("resolves a relation when its target arrives later", async () => {
@@ -65,7 +80,9 @@ export const storageContract = (factory: RepositoryFactory): void => {
       const repository = await create();
       const first = fixture({ engagement: { likes: 10, replies: 2 } });
       await repository.upsertRecord(first);
+      const firstEngagementId = (await repository.getRecord(first.id))?.latestEngagement?.id;
       await repository.upsertRecord({ ...first, engagement: { likes: 10, replies: 2 }, lastSeenAt: "2026-08-29T00:05:00.000Z" });
+      expect((await repository.getRecord(first.id))?.latestEngagement?.id).toBe(firstEngagementId);
       await repository.upsertRecord({ ...first, engagement: { likes: 20, replies: 3 }, lastSeenAt: "2026-08-29T00:10:00.000Z" });
       expect((await repository.listRevisions(first.id)).items).toHaveLength(1);
       expect((await repository.getRecord(first.id))?.latestEngagement).toMatchObject({ likes: 20, replies: 3 });

@@ -116,13 +116,25 @@ export class PostgresRepository implements StorageRepository {
     }
     for (const watchId of record.watchIds) await client.query(`INSERT INTO record_watches(record_id,watch_id,target_id,first_seen_at,last_seen_at) VALUES($1,$2,$3,$4,$5)
       ON CONFLICT(record_id,watch_id,target_id) DO UPDATE SET last_seen_at=excluded.last_seen_at`, [record.id, watchId, record.targetId, record.firstSeenAt, record.lastSeenAt]);
-    const mediaIds: string[] = [];
-    for (const [position, media] of (record.media ?? []).entries()) {
-      const id = digest(record.id, media.sourceMediaId ?? "", media.kind, media.url); mediaIds.push(id);
+    const desiredMedia = (record.media ?? []).map((media, position) => ({
+      id: digest(record.id, media.sourceMediaId ?? "", media.kind, media.url), media, position,
+    }));
+    const mediaIds = desiredMedia.map(({ id }) => id);
+    const existingMedia = (await client.query<{ id: string; position: number }>(
+      "SELECT id,position FROM media_assets WHERE record_id=$1",
+      [record.id],
+    )).rows;
+    const temporaryStart = existingMedia.reduce((maximum, item) => Math.max(maximum, item.position), -1) + 1;
+    for (const [index, item] of existingMedia.entries()) {
+      if (mediaIds.includes(item.id)) {
+        await client.query("UPDATE media_assets SET position=$1 WHERE id=$2", [temporaryStart + index, item.id]);
+      }
+    }
+    await client.query("DELETE FROM media_assets WHERE record_id=$1 AND NOT(id=ANY($2::text[]))", [record.id, mediaIds]);
+    for (const { id, media, position } of desiredMedia) {
       await client.query(`INSERT INTO media_assets(id,record_id,source_media_id,kind,url,preview_url,mime_type,width,height,duration_ms,alt_text,position,metadata_json,first_seen_at,last_seen_at)
         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) ON CONFLICT(id) DO UPDATE SET position=excluded.position,url=excluded.url,preview_url=excluded.preview_url,mime_type=excluded.mime_type,width=excluded.width,height=excluded.height,duration_ms=excluded.duration_ms,alt_text=excluded.alt_text,metadata_json=excluded.metadata_json,last_seen_at=excluded.last_seen_at`, [id, record.id, media.sourceMediaId ?? null, media.kind, media.url, media.previewUrl ?? null, media.mimeType ?? null, media.width ?? null, media.height ?? null, media.durationMs ?? null, media.altText ?? null, position, media.metadata ?? null, record.firstSeenAt, record.lastSeenAt]);
     }
-    await client.query("DELETE FROM media_assets WHERE record_id=$1 AND NOT(id=ANY($2::text[]))", [record.id, mediaIds]);
     const relationIds: string[] = [];
     for (const relation of record.relations ?? []) {
       const id = digest(record.id, relation.kind, relation.objectSource, relation.objectExternalId); relationIds.push(id);
@@ -134,7 +146,10 @@ export class PostgresRepository implements StorageRepository {
     await client.query("UPDATE record_relations SET object_record_id=$1 WHERE object_source=$2 AND object_external_id=$3 AND object_record_id IS NULL", [record.id, record.source, record.externalId]);
     if (record.engagement) {
       const previous = (await client.query<Row>("SELECT * FROM engagement_snapshots WHERE record_id=$1 ORDER BY collected_at DESC,id DESC LIMIT 1", [record.id])).rows[0];
-      const changedEngagement = !previous || engagementFields.some((field) => previous[field] !== (record.engagement as Engagement)[field]);
+      const changedEngagement = !previous || engagementFields.some((field) =>
+        (previous[field] == null ? undefined : Number(previous[field])) !==
+        (record.engagement as Engagement)[field]
+      );
       if (changedEngagement) await client.query("INSERT INTO engagement_snapshots(id,record_id,likes,replies,reposts,quotes,views,bookmarks,collected_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)", [randomUUID(), record.id, record.engagement.likes ?? null, record.engagement.replies ?? null, record.engagement.reposts ?? null, record.engagement.quotes ?? null, record.engagement.views ?? null, record.engagement.bookmarks ?? null, record.lastSeenAt]);
     }
     const stored = (await client.query<Row>("SELECT * FROM records WHERE id=$1", [record.id])).rows[0];

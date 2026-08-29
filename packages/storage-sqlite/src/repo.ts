@@ -126,8 +126,27 @@ export class SqliteRepository implements StorageRepository {
         .onConflictDoUpdate({ target: [recordWatches.recordId, recordWatches.watchId, recordWatches.targetId], set: { lastSeenAt: record.lastSeenAt } }).run();
     }
 
-    const mediaIds = (record.media ?? []).map((media, position) => {
-      const id = digest(record.id, media.sourceMediaId ?? "", media.kind, media.url);
+    const desiredMedia = (record.media ?? []).map((media, position) => ({
+      id: digest(record.id, media.sourceMediaId ?? "", media.kind, media.url),
+      media,
+      position,
+    }));
+    const mediaIds = desiredMedia.map(({ id }) => id);
+    const existingMedia = tx.select({ id: mediaAssets.id, position: mediaAssets.position })
+      .from(mediaAssets).where(eq(mediaAssets.recordId, record.id)).all();
+    const temporaryStart = existingMedia.reduce(
+      (maximum, item) => Math.max(maximum, item.position),
+      -1,
+    ) + 1;
+    for (const [index, item] of existingMedia.entries()) {
+      if (mediaIds.includes(item.id)) {
+        tx.update(mediaAssets).set({ position: temporaryStart + index })
+          .where(eq(mediaAssets.id, item.id)).run();
+      }
+    }
+    const mediaCondition = eq(mediaAssets.recordId, record.id);
+    tx.delete(mediaAssets).where(mediaIds.length ? and(mediaCondition, notInArray(mediaAssets.id, mediaIds)) : mediaCondition).run();
+    for (const { id, media, position } of desiredMedia) {
       tx.insert(mediaAssets).values({
         id, recordId: record.id, sourceMediaId: media.sourceMediaId ?? null,
         kind: media.kind, url: media.url, previewUrl: media.previewUrl ?? null,
@@ -142,10 +161,7 @@ export class SqliteRepository implements StorageRepository {
         altText: media.altText ?? null, metadata: media.metadata ?? null,
         lastSeenAt: record.lastSeenAt,
       } }).run();
-      return id;
-    });
-    const mediaCondition = eq(mediaAssets.recordId, record.id);
-    tx.delete(mediaAssets).where(mediaIds.length ? and(mediaCondition, notInArray(mediaAssets.id, mediaIds)) : mediaCondition).run();
+    }
 
     const relationIds = (record.relations ?? []).map((relation) => {
       const id = digest(record.id, relation.kind, relation.objectSource, relation.objectExternalId);
