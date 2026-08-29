@@ -1,6 +1,6 @@
 import {
-  canonicalIdentity,
   contentHash,
+  recordIdentity,
   type RecordEnvelope,
   type SourceItem,
   type SourceName,
@@ -18,7 +18,7 @@ export const normalizeItem = (input: NormalizeItemInput): RecordEnvelope => {
   const { item } = input;
   return {
     ...item,
-    id: canonicalIdentity(input.source, input.targetId, item.externalId),
+    id: recordIdentity(input.source, item.externalId),
     source: input.source,
     targetId: input.targetId,
     watchIds: [...new Set(input.watchIds)].sort(),
@@ -27,6 +27,8 @@ export const normalizeItem = (input: NormalizeItemInput): RecordEnvelope => {
       text: item.text,
       author: item.author,
       publishedAt: item.publishedAt,
+      media: item.media,
+      relations: item.relations,
     }),
     ingestedAt: input.now ?? new Date().toISOString(),
   };

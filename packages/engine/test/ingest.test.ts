@@ -33,7 +33,100 @@ describe("ingestion engine", () => {
       item,
       now: "2026-08-01T00:00:00.000Z",
     });
-    expect(first.id).toBe("web:news:42");
+    expect(first.id).toBe(
+      "53488104b1bf4b4a61e59d85c097b310bc7c70d2043188647b3a60b3853f1176",
+    );
+    expect(first.contentHash).toBe(second.contentHash);
+  });
+
+  it("uses one canonical identity across targets", () => {
+    const first = normalizeItem({
+      source: "web",
+      targetId: "news",
+      watchIds: ["security"],
+      item,
+    });
+    const second = normalizeItem({
+      source: "web",
+      targetId: "research",
+      watchIds: ["markets"],
+      item,
+    });
+
+    expect(first.id).toBe(second.id);
+  });
+
+  it("preserves media on a media-only source item", () => {
+    const normalized = normalizeItem({
+      source: "web",
+      targetId: "charts",
+      watchIds: ["markets"],
+      item: {
+        externalId: "media-42",
+        url: "https://example.com/media-42",
+        text: "",
+        media: [
+          {
+            kind: "image",
+            url: "https://cdn.example.com/chart.png",
+            width: 1200,
+            height: 800,
+            altText: "Price prediction chart",
+          },
+        ],
+        raw: { id: "media-42" },
+      },
+    });
+
+    expect(normalized.text).toBe("");
+    expect(normalized.media).toEqual([
+      {
+        kind: "image",
+        url: "https://cdn.example.com/chart.png",
+        width: 1200,
+        height: 800,
+        altText: "Price prediction chart",
+      },
+    ]);
+  });
+
+  it("revises canonical content when a media pointer changes", () => {
+    const first = normalizeItem({
+      source: "x",
+      targetId: "markets",
+      watchIds: ["markets"],
+      item: {
+        ...item,
+        media: [{ kind: "image", url: "https://cdn.example.com/chart-a.png" }],
+      },
+    });
+    const second = normalizeItem({
+      source: "x",
+      targetId: "markets",
+      watchIds: ["markets"],
+      item: {
+        ...item,
+        media: [{ kind: "image", url: "https://cdn.example.com/chart-b.png" }],
+      },
+    });
+
+    expect(first.contentHash).not.toBe(second.contentHash);
+  });
+
+  it("does not revise canonical content when engagement changes", () => {
+    const first = normalizeItem({
+      source: "x",
+      targetId: "markets",
+      watchIds: ["markets"],
+      item: { ...item, engagement: { likes: 5, replies: 1 } },
+    });
+    const second = normalizeItem({
+      source: "x",
+      targetId: "markets",
+      watchIds: ["markets"],
+      item: { ...item, engagement: { likes: 9, replies: 2 } },
+    });
+
     expect(first.contentHash).toBe(second.contentHash);
   });
 

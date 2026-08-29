@@ -3,6 +3,48 @@ import { createHash } from "node:crypto";
 export const SOURCE_NAMES = ["x", "telegram", "web"] as const;
 export type SourceName = (typeof SOURCE_NAMES)[number];
 
+export const MEDIA_KINDS = ["image", "video", "audio", "document"] as const;
+export type MediaKind = (typeof MEDIA_KINDS)[number];
+
+export const RELATION_KINDS = [
+  "reply_to",
+  "quote_of",
+  "repost_of",
+  "thread_parent",
+  "links_to",
+] as const;
+export type RelationKind = (typeof RELATION_KINDS)[number];
+
+export interface SourceMedia {
+  sourceMediaId?: string;
+  kind: MediaKind;
+  url: string;
+  previewUrl?: string;
+  mimeType?: string;
+  width?: number;
+  height?: number;
+  durationMs?: number;
+  altText?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface SourceRelation {
+  kind: RelationKind;
+  objectSource: SourceName;
+  objectExternalId: string;
+  objectUrl?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface Engagement {
+  likes?: number;
+  replies?: number;
+  reposts?: number;
+  quotes?: number;
+  views?: number;
+  bookmarks?: number;
+}
+
 export interface SourceItem {
   externalId: string;
   url: string;
@@ -10,6 +52,9 @@ export interface SourceItem {
   text: string;
   author?: string;
   publishedAt?: string;
+  media?: SourceMedia[];
+  relations?: SourceRelation[];
+  engagement?: Engagement;
   raw: unknown;
   metadata?: Record<string, unknown>;
 }
@@ -33,6 +78,100 @@ export interface RecordRevision {
   createdAt: string;
 }
 
+export interface RecordWatch {
+  recordId: string;
+  watchId: string;
+  targetId: string;
+  firstSeenAt: string;
+  lastSeenAt: string;
+}
+
+export interface MediaAsset extends SourceMedia {
+  id: string;
+  recordId: string;
+  position: number;
+  firstSeenAt: string;
+  lastSeenAt: string;
+}
+
+export interface RecordRelation extends SourceRelation {
+  id: string;
+  subjectRecordId: string;
+  objectRecordId?: string;
+  firstSeenAt: string;
+  lastSeenAt: string;
+}
+
+export interface EngagementSnapshot extends Engagement {
+  id: string;
+  recordId: string;
+  collectedAt: string;
+}
+
+export const REPLY_ORDERINGS = [
+  "likes",
+  "newest",
+  "oldest",
+  "replies",
+  "reposts",
+  "views",
+  "source",
+] as const;
+export type ReplyOrdering = (typeof REPLY_ORDERINGS)[number];
+
+export interface ConversationTracking {
+  rootRecordId: string;
+  watchId: string;
+  status: "active" | "complete" | "failed";
+  orderBy: ReplyOrdering;
+  maxPerPost: number;
+  maxTrackingHours: number;
+  publishedAt: string;
+  nextRunAt?: string;
+  stopsAt: string;
+  lastObservedReplies?: number;
+  burstUntil?: string;
+  lastError?: string;
+  updatedAt: string;
+}
+
+export type ConversationTruncationReason =
+  | "selection_limit"
+  | "observation_limit"
+  | "upstream_cursor_failure"
+  | "upstream_unavailable";
+
+export interface ConversationSnapshot {
+  id: string;
+  rootRecordId: string;
+  observedCount: number;
+  retainedCount: number;
+  orderBy: ReplyOrdering;
+  pagesFetched: number;
+  complete: boolean;
+  truncated: boolean;
+  truncationReason?: ConversationTruncationReason;
+  upstreamCursor?: string;
+  collectedAt: string;
+}
+
+export interface ConversationSnapshotItem {
+  snapshotId: string;
+  replyRecordId: string;
+  rank: number;
+  sortValue?: number;
+}
+
+export type RecordDetail = Omit<
+  RecordEnvelope,
+  "media" | "relations" | "engagement"
+> & {
+  watches: RecordWatch[];
+  media: MediaAsset[];
+  relations: RecordRelation[];
+  latestEngagement?: EngagementSnapshot;
+};
+
 export interface DerivedArtifact {
   id: string;
   recordIds: string[];
@@ -44,11 +183,11 @@ export interface DerivedArtifact {
   createdAt: string;
 }
 
-export const canonicalIdentity = (
+export const recordIdentity = (
   source: SourceName,
-  targetId: string,
   externalId: string,
-): string => `${source}:${targetId}:${externalId}`;
+): string =>
+  createHash("sha256").update(`${source}\0${externalId}`).digest("hex");
 
 const sortRecursively = (value: unknown): unknown => {
   if (Array.isArray(value)) {

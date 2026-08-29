@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { canonicalIdentity, contentHash, normalizeError } from "../src/index.js";
+import { contentHash, normalizeError, recordIdentity } from "../src/index.js";
 
 describe("canonical contracts", () => {
-  it("builds a stable source identity", () => {
-    expect(canonicalIdentity("x", "target-1", "post-9")).toBe(
-      "x:target-1:post-9",
+  it("builds a source-global stable record identity", () => {
+    expect(recordIdentity("x", "42")).toBe(
+      "1d6fc8095003910a3a02247f053a796c45f88cfe61ed120b42fcd21484cafa09",
     );
   });
 
