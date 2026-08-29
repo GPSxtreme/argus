@@ -483,6 +483,11 @@ deployment:
 managed:
   searxng: disabled
   fxembed: disabled
+xReplies:
+  enabled: false
+  maxPerPost: 50
+  maxTrackingHours: 168
+  orderBy: likes
 watches:
   - id: smoke-web
     enabled: true

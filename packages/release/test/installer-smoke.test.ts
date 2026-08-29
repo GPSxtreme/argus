@@ -1003,6 +1003,11 @@ exit 42
     expect(smoke).toContain("management state has unexpected extra content");
     expect(smoke).toContain("second installation changed management state");
     expect(smoke).toContain("argus onboard --from");
+    expect(smoke).toContain(`xReplies:
+  enabled: false
+  maxPerPost: 50
+  maxTrackingHours: 168
+  orderBy: likes`);
     expect(smoke).toContain("https://example.com/");
     expect(smoke).toContain("argus doctor --json");
     expect(smoke).toContain(".ok == true");
