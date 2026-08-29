@@ -78,7 +78,7 @@ export const requestPrimitive = async ({
           ? undefined
           : async (target, init) =>
               fetcher(target, {
-                method: "GET",
+                method: init.method,
                 redirect: init.redirect,
                 ...(init.headers ? { headers: init.headers } : {}),
                 signal: init.signal,
@@ -86,6 +86,7 @@ export const requestPrimitive = async ({
               } as RequestInit & { dispatcher: unknown });
       const response = await safeHttpGet(url, {
         allowedOrigin: url.origin,
+        method,
         ...(resolver ? { resolver } : {}),
         ...(requester ? { request: requester } : {}),
         headers: { accept: "application/json", "user-agent": "Argus/0.1" },
@@ -93,7 +94,7 @@ export const requestPrimitive = async ({
         timeoutMs: TIMEOUT_MS,
         maxBodyBytes: MAX_BODY_BYTES,
       });
-      const body = method === "HEAD" ? new Uint8Array() : new TextEncoder().encode(response.body);
+      const body = response.bytes;
       return {
         status: response.status,
         contentType: response.contentType,

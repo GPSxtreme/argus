@@ -29,10 +29,10 @@ lets a downstream agent decide whether and how to retrieve a source asset.
 ## X conversations
 
 Reply tracking is separate work from root-post ingestion. A successful root
-record can start an independent conversation tracker. Refresh jobs observe up
-to 500 replies across at most 10 upstream pages, select the configured bounded
-sample, store those replies as ordinary canonical records, and atomically save
-their ranks in a conversation snapshot.
+record can start an independent conversation tracker. Refresh jobs follow
+distinct upstream cursors until exhaustion or 500 distinct replies, select the
+configured bounded sample, store those replies as ordinary canonical records,
+and atomically save their ranks in a conversation snapshot.
 
 “50 most liked” means the 50 most-liked replies Argus observed, not a claim
 about every reply on X. Each snapshot records observed count, retained count,

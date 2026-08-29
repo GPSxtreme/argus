@@ -50,3 +50,7 @@ Both require a configured bearer token and are bounded to 60 calls per minute
 per token/source, 10 seconds, 2 MiB, and five same-origin redirects. They do not
 write records or artifacts. Their bodies are upstream shapes, not stable Argus
 schemas; inspect fields defensively.
+
+Public source origins are DNS-validated and pinned on every redirect hop.
+Private SearXNG is reachable only when the operator explicitly configured that
+endpoint as trusted; this is an instance boundary, never a request parameter.

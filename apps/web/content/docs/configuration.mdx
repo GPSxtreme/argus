@@ -38,6 +38,7 @@ sources:
   web:
     enabled: true
     searchEndpoint: http://searxng:8080
+    searchEndpointTrust: trusted
     userAgent: Argus/0.1
     browserFallback: false
 watches:
@@ -101,8 +102,9 @@ Telegram v2 supports public announcement channels through
 discussion ingestion is implemented.
 
 Direct Web URLs and feeds use the bounded public-Web fetch path. Search queries
-require `searchEndpoint`, normally managed SearXNG. `browserFallback: false` is
-the supported setting.
+require `searchEndpoint`, normally managed SearXNG. External endpoints use
+`searchEndpointTrust: public`; only an operator-controlled private service uses
+`trusted`. `browserFallback: false` is the supported setting.
 
 ## Watches
 

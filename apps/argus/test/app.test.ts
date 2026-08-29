@@ -193,6 +193,22 @@ describe("Argus API", () => {
     });
   });
 
+  it("requires explicit trust before proxying SearXNG to a private network", async () => {
+    const repository = await createSqliteRepository({ filename: ":memory:" });
+    repositories.push(repository);
+    const fetcher = vi.fn(async () => Response.json({ results: [] })) as unknown as typeof fetch;
+    const privateResolver = async () => [{ address: "10.0.0.2", family: 4 as const }];
+    const external = validateConfig({ version: 2, storage: { adapter: "sqlite", url: ":memory:" }, sources: { web: { enabled: true, searchEndpoint: "http://search.internal:8080" } }, watches: [], api: { token: "secret" } });
+    const blocked = await createApp({ config: external, repository, primitiveFetcher: fetcher, primitiveResolver: privateResolver }).request("/v1/primitives/web/search?q=movies", { headers: { authorization: "Bearer secret" } });
+    expect(blocked.status).toBe(502);
+    expect(fetcher).not.toHaveBeenCalled();
+
+    const trusted = validateConfig({ version: 2, storage: { adapter: "sqlite", url: ":memory:" }, sources: { web: { enabled: true, searchEndpoint: "http://search.internal:8080", searchEndpointTrust: "trusted" } }, watches: [], api: { token: "secret" } });
+    const allowed = await createApp({ config: trusted, repository, primitiveFetcher: fetcher, primitiveResolver: privateResolver }).request("/v1/primitives/web/search?q=movies", { headers: { authorization: "Bearer secret" } });
+    expect(allowed.status).toBe(200);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
   it("answers a natural-language query from recent records with source links", async () => {
     const repository = await createSqliteRepository({ filename: ":memory:" });
     repositories.push(repository);

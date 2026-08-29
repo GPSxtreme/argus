@@ -7,14 +7,16 @@ export class PrimitiveBoundaryError extends Error {
 
 const decodedSegment = (segment: string): string => {
   let decoded = segment;
-  for (let pass = 0; pass < 2; pass += 1) {
+  for (let pass = 0; pass <= segment.length; pass += 1) {
     try {
-      decoded = decodeURIComponent(decoded);
+      const next = decodeURIComponent(decoded);
+      if (next === decoded) return decoded;
+      decoded = next;
     } catch {
       throw new PrimitiveBoundaryError("PRIMITIVE_PATH_INVALID");
     }
   }
-  return decoded;
+  throw new PrimitiveBoundaryError("PRIMITIVE_PATH_INVALID");
 };
 
 export const resolveXPrimitive = (
@@ -37,7 +39,7 @@ export const resolveXPrimitive = (
   }
   for (const segment of path.split("/")) {
     const decoded = decodedSegment(segment);
-    if (decoded === "." || decoded === ".." || decoded.includes("/")) {
+    if (decoded === "." || decoded === ".." || decoded.includes("/") || decoded.includes("\\")) {
       throw new PrimitiveBoundaryError("PRIMITIVE_PATH_INVALID");
     }
   }

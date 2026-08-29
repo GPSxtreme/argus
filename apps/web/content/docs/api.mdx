@@ -97,8 +97,10 @@ artifacts, or jobs for this request.
 
 ## `GET /v1/primitives/web/search`
 
-`GET /v1/primitives/web/search?q=...` calls only the operator-configured,
-trusted SearXNG service and forces `format=json`. Optional allowlisted parameters
+`GET /v1/primitives/web/search?q=...` calls only the configured SearXNG service
+and forces `format=json`. Public endpoints receive DNS/private-address validation
+on every hop; only endpoints explicitly marked `searchEndpointTrust: trusted`
+may use a private operator-controlled network. Optional allowlisted parameters
 are `engines`, `categories`, `language`, `time_range`, and `pageno`; every other
 parameter is rejected. It uses the same authentication, body, redirect, timeout,
 and rate bounds and also writes nothing.

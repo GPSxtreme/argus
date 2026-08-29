@@ -124,6 +124,20 @@ export const storageContract = (factory: RepositoryFactory): void => {
       expect((await repository.queryArtifacts({})).items[0]).toMatchObject({ recordIds: [record.id], media: [{ mediaAssetId, disposition: "analyzed" }] });
     });
 
+    it("never exposes diagnostic-only media through a visible artifact", async () => {
+      const repository = await create();
+      const visible = fixture({ externalId: "visible", id: recordIdentity("x", "visible") });
+      const diagnosticTarget = "__argus_doctor:artifact-media";
+      const diagnostic = fixture({ externalId: "diagnostic-media", id: recordIdentity("x", "diagnostic-media"), targetId: diagnosticTarget, watchIds: [diagnosticTarget], media: [{ kind: "image", url: "https://cdn.example/private.jpg" }] });
+      await repository.createDiagnosticWatch({ id: "artifact-media", targetId: diagnosticTarget, source: "x", target: {}, status: "active", createdAt: observedAt, updatedAt: observedAt, expiresAt: "2026-08-29T01:00:00.000Z", job: { id: "artifact-media-job", targetId: diagnosticTarget, source: "x", status: "queued", attempt: 0, runAt: observedAt } });
+      await repository.upsertRecord(visible);
+      await repository.upsertRecord(diagnostic);
+      const diagnosticMediaId = (await repository.getRecord(diagnostic.id))?.media[0]?.id;
+      if (!diagnosticMediaId) throw new Error("Expected diagnostic media");
+      await repository.saveArtifact({ id: "visible-artifact", recordIds: [visible.id], media: [{ mediaAssetId: diagnosticMediaId, disposition: "analyzed" }], kind: "summary", content: "Visible", provenance: {}, createdAt: observedAt });
+      expect((await repository.queryArtifacts({})).items[0]).toMatchObject({ recordIds: [visible.id], media: [] });
+    });
+
     it("supports filters, cursors, checkpoints, jobs, and applied config", async () => {
       const repository = await create(); const older = fixture();
       const newer = fixture({ source: "web", externalId: "page", id: recordIdentity("web", "page"), targetId: "web:url:page", watchIds: ["news"], text: "Movie news", contentHash: contentHash({ text: "Movie news" }), lastSeenAt: "2026-08-29T01:00:00.000Z" });

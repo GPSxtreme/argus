@@ -74,7 +74,9 @@ export const createPrimitiveRouter = ({
       const result = await requestPrimitive({
         url: upstream(),
         method,
-        safety: source === "x" ? "public" : "trusted",
+        safety: source === "x" || config.sources.web.searchEndpointTrust === "public"
+          ? "public"
+          : "trusted",
         ...(fetcher ? { fetcher } : {}),
         ...(resolver ? { resolver } : {}),
       });

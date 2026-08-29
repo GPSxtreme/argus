@@ -28,19 +28,22 @@ const normalizeMedia = (status: ObjectValue): SourceMedia[] => {
     const kind = mediaKind(item.type ?? item.kind);
     const url = string(item.url ?? item.media_url_https ?? item.media_url ?? item.video_url);
     if (!kind || !url) return [];
+    const durationSeconds = number(item.duration);
+    const durationMs = number(item.duration_millis ?? item.duration_ms) ??
+      (durationSeconds === undefined ? undefined : Math.round(durationSeconds * 1_000));
     return [{ kind, url,
       ...(string(item.id ?? item.media_key) ? { sourceMediaId: string(item.id ?? item.media_key) } : {}),
       ...(string(item.thumbnail_url ?? item.preview_url) ? { previewUrl: string(item.thumbnail_url ?? item.preview_url) } : {}),
       ...(string(item.mime_type) ? { mimeType: string(item.mime_type) } : {}),
       ...(number(item.width) === undefined ? {} : { width: number(item.width) }),
       ...(number(item.height) === undefined ? {} : { height: number(item.height) }),
-      ...(number(item.duration_millis ?? item.duration_ms) === undefined ? {} : { durationMs: number(item.duration_millis ?? item.duration_ms) }),
-      ...(string(item.alt_text) ? { altText: string(item.alt_text) } : {}),
+      ...(durationMs === undefined ? {} : { durationMs }),
+      ...(string(item.alt_text ?? item.altText) ? { altText: string(item.alt_text ?? item.altText) } : {}),
     } as SourceMedia];
   });
 };
 
-const relatedId = (value: unknown): string | undefined => string(object(value)?.id ?? object(value)?.rest_id ?? value);
+const relatedId = (value: unknown): string | undefined => string(object(value)?.id ?? object(value)?.rest_id ?? object(value)?.status ?? value);
 const normalizeRelations = (status: ObjectValue): SourceRelation[] => {
   const candidates: Array<[SourceRelation["kind"], unknown]> = [
     ["reply_to", status.replying_to ?? status.in_reply_to_status_id],

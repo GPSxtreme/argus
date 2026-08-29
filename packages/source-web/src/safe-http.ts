@@ -15,6 +15,7 @@ import {
 } from "./network-policy.js";
 
 export interface SafeRequestInit {
+  method: "GET" | "HEAD";
   headers?: Record<string, string>;
   redirect: "manual";
   dispatcher: unknown;
@@ -32,6 +33,7 @@ export type SafeDispatcherFactory = (
 
 export interface SafeHttpOptions {
   allowedOrigin?: string;
+  method?: "GET" | "HEAD";
   resolver?: WebResolver;
   request?: SafeHttpRequester;
   dispatcherFactory?: SafeDispatcherFactory;
@@ -44,6 +46,7 @@ export interface SafeHttpOptions {
 
 export interface SafeHttpResult {
   body: string;
+  bytes: Uint8Array;
   contentType: string;
   finalUrl: string;
   ok: boolean;
@@ -122,10 +125,10 @@ const boundedNumber = (
     ? Math.min(Math.max(Math.trunc(value), minimum), maximum)
     : fallback;
 
-export const readBoundedBody = async (
+export const readBoundedBytes = async (
   response: Response,
   maximumBytes: number,
-): Promise<string> => {
+): Promise<Uint8Array> => {
   const declared = response.headers.get("content-length");
   if (
     declared !== null &&
@@ -135,7 +138,7 @@ export const readBoundedBody = async (
     void response.body?.cancel().catch(() => undefined);
     throw new SafeWebError("WEB_RESPONSE_TOO_LARGE");
   }
-  if (response.body === null) return "";
+  if (response.body === null) return new Uint8Array();
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
   let length = 0;
@@ -159,8 +162,13 @@ export const readBoundedBody = async (
     bytes.set(chunk, offset);
     offset += chunk.byteLength;
   }
-  return new TextDecoder().decode(bytes);
+  return bytes;
 };
+
+export const readBoundedBody = async (
+  response: Response,
+  maximumBytes: number,
+): Promise<string> => new TextDecoder().decode(await readBoundedBytes(response, maximumBytes));
 
 export const safeHttpGet = async (
   input: string | URL,
@@ -183,6 +191,7 @@ export const safeHttpGet = async (
     1,
     maximumBodyBytes,
   );
+  const method = options.method ?? "GET";
   const controller = new AbortController();
   const activeDispatchers = new Set<unknown>();
   const dispatcherClosures = new Map<unknown, Promise<void>>();
@@ -217,6 +226,7 @@ export const safeHttpGet = async (
       let response: Response;
       try {
         response = await requester(approved.url, {
+          method,
           ...(options.headers ? { headers: options.headers } : {}),
           redirect: "manual",
           dispatcher,
@@ -254,8 +264,16 @@ export const safeHttpGet = async (
       }
 
       try {
+        let bytes: Uint8Array;
+        if (method === "HEAD") {
+          await response.body?.cancel().catch(() => undefined);
+          bytes = new Uint8Array();
+        } else {
+          bytes = await readBoundedBytes(response, maxBodyBytes);
+        }
         return {
-          body: await readBoundedBody(response, maxBodyBytes),
+          body: new TextDecoder().decode(bytes),
+          bytes,
           contentType: response.headers.get("content-type") ?? "application/octet-stream",
           finalUrl: approved.url.href,
           ok: response.ok,

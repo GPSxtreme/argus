@@ -78,7 +78,10 @@ export const renderInstanceConfig = (
       ? {
           web: {
             enabled: true,
-            ...(searxngEnabled ? { searchEndpoint: endpoints.searxng } : {}),
+            ...(searxngEnabled ? {
+              searchEndpoint: endpoints.searxng,
+              searchEndpointTrust: answers.managed.searxng === "managed" ? "trusted" : "public",
+            } : {}),
           },
         }
       : {}),

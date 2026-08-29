@@ -22,6 +22,7 @@ sources:
   web:
     enabled: true
     searchEndpoint: http://localhost:8080
+    searchEndpointTrust: trusted
     browserFallback: false
 
 watches:

@@ -25,11 +25,16 @@ sources:
   web:
     enabled: true
     searchEndpoint: http://searxng:8080
+    searchEndpointTrust: trusted
     userAgent: Argus/0.1
     browserFallback: false
 ```
 
 `browserFallback: false` is the only supported v2 value. Do not configure browser automation as a fallback.
+
+Use `searchEndpointTrust: trusted` only for an operator-controlled private
+service such as Argus-managed SearXNG. External endpoints default to `public`,
+which validates and pins every public DNS answer again on redirect hops.
 
 ## Configure watches
 
@@ -63,6 +68,6 @@ Web requests enforce public-network policy: only `http`/`https`, no URL credenti
 
 ## Troubleshooting
 
-- A Web query needs `sources.web.searchEndpoint`; set it to the managed SearXNG origin.
+- A Web query needs `sources.web.searchEndpoint`; managed private SearXNG also needs `searchEndpointTrust: trusted`, while external public endpoints keep the `public` default.
 - A rejected direct URL is usually non-public DNS, a credentialed URL, a private redirect, or an HTTPS downgrade.
 - Check `argus logs argus` for bounded request failures or non-success feed/page responses.

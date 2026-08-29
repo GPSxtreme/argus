@@ -68,12 +68,14 @@ const sourcesSchema = z
       .object({
         enabled: z.boolean().default(false),
         searchEndpoint: z.url().optional(),
+        searchEndpointTrust: z.enum(["public", "trusted"]).default("public"),
         userAgent: z.string().min(1).default("Argus/0.1"),
         browserFallback: z.boolean().default(false),
       })
       .strict()
       .default({
         enabled: false,
+        searchEndpointTrust: "public",
         userAgent: "Argus/0.1",
         browserFallback: false,
       }),
@@ -84,6 +86,7 @@ const sourcesSchema = z
     telegram: { enabled: false, adapter: "public-web" },
     web: {
       enabled: false,
+      searchEndpointTrust: "public",
       userAgent: "Argus/0.1",
       browserFallback: false,
     },

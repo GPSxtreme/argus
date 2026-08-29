@@ -77,6 +77,7 @@ describe("loadConfig", () => {
         telegram: { enabled: false, adapter: "public-web" as const },
         web: {
           enabled: false,
+          searchEndpointTrust: "public" as const,
           userAgent: "Argus/0.1",
           browserFallback: false,
         },
@@ -124,6 +125,7 @@ describe("loadConfig", () => {
         telegram: { enabled: false, adapter: "public-web" as const },
         web: {
           enabled: false,
+          searchEndpointTrust: "public" as const,
           userAgent: "Argus/0.1",
           browserFallback: false,
         },
@@ -268,6 +270,7 @@ describe("loadConfig", () => {
         telegram: { enabled: false, adapter: "public-web" as const },
         web: {
           enabled: false,
+          searchEndpointTrust: "public" as const,
           userAgent: "Argus/0.1",
           browserFallback: false,
         },

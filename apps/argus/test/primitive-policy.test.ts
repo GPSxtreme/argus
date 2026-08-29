@@ -22,6 +22,8 @@ describe("primitive request policy", () => {
     "/2/../admin",
     "/2/%2e%2e/admin",
     "/2/%252e%252e/admin",
+    "/2/%25252e%25252e/admin",
+    "/2/%2525252e%2525252e/admin",
     "/2/status%2fadmin",
     `/2/${"a".repeat(4_100)}`,
   ])("rejects an unsafe X path: %s", (path) => {

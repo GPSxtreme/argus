@@ -28,7 +28,7 @@ describe("FxEmbed client", () => {
 
   it("reads bounded conversation pages", async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json(conversationPage));
-    await expect(new FxEmbedClient("https://fx.example", fetcher).conversation("190", "first")).resolves.toMatchObject({ items: [{ externalId: "190" }], cursor: "next-page" });
+    await expect(new FxEmbedClient("https://fx.example", fetcher).conversation("190", "first")).resolves.toMatchObject({ items: [{ externalId: "190", relations: [{ kind: "reply_to", objectExternalId: "20" }], media: [{ durationMs: 109383, altText: "A live reply video" }] }], cursor: "next-page" });
     expect(fetcher).toHaveBeenCalledWith("https://fx.example/2/conversation/190?cursor=first", expect.anything());
   });
   it("normalizes account posts into source items", async () => {

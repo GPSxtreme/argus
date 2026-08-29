@@ -165,6 +165,7 @@ api:
     expect(rendered.yaml).toContain("id: research");
     expect(rendered.yaml).toContain("accounts:");
     expect(rendered.yaml).toContain("maxTrackingHours: 168");
+    expect(rendered.yaml).toContain("searchEndpointTrust: trusted");
     expect(rendered.yaml).toContain("- argus");
     expect(rendered.yaml).toContain("id: daily");
     expect(rendered.yaml).toContain("kind: summary");

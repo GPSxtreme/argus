@@ -17,7 +17,23 @@
       "reposts": 6,
       "quotes": 3,
       "views": 900,
-      "bookmarks": 4
+      "bookmarks": 4,
+      "replying_to": {
+        "screen_name": "jack",
+        "status": "20",
+        "url": "https://x.com/jack/status/20"
+      },
+      "media": {
+        "all": [
+          {
+            "id": "video-1",
+            "type": "video",
+            "url": "https://cdn.example/reply.mp4",
+            "duration": 109.383,
+            "altText": "A live reply video"
+          }
+        ]
+      }
     }
   ],
   "thread": [],

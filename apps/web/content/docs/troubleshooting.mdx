@@ -125,9 +125,9 @@ and transient primitives; do not increase confidence beyond the returned data.
 `GET /v1/records/:id/conversation` with the configured API token.
 
 **Meaning:** Reply tracking is opt-in, ends at `maxTrackingHours`, observes at
-most 10 pages or 500 replies per refresh, and retains at most `maxPerPost` in
-the configured order. `complete` describes the bounded collection run, not all
-replies on X.
+most 500 distinct replies per refresh while following distinct cursors, and
+retains at most `maxPerPost` in the configured order. `complete` describes the
+bounded collection run, not all replies on X.
 
 **Recover:** Choose a longer Hot, Standard, Niche, or custom tracking horizon
 for future posts and apply the reviewed configuration. Use the authenticated

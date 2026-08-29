@@ -111,4 +111,28 @@ describe("primitive transport", () => {
     })).rejects.toMatchObject({ code: "PRIMITIVE_UPSTREAM_REJECTED" });
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
+
+  it("preserves public response bytes and sends HEAD upstream", async () => {
+    const binary = Uint8Array.from([0xff, 0xfe, 0x00, 0x61]);
+    const getFetcher = vi.fn(async () => new Response(binary));
+    const get = await requestPrimitive({
+      url: new URL("https://fx.example.com/data"),
+      method: "GET",
+      safety: "public",
+      fetcher: getFetcher,
+      resolver: async () => [{ address: "8.8.8.8", family: 4 }],
+    });
+    expect(get.body).toEqual(binary);
+
+    const headFetcher = vi.fn(async () => new Response(null, { status: 204 }));
+    const head = await requestPrimitive({
+      url: new URL("https://fx.example.com/data"),
+      method: "HEAD",
+      safety: "public",
+      fetcher: headFetcher,
+      resolver: async () => [{ address: "8.8.8.8", family: 4 }],
+    });
+    expect(head.body).toHaveLength(0);
+    expect(headFetcher).toHaveBeenCalledWith(expect.any(URL), expect.objectContaining({ method: "HEAD" }));
+  });
 });
