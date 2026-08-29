@@ -149,4 +149,36 @@ describe("scheduled summary processor", () => {
 
     expect(summarizedIds).toEqual([recordIdentity("web", "1")]);
   });
+
+  it("grounds summaries in the latest bounded conversation sample", async () => {
+    const repository = await createSqliteRepository({ filename: ":memory:" });
+    repositories.push(repository);
+    const rootId = recordIdentity("x", "root");
+    const replyId = recordIdentity("x", "reply");
+    for (const record of [
+      { id: rootId, externalId: "root", targetId: "markets:x:account:analyst", url: "https://x.com/analyst/status/root", text: "Price prediction" },
+      { id: replyId, externalId: "reply", targetId: `__argus_x_conversation:${rootId}`, url: "https://x.com/trader/status/reply", text: "That chart is misleading" },
+    ]) {
+      await repository.upsertRecord({ ...record, source: "x", raw: {}, watchIds: ["markets"], contentHash: record.id, firstSeenAt: "2026-08-29T00:00:00.000Z", lastSeenAt: "2026-08-29T00:00:00.000Z" });
+    }
+    await repository.saveConversationSnapshot({
+      snapshot: { id: "latest-snapshot", rootRecordId: rootId, observedCount: 40, retainedCount: 1, orderBy: "likes", pagesFetched: 2, complete: true, truncated: false, collectedAt: "2026-08-29T01:00:00.000Z" },
+      items: [{ snapshotId: "latest-snapshot", replyRecordId: replyId, rank: 1, sortValue: 25 }],
+    });
+    const config = validateConfig({ version: 2, storage: { adapter: "sqlite", url: ":memory:" }, sources: {}, watches: [], intelligence: { enabled: true, apiKey: "secret", processors: [{ id: "market-summary", kind: "summary", watchIds: ["markets"] }] } });
+    const processor = config.intelligence.processors[0];
+    if (!processor) throw new Error("Expected processor");
+    let summarizedIds: string[] = [];
+    await runSummaryProcessor(processor, config, repository, {
+      summarize: async (records) => {
+        summarizedIds = records.map(({ id }) => id);
+        return { content: "Prediction drew skepticism. [1] [2]", model: "test", sources: [], media: [], capabilitiesSource: "fallback" };
+      },
+    });
+    expect(summarizedIds).toEqual([rootId, replyId]);
+    expect((await repository.queryArtifacts({})).items[0]).toMatchObject({
+      recordIds: [rootId, replyId],
+      provenance: { conversationSamples: [{ rootRecordId: rootId, snapshotId: "latest-snapshot", observedCount: 40, retainedCount: 1, includedReplyRecordIds: [replyId] }] },
+    });
+  });
 });

@@ -8,7 +8,7 @@ import type {
   QueryArtifactsInput, QueryRecordsInput, RecordDetail, RecordEnvelope,
   RecordRevision, SourceItem, StorageRepository,
 } from "@argus/contracts";
-import { decodeRecordsCursor, encodeRecordsCursor, escapeSubstringPattern } from "@argus/contracts";
+import { decodeConversationCursor, decodeRecordsCursor, encodeConversationCursor, encodeRecordsCursor, escapeSubstringPattern } from "@argus/contracts";
 import { Pool, type PoolClient } from "pg";
 
 type Row = Record<string, unknown>;
@@ -237,10 +237,18 @@ export class PostgresRepository implements StorageRepository {
   async saveConversationSnapshot(input: { snapshot: ConversationSnapshot; items: ConversationSnapshotItem[] }): Promise<void> {
     const client = await this.pool.connect(); try { await client.query("BEGIN"); const s = input.snapshot; await client.query("INSERT INTO conversation_snapshots(id,root_record_id,observed_count,retained_count,order_by,pages_fetched,complete,truncated,truncation_reason,upstream_cursor,collected_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)", [s.id,s.rootRecordId,s.observedCount,s.retainedCount,s.orderBy,s.pagesFetched,s.complete,s.truncated,s.truncationReason ?? null,s.upstreamCursor ?? null,s.collectedAt]); for (const item of input.items) await client.query("INSERT INTO conversation_snapshot_items(snapshot_id,reply_record_id,rank,sort_value) VALUES($1,$2,$3,$4)", [item.snapshotId,item.replyRecordId,item.rank,item.sortValue ?? null]); await client.query("COMMIT"); } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
   }
-  async queryConversationSnapshots(rootRecordId: string): Promise<Page<ConversationSnapshot & { items: ConversationSnapshotItem[] }>> {
-    const rows = (await this.pool.query<Row>("SELECT * FROM conversation_snapshots WHERE root_record_id=$1 ORDER BY collected_at DESC,id DESC", [rootRecordId])).rows; const result = [];
-    for (const row of rows) { const members = (await this.pool.query<Row>("SELECT * FROM conversation_snapshot_items WHERE snapshot_id=$1 ORDER BY rank", [row.id])).rows; result.push({ id: row.id as string, rootRecordId: row.root_record_id as string, observedCount: row.observed_count as number, retainedCount: row.retained_count as number, orderBy: row.order_by as ConversationSnapshot["orderBy"], pagesFetched: row.pages_fetched as number, complete: row.complete as boolean, truncated: row.truncated as boolean, ...(row.truncation_reason == null ? {} : { truncationReason: row.truncation_reason as NonNullable<ConversationSnapshot["truncationReason"]> }), ...(row.upstream_cursor == null ? {} : { upstreamCursor: row.upstream_cursor as string }), collectedAt: iso(row.collected_at), items: members.map((item) => ({ snapshotId: item.snapshot_id as string, replyRecordId: item.reply_record_id as string, rank: item.rank as number, ...(item.sort_value == null ? {} : { sortValue: item.sort_value as number }) })) }); }
-    return { items: result };
+  async queryConversationSnapshots(rootRecordId: string, input: { limit?: number; cursor?: string } = {}): Promise<Page<ConversationSnapshot & { items: ConversationSnapshotItem[] }>> {
+    const cursor = decodeConversationCursor(input.cursor); const limit = Math.min(Math.max(input.limit ?? 20, 1), 100);
+    const values: unknown[] = [rootRecordId];
+    const predicate = cursor ? " AND (collected_at<$2 OR (collected_at=$2 AND id<$3))" : "";
+    if (cursor) values.push(cursor.collectedAt, cursor.id);
+    values.push(limit + 1);
+    const rows = (await this.pool.query<Row>(`SELECT * FROM conversation_snapshots WHERE root_record_id=$1${predicate} ORDER BY collected_at DESC,id DESC LIMIT $${values.length}`, values)).rows;
+    const result = [];
+    const selected = rows.slice(0, limit);
+    for (const row of selected) { const members = (await this.pool.query<Row>("SELECT * FROM conversation_snapshot_items WHERE snapshot_id=$1 ORDER BY rank", [row.id])).rows; result.push({ id: row.id as string, rootRecordId: row.root_record_id as string, observedCount: row.observed_count as number, retainedCount: row.retained_count as number, orderBy: row.order_by as ConversationSnapshot["orderBy"], pagesFetched: row.pages_fetched as number, complete: row.complete as boolean, truncated: row.truncated as boolean, ...(row.truncation_reason == null ? {} : { truncationReason: row.truncation_reason as NonNullable<ConversationSnapshot["truncationReason"]> }), ...(row.upstream_cursor == null ? {} : { upstreamCursor: row.upstream_cursor as string }), collectedAt: iso(row.collected_at), items: members.map((item) => ({ snapshotId: item.snapshot_id as string, replyRecordId: item.reply_record_id as string, rank: item.rank as number, ...(item.sort_value == null ? {} : { sortValue: item.sort_value as number }) })) }); }
+    const last = result.at(-1);
+    return { items: result, ...(rows.length > limit && last ? { nextCursor: encodeConversationCursor(last) } : {}) };
   }
 
   async enqueueJob(job: Job): Promise<boolean> { const result = await this.pool.query("INSERT INTO jobs(id,target_id,source,status,attempt,run_at,lease_owner,lease_token,lease_expires_at,error) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT DO NOTHING", [job.id,job.targetId,job.source,job.status,job.attempt,job.runAt,job.leaseOwner ?? null,job.leaseToken ?? null,job.leaseExpiresAt ?? null,job.error ?? null]); return result.rowCount === 1; }

@@ -6,7 +6,9 @@ description: Collect public direct URLs and feeds, or discover results through m
 v2 extracts public page/feed image, video, audio, and document pointers in
 addition to text and links. Authenticated agents can call
 `GET /v1/primitives/web/search?q=...` for bounded transient SearXNG JSON; the
-response is not persisted.
+response is not persisted. Agents may also pass `engines`, `categories`,
+`language`, `time_range`, and `pageno`; Argus rejects other parameters and
+always forces `format=json`.
 
 ## What it collects
 

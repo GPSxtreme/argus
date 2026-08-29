@@ -1,6 +1,7 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import type { ArgusConfig } from "@argus/config";
 import {
+  InvalidConversationCursorError,
   InvalidRecordsCursorError,
   type StorageRepository,
 } from "@argus/contracts";
@@ -15,7 +16,9 @@ import {
   verifyManagementConfig,
 } from "./management-config.js";
 import { createPrimitiveRouter, type PrimitiveRateLimiter } from "./primitives/index.js";
+import { buildIntelligenceContext } from "./intelligence-context.js";
 import { type DiagnosticResolver, safeDiagnosticWebTarget } from "./web-safety.js";
+import type { WebResolver } from "@argus/source-web";
 
 export interface CreateAppInput {
   config: ArgusConfig;
@@ -23,6 +26,7 @@ export interface CreateAppInput {
   diagnosticResolver?: DiagnosticResolver;
   primitiveFetcher?: typeof fetch;
   primitiveLimiter?: PrimitiveRateLimiter;
+  primitiveResolver?: WebResolver;
   openRouterFetcher?: typeof fetch;
 }
 
@@ -30,9 +34,9 @@ export const API_ROUTES = {
   health: { method: "GET", path: "/health" },
   records: { method: "GET", path: "/v1/records" },
   record: { method: "GET", path: "/v1/records/:id" },
-  conversationSnapshots: {
+  conversation: {
     method: "GET",
-    path: "/v1/records/:id/conversation-snapshots",
+    path: "/v1/records/:id/conversation",
   },
   artifacts: { method: "GET", path: "/v1/artifacts" },
   ingestWatch: { method: "POST", path: "/v1/watches/:watchId/ingest" },
@@ -79,13 +83,9 @@ const tokenMatches = (
   );
 };
 
-export const createApp = ({ config, repository, diagnosticResolver, primitiveFetcher, primitiveLimiter, openRouterFetcher }: CreateAppInput): Hono => {
+export const createApp = ({ config, repository, diagnosticResolver, primitiveFetcher, primitiveLimiter, primitiveResolver, openRouterFetcher }: CreateAppInput): Hono => {
   const app = new Hono();
   const query = new QueryService(repository);
-  const richRecords = async (records: Array<{ id: string }>) =>
-    (
-      await Promise.all(records.map((record) => repository.getRecord(record.id)))
-    ).filter((record) => record !== undefined);
 
   registerApiRoute(app, API_ROUTES.health, (context) =>
     context.json({
@@ -109,6 +109,7 @@ export const createApp = ({ config, repository, diagnosticResolver, primitiveFet
       config,
       ...(primitiveFetcher ? { fetcher: primitiveFetcher } : {}),
       ...(primitiveLimiter ? { limiter: primitiveLimiter } : {}),
+      ...(primitiveResolver ? { resolver: primitiveResolver } : {}),
     }),
   );
 
@@ -160,22 +161,61 @@ export const createApp = ({ config, repository, diagnosticResolver, primitiveFet
   });
 
   registerApiRoute(app, API_ROUTES.record, async (context) => {
-    const id = context.req.param("id");
-    if (!id) return context.json({ error: "record id is required" }, 400);
+    const id = context.req.param("id") ?? "";
+    if (!/^[a-f0-9]{64}$/u.test(id)) {
+      return context.json({ error: "record id must be a 64-character lowercase hex digest" }, 400);
+    }
     const record = await repository.getRecord(id);
     return record
       ? context.json(record)
       : context.json({ error: "record not found" }, 404);
   });
 
-  registerApiRoute(app, API_ROUTES.conversationSnapshots, async (context) => {
-    const id = context.req.param("id");
-    if (!id) return context.json({ error: "record id is required" }, 400);
+  registerApiRoute(app, API_ROUTES.conversation, async (context) => {
+    const id = context.req.param("id") ?? "";
+    if (!/^[a-f0-9]{64}$/u.test(id)) {
+      return context.json({ error: "record id must be a 64-character lowercase hex digest" }, 400);
+    }
+    const limit = Number(context.req.query("limit") ?? 20);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+      return context.json({ error: "limit must be an integer from 1 to 100" }, 400);
+    }
     const record = await repository.getRecord(id);
     if (!record) return context.json({ error: "record not found" }, 404);
-    return context.json(
-      await repository.queryConversationSnapshots(record.id),
-    );
+    try {
+      const cursor = context.req.query("cursor");
+      const history = await repository.queryConversationSnapshots(record.id, {
+        limit,
+        ...(cursor ? { cursor } : {}),
+      });
+      const latestPage = cursor
+        ? await repository.queryConversationSnapshots(record.id, { limit: 1 })
+        : history;
+      const latestSnapshot = latestPage.items[0];
+      const latest = latestSnapshot
+        ? {
+            snapshot: latestSnapshot,
+            replies: (
+              await Promise.all(
+                latestSnapshot.items.map(async (item) => {
+                  const reply = await repository.getRecord(item.replyRecordId);
+                  return reply ? { ...item, record: reply } : undefined;
+                }),
+              )
+            ).filter((reply) => reply !== undefined),
+          }
+        : undefined;
+      return context.json({
+        root: record,
+        ...(latest ? { latest } : {}),
+        history,
+      });
+    } catch (error) {
+      if (error instanceof InvalidConversationCursorError) {
+        return context.json({ error: "invalid conversation cursor" }, 400);
+      }
+      throw error;
+    }
   });
 
   registerApiRoute(app, API_ROUTES.artifacts, async (context) => {
@@ -371,16 +411,16 @@ export const createApp = ({ config, repository, diagnosticResolver, primitiveFet
       ...(request.watchIds ? { watchIds: request.watchIds } : {}),
       limit,
     });
-    const contextRecords = await richRecords(records.items);
+    const intelligenceContext = await buildIntelligenceContext(repository, records.items);
     const result = await new OpenRouterClient({
       apiKey: config.intelligence.apiKey,
       model: config.intelligence.model,
       ...(openRouterFetcher ? { fetcher: openRouterFetcher } : {}),
-    }).summarize(contextRecords, request.prompt);
+    }).summarize(intelligenceContext.records, request.prompt);
     const id = randomUUID();
     await repository.saveArtifact({
       id,
-      recordIds: records.items.map((record) => record.id),
+      recordIds: intelligenceContext.records.map((record) => record.id),
       media: result.media.map(({ mediaAssetId, disposition }) => ({
         mediaAssetId,
         disposition,
@@ -394,6 +434,7 @@ export const createApp = ({ config, repository, diagnosticResolver, primitiveFet
         sources: result.sources,
         capabilitiesSource: result.capabilitiesSource,
         media: result.media,
+        conversationSamples: intelligenceContext.conversationSamples,
       },
       createdAt: new Date().toISOString(),
     });
@@ -434,19 +475,19 @@ export const createApp = ({ config, repository, diagnosticResolver, primitiveFet
       ...(request?.until ? { until: request.until } : {}),
       limit,
     });
-    const contextRecords = await richRecords(records.items);
+    const intelligenceContext = await buildIntelligenceContext(repository, records.items);
     const result = await new OpenRouterClient({
       apiKey: config.intelligence.apiKey,
       model: config.intelligence.model,
       ...(openRouterFetcher ? { fetcher: openRouterFetcher } : {}),
     }).summarize(
-      contextRecords,
+      intelligenceContext.records,
       `Answer the user's question directly and concisely: ${question}`,
     );
     const id = randomUUID();
     await repository.saveArtifact({
       id,
-      recordIds: records.items.map((record) => record.id),
+      recordIds: intelligenceContext.records.map((record) => record.id),
       media: result.media.map(({ mediaAssetId, disposition }) => ({
         mediaAssetId,
         disposition,
@@ -461,6 +502,7 @@ export const createApp = ({ config, repository, diagnosticResolver, primitiveFet
         sources: result.sources,
         capabilitiesSource: result.capabilitiesSource,
         media: result.media,
+        conversationSamples: intelligenceContext.conversationSamples,
       },
       createdAt: new Date().toISOString(),
     });

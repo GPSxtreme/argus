@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   PrimitiveBoundaryError,
   PrimitiveRateLimiter,
+  resolveWebSearchPrimitive,
   resolveXPrimitive,
 } from "../src/primitives/policy.js";
 
@@ -53,5 +54,14 @@ describe("primitive request policy", () => {
     expect(limiter.consume("token", "x", now + 60_000)).toEqual({
       allowed: true,
     });
+  });
+
+  it("forwards only documented SearXNG parameters and forces JSON", () => {
+    const query = new URLSearchParams({ q: "movie news", engines: "bing,google", categories: "news", language: "en", time_range: "day", pageno: "2" });
+    expect(resolveWebSearchPrimitive("http://searxng:8080/", query).href).toBe(
+      "http://searxng:8080/search?q=movie+news&engines=bing%2Cgoogle&categories=news&language=en&time_range=day&pageno=2&format=json",
+    );
+    expect(() => resolveWebSearchPrimitive("http://searxng:8080/", new URLSearchParams({ q: "news", format: "html" }))).toThrow(PrimitiveBoundaryError);
+    expect(() => resolveWebSearchPrimitive("http://searxng:8080/", new URLSearchParams({ q: "news", unsafe: "1" }))).toThrow(PrimitiveBoundaryError);
   });
 });

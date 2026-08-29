@@ -24,9 +24,9 @@ Inspect every relevant original X post in the matching corpus that has a stored
 snapshot. If that is too large, rank roots by observed reply count, apply a
 disclosed cap, and do not call the selection representative of all X.
 
-1. Read `/v1/records/:id/conversation-snapshots`.
+1. Read `/v1/records/:id/conversation`.
 2. Prefer the latest snapshot inside the report window.
-3. Fetch each ranked `replyRecordId` through `/v1/records/:id`.
+3. Use the hydrated ranked reply records in `latest.replies`.
 4. Preserve observed/retained counts, ordering, pages, completeness, truncation,
    and collection time with the analysis.
 
@@ -40,8 +40,8 @@ GET /v1/primitives/x/2/conversation/<externalStatusId>?cursor=<upstreamCursor>
 
 Continue only while the upstream response supplies a cursor and the research
 budget remains. Default to at most 10 transient pages per conversation. The
-built-in collector itself observes at most 10 pages or 500 replies per refresh
-before retaining the configured ranked sample.
+built-in collector follows distinct cursors until exhaustion or 500 distinct
+replies per refresh before retaining the configured ranked sample.
 
 ## Web discovery
 

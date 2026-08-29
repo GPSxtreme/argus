@@ -50,7 +50,9 @@ const boundedBytes = async (response: Response): Promise<Uint8Array> => {
 export interface PrimitiveTransportInput {
   url: URL;
   method: "GET" | "HEAD";
+  safety: "public" | "trusted";
   fetcher?: typeof fetch;
+  resolver?: WebResolver;
 }
 
 export interface PrimitiveTransportResult {
@@ -64,9 +66,52 @@ export interface PrimitiveTransportResult {
 export const requestPrimitive = async ({
   url,
   method,
+  safety,
   fetcher = fetch,
+  resolver,
 }: PrimitiveTransportInput): Promise<PrimitiveTransportResult> => {
   const startedAt = performance.now();
+  if (safety === "public") {
+    try {
+      const requester: SafeHttpRequester | undefined =
+        fetcher === fetch
+          ? undefined
+          : async (target, init) =>
+              fetcher(target, {
+                method: "GET",
+                redirect: init.redirect,
+                ...(init.headers ? { headers: init.headers } : {}),
+                signal: init.signal,
+                dispatcher: init.dispatcher,
+              } as RequestInit & { dispatcher: unknown });
+      const response = await safeHttpGet(url, {
+        allowedOrigin: url.origin,
+        ...(resolver ? { resolver } : {}),
+        ...(requester ? { request: requester } : {}),
+        headers: { accept: "application/json", "user-agent": "Argus/0.1" },
+        maxRedirects: MAX_REDIRECTS,
+        timeoutMs: TIMEOUT_MS,
+        maxBodyBytes: MAX_BODY_BYTES,
+      });
+      const body = method === "HEAD" ? new Uint8Array() : new TextEncoder().encode(response.body);
+      return {
+        status: response.status,
+        contentType: response.contentType,
+        body,
+        bytes: body.byteLength,
+        durationMs: Math.max(0, performance.now() - startedAt),
+      };
+    } catch (error) {
+      if (error instanceof SafeWebError) {
+        throw new PrimitiveTransportError(
+          error.code === "WEB_RESPONSE_TOO_LARGE"
+            ? "PRIMITIVE_RESPONSE_TOO_LARGE"
+            : "PRIMITIVE_UPSTREAM_REJECTED",
+        );
+      }
+      throw error;
+    }
+  }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
   let current = url;
@@ -118,3 +163,9 @@ export const requestPrimitive = async ({
     controller.abort();
   }
 };
+import {
+  safeHttpGet,
+  SafeWebError,
+  type SafeHttpRequester,
+  type WebResolver,
+} from "@argus/source-web";

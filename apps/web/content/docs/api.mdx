@@ -27,9 +27,9 @@ cursor encodes `{v:2,lastSeenAt,id}`. List records are canonical envelopes.
 `GET /v1/records/:id` returns rich detail: watch/target observations, ordered
 media pointers, relations, and latest engagement. It returns 404 when absent.
 
-## `GET /v1/records/:id/conversation-snapshots`
+## `GET /v1/records/:id/conversation`
 
-`GET /v1/records/:id/conversation-snapshots` returns observed X reply snapshots
+`GET /v1/records/:id/conversation` returns the root record, the latest ranked X reply sample with hydrated reply records, and bounded snapshot history. History accepts `limit` (1–100, default 20) and an opaque `cursor`.
 and their ranked reply record IDs. Fetch each reply through the detail route.
 
 ```bash
@@ -37,7 +37,7 @@ curl -H "Authorization: Bearer $ARGUS_API_TOKEN" \
   "$ARGUS_URL/v1/records?source=x&since=2026-08-29T00%3A00%3A00.000Z&limit=50"
 
 curl -H "Authorization: Bearer $ARGUS_API_TOKEN" \
-  "$ARGUS_URL/v1/records/$RECORD_ID/conversation-snapshots"
+  "$ARGUS_URL/v1/records/$RECORD_ID/conversation"
 ```
 
 ## `GET /v1/artifacts`
@@ -55,7 +55,9 @@ requires enabled OpenRouter intelligence and stores a `summary` artifact.
 `POST /v1/query` accepts a required `question` and optional `watchIds`, `since`,
 `until`, and `limit` (1–100). It selects recent matching context, produces a
 sourced OpenRouter answer, stores an `answer` artifact, and returns numbered
-source links. The CLI command is the easiest client:
+source links. Both summaries and answers include each selected root's latest
+bounded reply sample when available, and store the exact snapshot/reply IDs in
+artifact provenance. The CLI command is the easiest client:
 
 ```bash
 argus query latest-news --watch=screen-news --since=2026-08-29T09:00:00.000Z --until=2026-08-29T18:00:00.000Z --limit=50 --json
@@ -77,7 +79,8 @@ returns 202 with `{queued, watchId}`.
 FxEmbed origin. Query parameters pass through. The agent cannot provide a host.
 Only GET and HEAD are supported; response bodies are capped at 2 MiB,
 same-origin redirects at five, requests at ten seconds, and each token/source
-at 60 calls per minute.
+at 60 calls per minute. Every public DNS answer is validated and pinned again
+for every redirect hop.
 
 ## `HEAD /v1/primitives/x/*`
 
@@ -94,9 +97,11 @@ artifacts, or jobs for this request.
 
 ## `GET /v1/primitives/web/search`
 
-`GET /v1/primitives/web/search?q=...` calls only the configured SearXNG origin
-and forces `format=json`. It uses the same authentication, body, redirect,
-timeout, and rate bounds and also writes nothing.
+`GET /v1/primitives/web/search?q=...` calls only the operator-configured,
+trusted SearXNG service and forces `format=json`. Optional allowlisted parameters
+are `engines`, `categories`, `language`, `time_range`, and `pageno`; every other
+parameter is rejected. It uses the same authentication, body, redirect, timeout,
+and rate bounds and also writes nothing.
 
 ```bash
 curl -H "Authorization: Bearer $ARGUS_API_TOKEN" \

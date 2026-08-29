@@ -9,6 +9,7 @@ import {
   OpenRouterClient,
   type SourcedSummary,
 } from "@argus/intelligence";
+import { buildIntelligenceContext } from "./intelligence-context.js";
 
 type Processor = ArgusConfig["intelligence"]["processors"][number];
 interface SummaryClient {
@@ -34,16 +35,11 @@ export const runSummaryProcessor = async (
     ...(processor.watchIds ? { watchIds: processor.watchIds } : {}),
     limit: 100,
   });
-  const details = await Promise.all(
-    records.items.map((record) => repository.getRecord(record.id)),
-  );
-  const context = details.filter(
-    (record): record is RecordDetail => record !== undefined,
-  );
-  const result = await client.summarize(context, processor.prompt);
+  const context = await buildIntelligenceContext(repository, records.items);
+  const result = await client.summarize(context.records, processor.prompt);
   await repository.saveArtifact({
     id: randomUUID(),
-    recordIds: records.items.map((record) => record.id),
+    recordIds: context.records.map((record) => record.id),
     media: result.media.map(({ mediaAssetId, disposition }) => ({
       mediaAssetId,
       disposition,
@@ -57,6 +53,7 @@ export const runSummaryProcessor = async (
       sources: result.sources,
       capabilitiesSource: result.capabilitiesSource,
       media: result.media,
+      conversationSamples: context.conversationSamples,
       ...(result.generationId ? { generationId: result.generationId } : {}),
     },
     createdAt: new Date().toISOString(),

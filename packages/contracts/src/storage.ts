@@ -121,6 +121,63 @@ export const decodeRecordsCursor = (
     throw new InvalidRecordsCursorError();
   }
 };
+
+export class InvalidConversationCursorError extends Error {
+  readonly code = "CONVERSATION_CURSOR_INVALID";
+
+  constructor() {
+    super("Invalid conversation cursor");
+    this.name = "InvalidConversationCursorError";
+  }
+}
+
+export interface QueryConversationSnapshotsInput {
+  limit?: number;
+  cursor?: string;
+}
+
+interface ConversationCursorV2 {
+  v: 2;
+  collectedAt: string;
+  id: string;
+}
+
+export const encodeConversationCursor = (
+  snapshot: Pick<ConversationSnapshot, "collectedAt" | "id">,
+): string =>
+  Buffer.from(
+    JSON.stringify({ v: 2, collectedAt: snapshot.collectedAt, id: snapshot.id }),
+  ).toString("base64url");
+
+export const decodeConversationCursor = (
+  cursor?: string,
+): ConversationCursorV2 | undefined => {
+  if (!cursor) return undefined;
+  try {
+    if (cursor.length > 4096 || !/^[A-Za-z0-9_-]+$/.test(cursor)) {
+      throw new Error("invalid encoding");
+    }
+    const decoded = Buffer.from(cursor, "base64url");
+    if (decoded.toString("base64url") !== cursor) throw new Error("non-canonical");
+    const parsed = JSON.parse(decoded.toString("utf8")) as Partial<ConversationCursorV2>;
+    if (
+      !parsed ||
+      typeof parsed !== "object" ||
+      Array.isArray(parsed) ||
+      Object.keys(parsed).length !== 3 ||
+      parsed.v !== 2 ||
+      typeof parsed.collectedAt !== "string" ||
+      new Date(parsed.collectedAt).toISOString() !== parsed.collectedAt ||
+      typeof parsed.id !== "string" ||
+      parsed.id.length === 0
+    ) {
+      throw new Error("invalid value");
+    }
+    return parsed as ConversationCursorV2;
+  } catch {
+    throw new InvalidConversationCursorError();
+  }
+};
 export interface DiagnosticWatch {
   id: string; targetId: string; source: SourceName; target: Record<string, unknown>;
   status: "active" | "cancelled" | "complete"; createdAt: string; updatedAt: string;
@@ -153,6 +210,7 @@ export interface StorageRepository {
   }): Promise<void>;
   queryConversationSnapshots(
     rootRecordId: string,
+    input?: QueryConversationSnapshotsInput,
   ): Promise<Page<ConversationSnapshot & { items: ConversationSnapshotItem[] }>>;
   getCheckpoint<T>(targetId: string): Promise<T | undefined>;
   setCheckpoint<T>(targetId: string, checkpoint: T): Promise<void>;

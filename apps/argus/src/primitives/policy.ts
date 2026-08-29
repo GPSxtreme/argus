@@ -53,7 +53,7 @@ export const resolveXPrimitive = (
 
 export const resolveWebSearchPrimitive = (
   endpoint: string,
-  query: string,
+  query: URLSearchParams,
 ): URL => {
   const configured = new URL(endpoint);
   if (
@@ -67,7 +67,18 @@ export const resolveWebSearchPrimitive = (
   }
   const upstream = new URL(configured.href);
   upstream.pathname = `${configured.pathname.replace(/\/+$/u, "")}/search`;
-  upstream.searchParams.set("q", query);
+  const allowed = new Set(["q", "engines", "categories", "language", "time_range", "pageno"]);
+  for (const key of query.keys()) {
+    if (!allowed.has(key) || query.getAll(key).length !== 1) {
+      throw new PrimitiveBoundaryError("PRIMITIVE_QUERY_INVALID");
+    }
+  }
+  const search = query.get("q")?.trim();
+  if (!search) throw new PrimitiveBoundaryError("PRIMITIVE_QUERY_INVALID");
+  for (const key of allowed) {
+    const value = query.get(key);
+    if (value !== null) upstream.searchParams.set(key, value);
+  }
   upstream.searchParams.set("format", "json");
   if (upstream.href.length > 4_096) {
     throw new PrimitiveBoundaryError("PRIMITIVE_PATH_INVALID");

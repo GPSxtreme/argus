@@ -28,7 +28,7 @@ The response is `{items, nextCursor?}`. Each item is a canonical record with
 - `relations`: replies, quotes, reposts, thread parents, and links
 - `latestEngagement`: the newest observed counts
 
-`GET /v1/records/:id/conversation-snapshots` returns `{items}`. A snapshot has
+`GET /v1/records/:id/conversation` returns the root record, the latest hydrated ranked reply sample, and a bounded `{items, nextCursor?}` history. A snapshot has
 `observedCount`, `retainedCount`, `orderBy`, `pagesFetched`, `complete`,
 `truncated`, optional `truncationReason` and `upstreamCursor`, `collectedAt`, and
 ranked `items` containing `replyRecordId`.
@@ -43,7 +43,8 @@ creation time.
 `HEAD /v1/primitives/x/2/<path>` proxy only the configured FxEmbed origin.
 
 `GET /v1/primitives/web/search?q=<text>` proxies only configured SearXNG and
-forces JSON output.
+forces JSON output. Optional parameters are `engines`, `categories`, `language`,
+`time_range`, and `pageno`; no other upstream parameters are accepted.
 
 Both require a configured bearer token and are bounded to 60 calls per minute
 per token/source, 10 seconds, 2 MiB, and five same-origin redirects. They do not

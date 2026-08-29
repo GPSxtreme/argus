@@ -105,6 +105,14 @@ export const storageContract = (factory: RepositoryFactory): void => {
       const snapshotId = randomUUID();
       await repository.saveConversationSnapshot({ snapshot: { id: snapshotId, rootRecordId: root.id, observedCount: 1, retainedCount: 1, orderBy: "likes", pagesFetched: 1, complete: true, truncated: false, collectedAt: observedAt }, items: [{ snapshotId, replyRecordId: reply.id, rank: 1, sortValue: 5 }] });
       expect((await repository.queryConversationSnapshots(root.id)).items[0]?.items).toEqual([{ snapshotId, replyRecordId: reply.id, rank: 1, sortValue: 5 }]);
+      const newerSnapshotId = randomUUID();
+      await repository.saveConversationSnapshot({ snapshot: { id: newerSnapshotId, rootRecordId: root.id, observedCount: 1, retainedCount: 1, orderBy: "likes", pagesFetched: 1, complete: true, truncated: false, collectedAt: "2026-08-29T01:00:00.000Z" }, items: [{ snapshotId: newerSnapshotId, replyRecordId: reply.id, rank: 1, sortValue: 6 }] });
+      const first = await repository.queryConversationSnapshots(root.id, { limit: 1 });
+      expect(first.items.map(({ id }) => id)).toEqual([newerSnapshotId]);
+      expect(first.nextCursor).toBeTypeOf("string");
+      if (!first.nextCursor) throw new Error("Expected conversation cursor");
+      expect((await repository.queryConversationSnapshots(root.id, { limit: 1, cursor: first.nextCursor })).items.map(({ id }) => id)).toEqual([snapshotId]);
+      await expect(repository.queryConversationSnapshots(root.id, { cursor: "invalid+cursor" })).rejects.toThrow("Invalid conversation cursor");
     });
 
     it("persists normalized artifact record and media provenance", async () => {

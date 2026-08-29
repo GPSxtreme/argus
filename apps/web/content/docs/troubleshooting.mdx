@@ -122,7 +122,7 @@ and transient primitives; do not increase confidence beyond the returned data.
 ### X replies look incomplete
 
 **Inspect:** Fetch the root record and
-`GET /v1/records/:id/conversation-snapshots` with the configured API token.
+`GET /v1/records/:id/conversation` with the configured API token.
 
 **Meaning:** Reply tracking is opt-in, ends at `maxTrackingHours`, observes at
 most 10 pages or 500 replies per refresh, and retains at most `maxPerPost` in

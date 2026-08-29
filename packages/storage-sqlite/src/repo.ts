@@ -6,7 +6,7 @@ import type {
   IngestionRecord, Job, Page, QueryArtifactsInput, QueryRecordsInput,
   RecordDetail, RecordEnvelope, RecordRevision, SourceItem, StorageRepository,
 } from "@argus/contracts";
-import { decodeRecordsCursor, encodeRecordsCursor, escapeSubstringPattern } from "@argus/contracts";
+import { decodeConversationCursor, decodeRecordsCursor, encodeConversationCursor, encodeRecordsCursor, escapeSubstringPattern } from "@argus/contracts";
 import type { SQLWrapper } from "drizzle-orm";
 import { and, asc, desc, eq, exists, inArray, isNull, lt, lte, notExists, notInArray, or, sql } from "drizzle-orm";
 import type { SqliteConnection } from "./db.js";
@@ -337,10 +337,19 @@ export class SqliteRepository implements StorageRepository {
     });
   }
 
-  async queryConversationSnapshots(rootRecordId: string): Promise<Page<ConversationSnapshot & { items: ConversationSnapshotItem[] }>> {
-    const snapshots = this.orm.select().from(conversationSnapshots).where(eq(conversationSnapshots.rootRecordId, rootRecordId))
-      .orderBy(desc(conversationSnapshots.collectedAt), desc(conversationSnapshots.id)).all();
-    return { items: snapshots.map((snapshot) => ({
+  async queryConversationSnapshots(rootRecordId: string, input: { limit?: number; cursor?: string } = {}): Promise<Page<ConversationSnapshot & { items: ConversationSnapshotItem[] }>> {
+    const cursor = decodeConversationCursor(input.cursor);
+    const limit = Math.min(Math.max(input.limit ?? 20, 1), 100);
+    const predicate = cursor
+      ? and(eq(conversationSnapshots.rootRecordId, rootRecordId), or(
+          lt(conversationSnapshots.collectedAt, cursor.collectedAt),
+          and(eq(conversationSnapshots.collectedAt, cursor.collectedAt), lt(conversationSnapshots.id, cursor.id)),
+        ))
+      : eq(conversationSnapshots.rootRecordId, rootRecordId);
+    const rows = this.orm.select().from(conversationSnapshots).where(predicate)
+      .orderBy(desc(conversationSnapshots.collectedAt), desc(conversationSnapshots.id)).limit(limit + 1).all();
+    const snapshots = rows.slice(0, limit);
+    const items = snapshots.map((snapshot) => ({
       id: snapshot.id, rootRecordId: snapshot.rootRecordId,
       observedCount: snapshot.observedCount, retainedCount: snapshot.retainedCount,
       orderBy: snapshot.orderBy as ConversationSnapshot["orderBy"], pagesFetched: snapshot.pagesFetched,
@@ -349,7 +358,9 @@ export class SqliteRepository implements StorageRepository {
       ...(snapshot.upstreamCursor === null ? {} : { upstreamCursor: snapshot.upstreamCursor }),
       items: this.orm.select().from(conversationSnapshotItems).where(eq(conversationSnapshotItems.snapshotId, snapshot.id))
         .orderBy(asc(conversationSnapshotItems.rank)).all().map((item) => ({ snapshotId: item.snapshotId, replyRecordId: item.replyRecordId, rank: item.rank, ...(item.sortValue === null ? {} : { sortValue: item.sortValue }) })),
-    })) };
+    }));
+    const last = items.at(-1);
+    return { items, ...(rows.length > limit && last ? { nextCursor: encodeConversationCursor(last) } : {}) };
   }
 
   async enqueueJob(job: Job): Promise<boolean> {

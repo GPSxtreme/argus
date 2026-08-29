@@ -31,6 +31,7 @@ export type SafeDispatcherFactory = (
 ) => unknown;
 
 export interface SafeHttpOptions {
+  allowedOrigin?: string;
   resolver?: WebResolver;
   request?: SafeHttpRequester;
   dispatcherFactory?: SafeDispatcherFactory;
@@ -43,6 +44,7 @@ export interface SafeHttpOptions {
 
 export interface SafeHttpResult {
   body: string;
+  contentType: string;
   finalUrl: string;
   ok: boolean;
   status: number;
@@ -196,6 +198,9 @@ export const safeHttpGet = async (
 
   const perform = async (): Promise<SafeHttpResult> => {
     let current = parseSafeWebUrl(input);
+    if (options.allowedOrigin && current.origin !== options.allowedOrigin) {
+      throw new SafeWebError("WEB_DESTINATION_INVALID");
+    }
     const visited = new Set<string>();
     for (let redirects = 0; ; redirects += 1) {
       const canonical = current.href;
@@ -232,6 +237,9 @@ export const safeHttpGet = async (
         if (!location) throw new SafeWebError("WEB_REDIRECT_INVALID");
         try {
           const next = parseSafeWebUrl(new URL(location, approved.url));
+          if (options.allowedOrigin && next.origin !== options.allowedOrigin) {
+            throw new SafeWebError("WEB_REDIRECT_INVALID");
+          }
           if (
             approved.url.protocol === "https:" &&
             next.protocol !== "https:"
@@ -248,6 +256,7 @@ export const safeHttpGet = async (
       try {
         return {
           body: await readBoundedBody(response, maxBodyBytes),
+          contentType: response.headers.get("content-type") ?? "application/octet-stream",
           finalUrl: approved.url.href,
           ok: response.ok,
           status: response.status,

@@ -20,6 +20,7 @@ describe("primitive transport", () => {
     const result = await requestPrimitive({
       url: new URL("https://fx.example.com/start"),
       method: "GET",
+      safety: "trusted",
       fetcher,
     });
 
@@ -49,6 +50,7 @@ describe("primitive transport", () => {
       requestPrimitive({
         url: new URL("https://fx.example.com/start"),
         method: "GET",
+        safety: "trusted",
         fetcher,
       }),
     ).rejects.toMatchObject({ code: "PRIMITIVE_REDIRECT_INVALID" });
@@ -64,6 +66,7 @@ describe("primitive transport", () => {
       requestPrimitive({
         url: new URL("https://fx.example.com/start"),
         method: "GET",
+        safety: "trusted",
         fetcher,
       }),
     ).rejects.toBeInstanceOf(PrimitiveTransportError);
@@ -73,6 +76,7 @@ describe("primitive transport", () => {
     const result = await requestPrimitive({
       url: new URL("https://fx.example.com/start"),
       method: "HEAD",
+      safety: "trusted",
       fetcher: vi.fn(async () =>
         new Response(null, {
           status: 204,
@@ -81,5 +85,30 @@ describe("primitive transport", () => {
       ),
     });
     expect(result.body).toHaveLength(0);
+  });
+
+  it("rejects private DNS answers before a public primitive request", async () => {
+    const fetcher = vi.fn(async () => Response.json({ ok: true }));
+    await expect(requestPrimitive({
+      url: new URL("https://fx.example.com/start"),
+      method: "GET",
+      safety: "public",
+      fetcher,
+      resolver: async () => [{ address: "127.0.0.1", family: 4 }],
+    })).rejects.toMatchObject({ code: "PRIMITIVE_UPSTREAM_REJECTED" });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("revalidates every public redirect hop", async () => {
+    const fetcher = vi.fn(async () => new Response(null, { status: 302, headers: { location: "/final" } }));
+    let resolutions = 0;
+    await expect(requestPrimitive({
+      url: new URL("https://fx.example.com/start"),
+      method: "GET",
+      safety: "public",
+      fetcher,
+      resolver: async () => [{ address: ++resolutions === 1 ? "8.8.8.8" : "10.0.0.1", family: 4 }],
+    })).rejects.toMatchObject({ code: "PRIMITIVE_UPSTREAM_REJECTED" });
+    expect(fetcher).toHaveBeenCalledTimes(1);
   });
 });

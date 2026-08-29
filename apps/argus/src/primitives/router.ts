@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { ArgusConfig } from "@argus/config";
+import type { WebResolver } from "@argus/source-web";
 import { type Context, Hono } from "hono";
 import {
   PrimitiveBoundaryError,
@@ -16,6 +17,7 @@ export interface PrimitiveRouterInput {
   config: ArgusConfig;
   fetcher?: typeof fetch;
   limiter?: PrimitiveRateLimiter;
+  resolver?: WebResolver;
 }
 
 const errorResponse = (
@@ -37,6 +39,7 @@ export const createPrimitiveRouter = ({
   config,
   fetcher,
   limiter = new PrimitiveRateLimiter(),
+  resolver,
 }: PrimitiveRouterInput): Hono => {
   const app = new Hono();
   const tokenDigest = config.api.token
@@ -71,7 +74,9 @@ export const createPrimitiveRouter = ({
       const result = await requestPrimitive({
         url: upstream(),
         method,
+        safety: source === "x" ? "public" : "trusted",
         ...(fetcher ? { fetcher } : {}),
+        ...(resolver ? { resolver } : {}),
       });
       const body = Uint8Array.from(result.body).buffer;
       return new Response(method === "HEAD" ? null : body, {
@@ -144,7 +149,10 @@ export const createPrimitiveRouter = ({
       );
     }
     return proxy(context, "web", () =>
-      resolveWebSearchPrimitive(config.sources.web.searchEndpoint as string, query),
+      resolveWebSearchPrimitive(
+        config.sources.web.searchEndpoint as string,
+        new URL(context.req.url).searchParams,
+      ),
     );
   });
   return app;

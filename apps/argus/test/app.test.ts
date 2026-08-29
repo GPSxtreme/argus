@@ -111,20 +111,22 @@ describe("Argus API", () => {
       media: [{ kind: "image", url: "https://cdn.example/trailer.jpg" }],
       watches: [{ watchId: "movies" }],
     });
+    expect((await app.request("/v1/records/not-a-record", { headers })).status).toBe(400);
     const conversation = await app.request(
-      `/v1/records/${rootRecordId}/conversation-snapshots`,
+      `/v1/records/${rootRecordId}/conversation`,
       { headers },
     );
     expect(conversation.status).toBe(200);
     expect(await conversation.json()).toMatchObject({
-      items: [
-        {
-          observedCount: 1,
-          retainedCount: 1,
-          items: [{ replyRecordId, rank: 1 }],
-        },
-      ],
+      root: { id: rootRecordId },
+      latest: {
+        snapshot: { id: "snapshot", observedCount: 1, retainedCount: 1 },
+        replies: [{ replyRecordId, rank: 1, record: { id: replyRecordId, text: "Looks great" } }],
+      },
+      history: { items: [{ id: "snapshot", items: [{ replyRecordId, rank: 1 }] }] },
     });
+    expect((await app.request(`/v1/records/${rootRecordId}/conversation?cursor=invalid%2Bcursor`, { headers })).status).toBe(400);
+    expect((await app.request("/v1/records/not-a-record/conversation", { headers })).status).toBe(400);
   });
 
   it("proxies authenticated X and web primitives without persistence", async () => {
@@ -146,7 +148,7 @@ describe("Argus API", () => {
     const fetcher = vi.fn(async (url: URL) =>
       Response.json({ upstream: url.href }),
     ) as unknown as typeof fetch;
-    const app = createApp({ config: primitiveConfig, repository, primitiveFetcher: fetcher });
+    const app = createApp({ config: primitiveConfig, repository, primitiveFetcher: fetcher, primitiveResolver: async () => [{ address: "8.8.8.8", family: 4 }] });
     const headers = { authorization: "Bearer secret" };
 
     const x = await app.request(
@@ -158,13 +160,13 @@ describe("Argus API", () => {
       upstream:
         "https://fx.example.com/api/2/conversation/root?cursor=next",
     });
-    const web = await app.request("/v1/primitives/web/search?q=movie+news", {
+    const web = await app.request("/v1/primitives/web/search?q=movie+news&categories=news&language=en&pageno=2", {
       headers,
     });
     expect(web.status).toBe(200);
     expect(await web.json()).toEqual({
       upstream:
-        "https://search.example.com/base/search?q=movie+news&format=json",
+        "https://search.example.com/base/search?q=movie+news&categories=news&language=en&pageno=2&format=json",
     });
     expect((await repository.queryRecords({})).items).toEqual([]);
     expect((await repository.queryArtifacts({})).items).toEqual([]);
