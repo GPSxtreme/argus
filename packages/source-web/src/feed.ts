@@ -1,4 +1,4 @@
-import type { SourceItem } from "@argus/contracts";
+import type { MediaKind, SourceItem, SourceMedia } from "@argus/contracts";
 import { XMLParser } from "fast-xml-parser";
 import { safeHttpGet, type SafeHttpOptions } from "./safe-http.js";
 
@@ -47,11 +47,25 @@ export const parseFeed = (feedUrl: string, xml: string): SourceItem[] => {
       const description = text(
         entry.description ?? entry.summary ?? entry.content,
       );
+      const absolute = (value: string): string | undefined => { try { const resolved = new URL(value, feedUrl); return ["http:", "https:"].includes(resolved.protocol) ? resolved.href : undefined; } catch { return undefined; } };
+      const mediaValues = [
+        ...array(entry.enclosure as Record<string, unknown> | Record<string, unknown>[]),
+        ...array(entry["media:content"] as Record<string, unknown> | Record<string, unknown>[]),
+        ...array(entry["media:thumbnail"] as Record<string, unknown> | Record<string, unknown>[]),
+      ];
+      const media: SourceMedia[] = mediaValues.flatMap((value) => {
+        const pointer = absolute(text(value["@_url"] ?? value.url)); if (!pointer) return [];
+        const mimeType = text(value["@_type"] ?? value.type);
+        const medium = text(value["@_medium"] ?? value.medium).toLowerCase();
+        const kind: MediaKind = medium === "image" || mimeType.startsWith("image/") ? "image" : medium === "audio" || mimeType.startsWith("audio/") ? "audio" : medium === "document" || mimeType === "application/pdf" ? "document" : "video";
+        return [{ kind, url: pointer, ...(mimeType ? { mimeType } : {}) }];
+      }).filter((item, index, values) => values.findIndex((candidate) => candidate.kind === item.kind && candidate.url === item.url) === index);
       return {
         externalId: id,
         url: link || feedUrl,
         ...(text(entry.title) ? { title: text(entry.title) } : {}),
         text: stripHtml(description),
+        ...(media.length ? { media } : {}),
         ...(text(entry.pubDate ?? entry.published ?? entry.updated)
           ? { publishedAt: text(entry.pubDate ?? entry.published ?? entry.updated) }
           : {}),

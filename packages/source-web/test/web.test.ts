@@ -22,6 +22,17 @@ describe("web source", () => {
     expect(item.text).toContain("Argus data layer");
   });
 
+  it("extracts ordered absolute page media pointers", () => {
+    const item = extractPage("https://example.com/news/page", `<html><head><meta property="og:image" content="/hero.jpg"></head><body><article><h1>Launch</h1><img src="/chart.png"><video src="/clip.mp4" poster="/poster.jpg"></video><audio src="/show.mp3"></audio><a href="/deck.pdf">deck</a></article></body></html>`);
+    expect(item.media).toEqual([
+      { kind: "image", url: "https://example.com/hero.jpg" },
+      { kind: "image", url: "https://example.com/chart.png" },
+      { kind: "video", url: "https://example.com/clip.mp4", previewUrl: "https://example.com/poster.jpg" },
+      { kind: "audio", url: "https://example.com/show.mp3" },
+      { kind: "document", url: "https://example.com/deck.pdf" },
+    ]);
+  });
+
   it("parses RSS items", () => {
     const items = parseFeed(
       "https://example.com/rss",
@@ -35,6 +46,11 @@ describe("web source", () => {
       title: "Release",
       text: "Argus V1",
     });
+  });
+
+  it("extracts RSS and Atom media pointers", () => {
+    const rss = parseFeed("https://example.com/feed.xml", `<rss><channel><item><guid>1</guid><enclosure url="/trailer.mp4" type="video/mp4"/><media:content url="/poster.jpg" medium="image"/></item></channel></rss>`);
+    expect(rss[0]?.media).toEqual([{ kind: "video", url: "https://example.com/trailer.mp4", mimeType: "video/mp4" }, { kind: "image", url: "https://example.com/poster.jpg" }]);
   });
 
   it("parses RSS GUID text when the GUID has attributes", () => {

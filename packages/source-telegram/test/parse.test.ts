@@ -20,4 +20,21 @@ describe("Telegram public preview parser", () => {
       }),
     ]);
   });
+
+  it("keeps media-only announcements as pointer records", () => {
+    const html = `<div class="tgme_widget_message" data-post="argus_news/42">
+      <a class="tgme_widget_message_photo_wrap" style="background-image:url('/file/photo.jpg')"></a>
+      <video src="https://cdn.example/video.mp4" poster="/file/poster.jpg"></video>
+      <audio src="https://cdn.example/audio.mp3"></audio>
+      <a class="tgme_widget_message_document" href="/file/report.pdf">report</a>
+    </div>`;
+    expect(parseTelegramPreview(html, "argus_news")[0]).toMatchObject({
+      externalId: "42", text: "", media: [
+        { kind: "image", url: "https://t.me/file/photo.jpg" },
+        { kind: "video", url: "https://cdn.example/video.mp4", previewUrl: "https://t.me/file/poster.jpg" },
+        { kind: "audio", url: "https://cdn.example/audio.mp3" },
+        { kind: "document", url: "https://t.me/file/report.pdf" },
+      ],
+    });
+  });
 });
