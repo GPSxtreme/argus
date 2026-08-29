@@ -8,6 +8,11 @@ deployment:
 managed:
   searxng: managed
   fxembed: disabled
+xReplies:
+  enabled: false
+  maxPerPost: 50
+  maxTrackingHours: 168
+  orderBy: likes
 watches:
   - id: controlled-web-page
     enabled: true

@@ -152,7 +152,7 @@ const runCliMenuExpect = (
       selection === "status"
         ? 'after 100\nsend "\\r"'
         : selection === "exit"
-          ? 'for {set i 0} {$i < 7} {incr i} { send -- "\\033\\[B"; after 75 }\nsend "\\r"'
+          ? 'for {set i 0} {$i < 8} {incr i} { send -- "\\033\\[B"; after 75 }\nsend "\\r"'
           : selection === "cancel"
             ? 'after 100\nsend -- "\\003"'
             : 'after 100\nsend -- "\\004"';
