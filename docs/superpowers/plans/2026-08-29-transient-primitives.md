@@ -94,4 +94,3 @@ if (upstream.origin !== configuredEndpoint.origin) throw new PrimitiveBoundaryEr
 - [ ] **Step 3: Complete runtime dependency injection and concise security documentation.**
 - [ ] **Step 4: Run `pnpm test && pnpm typecheck && pnpm build && pnpm lint`; expect all gates PASS.**
 - [ ] **Step 5: Commit with `git commit -m "test: verify transient primitive gateway"`.**
-

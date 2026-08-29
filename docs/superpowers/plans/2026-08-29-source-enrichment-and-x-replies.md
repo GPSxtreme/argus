@@ -166,4 +166,3 @@ Persist replies through the normal rich ingestion transaction, then save the con
 - [ ] **Step 3: Run focused tests and verify RED.**
 - [ ] **Step 4: Implement strict schema and handlers** exactly matching the spec; hand-authored reply tracking defaults to disabled.
 - [ ] **Step 5: Run `pnpm test && pnpm typecheck && pnpm build && pnpm lint`; commit `feat: expose x conversation context`.**
-
