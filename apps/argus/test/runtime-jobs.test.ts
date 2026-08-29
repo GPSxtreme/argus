@@ -4,7 +4,7 @@ import { createSqliteRepository } from "@argus/storage-sqlite";
 import { describe, expect, it } from "vitest";
 import { JOB_LEASE_MS, processNextJob } from "../src/runtime.js";
 
-const config = validateConfig({ version: 1, storage: { adapter: "sqlite", url: ":memory:" }, sources: { web: { enabled: true } }, watches: [{ id: "watch", schedule: "* * * * *", inputs: { web: { urls: ["https://example.com"] } } }] });
+const config = validateConfig({ version: 2, storage: { adapter: "sqlite", url: ":memory:" }, sources: { web: { enabled: true } }, watches: [{ id: "watch", schedule: "* * * * *", inputs: { web: { urls: ["https://example.com"] } } }] });
 
 const captureJobLogs = () => {
   const entries: Array<{

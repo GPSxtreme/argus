@@ -11,7 +11,7 @@ afterEach(() => {
 });
 
 const config = validateConfig({
-  version: 1,
+  version: 2,
   storage: { adapter: "sqlite", url: ":memory:" },
   sources: {},
   watches: [],
@@ -24,7 +24,7 @@ describe("Argus API", () => {
     repositories.push(repository);
     const response = await createApp({ config, repository }).request("/health");
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ status: "ok", version: 1 });
+    expect(await response.json()).toMatchObject({ status: "ok", version: 2 });
   });
 
   it("protects and serves deterministic record queries", async () => {
@@ -43,7 +43,7 @@ describe("Argus API", () => {
       firstSeenAt: "2026-07-31T00:00:00.000Z",
       lastSeenAt: "2026-07-31T00:00:00.000Z",
     });
-    const diagnosticConfig = validateConfig({ version: 1, storage: { adapter: "sqlite", url: ":memory:" }, sources: { web: { enabled: true } }, watches: [{ id: "diagnostic-source", schedule: "* * * * *", inputs: { web: { urls: ["https://example.com/a"] } } }], api: { token: "secret" } });
+    const diagnosticConfig = validateConfig({ version: 2, storage: { adapter: "sqlite", url: ":memory:" }, sources: { web: { enabled: true } }, watches: [{ id: "diagnostic-source", schedule: "* * * * *", inputs: { web: { urls: ["https://example.com/a"] } } }], api: { token: "secret" } });
     const app = createApp({ config: diagnosticConfig, repository });
     expect((await app.request("/v1/records")).status).toBe(401);
     const response = await app.request("/v1/records?q=Argus", {
@@ -57,7 +57,7 @@ describe("Argus API", () => {
     const repository = await createSqliteRepository({ filename: ":memory:" });
     repositories.push(repository);
     const triggerConfig = validateConfig({
-      version: 1,
+      version: 2,
       storage: { adapter: "sqlite", url: ":memory:" },
       sources: { telegram: { enabled: true } },
       watches: [
@@ -146,7 +146,7 @@ describe("Argus API", () => {
   it("creates and only tombstones its authenticated temporary diagnostic watch", async () => {
     const repository = await createSqliteRepository({ filename: ":memory:" });
     repositories.push(repository);
-    const diagnosticConfig = validateConfig({ version: 1, storage: { adapter: "sqlite", url: ":memory:" }, sources: { web: { enabled: true } }, watches: [{ id: "diagnostic-source", schedule: "* * * * *", inputs: { web: { urls: ["https://example.com/a"] } } }], api: { token: "secret" } });
+    const diagnosticConfig = validateConfig({ version: 2, storage: { adapter: "sqlite", url: ":memory:" }, sources: { web: { enabled: true } }, watches: [{ id: "diagnostic-source", schedule: "* * * * *", inputs: { web: { urls: ["https://example.com/a"] } } }], api: { token: "secret" } });
     const app = createApp({ config: diagnosticConfig, repository });
     expect((await app.request("/v1/diagnostics/smoke-watches", { method: "POST" })).status).toBe(401);
     const invalid = await app.request("/v1/diagnostics/smoke-watches", { method: "POST", headers: { authorization: "Bearer secret", "content-type": "application/json" }, body: JSON.stringify({ source: "web", targetId: targetsFromConfig(diagnosticConfig)[0]?.id, token: "do-not-echo" }) });
@@ -166,7 +166,7 @@ describe("Argus API", () => {
     const repository = await createSqliteRepository({ filename: ":memory:" });
     repositories.push(repository);
     const disabledConfig = validateConfig({
-      version: 1,
+      version: 2,
       storage: { adapter: "sqlite", url: ":memory:" },
       sources: { web: { enabled: false } },
       watches: [
@@ -210,7 +210,7 @@ describe("Argus API", () => {
       postgresUrl,
     ];
     const desired = {
-      version: 1,
+      version: 2,
       storage: { adapter: "postgres", url: postgresUrl },
       sources: {},
       watches: [],
@@ -317,7 +317,7 @@ describe("Argus API", () => {
     const repository = await createSqliteRepository({ filename: ":memory:" });
     repositories.push(repository);
     const intelligenceConfig = validateConfig({
-      version: 1,
+      version: 2,
       storage: { adapter: "sqlite", url: ":memory:" },
       sources: {},
       watches: [],

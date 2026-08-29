@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execa } from "execa";
 import { describe, expect, it } from "vitest";
-import type { OnboardingAnswersV1 } from "../src/contracts.js";
+import type { OnboardingAnswers } from "../src/contracts.js";
 import {
   isPinnedImageReference,
   renderCompose,
@@ -61,8 +61,8 @@ describe("managed SearXNG live smoke", () => {
     const project = `argus-searxng-${process.pid}-${Date.now()}`;
     const compose = join(root, "compose.yaml");
     const network = `${project}_argus-private`;
-    const answers: OnboardingAnswersV1 = {
-      version: 1,
+    const answers: OnboardingAnswers = {
+      version: 2,
       deployment: {
         provider: "vps-docker",
         root: "/opt/argus",
@@ -71,6 +71,12 @@ describe("managed SearXNG live smoke", () => {
         apiPort: 8788,
       },
       managed: { searxng: "managed", fxembed: "disabled" },
+      xReplies: {
+        enabled: false,
+        maxPerPost: 50,
+        maxTrackingHours: 168,
+        orderBy: "likes",
+      },
       watches: [],
       intelligence: { enabled: false, model: "openai/gpt-4.1-mini" },
     };

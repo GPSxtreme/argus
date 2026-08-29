@@ -566,7 +566,7 @@ live("built production images", () => {
     const configPath = join(fixtureDirectory, "argus.yaml");
     writeFileSync(
       configPath,
-      `version: 1
+      `version: 2
 runtime:
   role: all
 storage:

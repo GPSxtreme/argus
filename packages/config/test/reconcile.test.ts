@@ -14,7 +14,7 @@ afterEach(() => {
 });
 
 const config = validateConfig({
-  version: 1,
+  version: 2,
   storage: { adapter: "sqlite", url: ":memory:" },
   sources: {},
   watches: [],
@@ -24,7 +24,7 @@ const postgresPassword = "Argus-Unique@:/?#[]% secret";
 const encodedPostgresPassword = encodeURIComponent(postgresPassword);
 const postgresUrl = `postgres://argus-admin:${encodedPostgresPassword}@postgres:5432/argus`;
 const postgresConfig = validateConfig({
-  version: 1,
+  version: 2,
   storage: { adapter: "postgres", url: postgresUrl },
   sources: {},
   watches: [],
@@ -41,7 +41,7 @@ describe("configuration reconciliation", () => {
     expect(first.changed).toBe(true);
     expect(second.changed).toBe(false);
     expect((await repository.getAppliedConfig())?.config).toMatchObject({
-      version: 1,
+      version: 2,
       storage: { adapter: "sqlite", url: ":memory:" },
     });
   });

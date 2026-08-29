@@ -27,7 +27,7 @@ describe("scheduled summary processor", () => {
       lastSeenAt: "2026-07-31T00:00:00.000Z",
     });
     const config = validateConfig({
-      version: 1,
+      version: 2,
       storage: { adapter: "sqlite", url: ":memory:" },
       sources: {},
       watches: [],
@@ -119,7 +119,7 @@ describe("scheduled summary processor", () => {
       checkpoint: {},
     });
     const config = validateConfig({
-      version: 1,
+      version: 2,
       storage: { adapter: "sqlite", url: ":memory:" },
       sources: {},
       watches: [],

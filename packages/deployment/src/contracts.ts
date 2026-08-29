@@ -8,8 +8,8 @@ export const pinnedImageReferenceSchema = z
   .string()
   .refine(isPinnedImageReference, "Expected a credential-free digest-pinned OCI image reference");
 
-export interface OnboardingAnswersV1 {
-  version: 1;
+export interface OnboardingAnswers {
+  version: 2;
   deployment: {
     provider: "vps-docker";
     root: string;
@@ -20,6 +20,12 @@ export interface OnboardingAnswersV1 {
   managed: {
     searxng: "disabled" | "managed" | "external";
     fxembed: "disabled" | "managed" | "external";
+  };
+  xReplies: {
+    enabled: boolean;
+    maxPerPost: number;
+    maxTrackingHours: number;
+    orderBy: "likes" | "newest" | "oldest" | "replies" | "reposts" | "views" | "source";
   };
   cloudflare?: { accountId?: string };
   external?: { searxngEndpoint?: string; fxembedEndpoint?: string };
@@ -126,7 +132,7 @@ const watchSchema = z
 
 export const onboardingAnswersSchema = z
   .object({
-    version: z.literal(1),
+    version: z.literal(2),
     deployment: z
       .object({
         provider: z.literal("vps-docker"),
@@ -140,6 +146,22 @@ export const onboardingAnswersSchema = z
       .object({
         searxng: z.enum(["disabled", "managed", "external"]),
         fxembed: z.enum(["disabled", "managed", "external"]),
+      })
+      .strict(),
+    xReplies: z
+      .object({
+        enabled: z.boolean(),
+        maxPerPost: z.number().int().min(1).max(200),
+        maxTrackingHours: z.number().int().min(1).max(2160),
+        orderBy: z.enum([
+          "likes",
+          "newest",
+          "oldest",
+          "replies",
+          "reposts",
+          "views",
+          "source",
+        ]),
       })
       .strict(),
     cloudflare: z.object({ accountId: z.string().min(1).optional() }).strict().optional(),

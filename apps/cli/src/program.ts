@@ -28,7 +28,7 @@ import {
   getDeploymentStatus,
   inspectHost,
   loadDeploymentState,
-  type OnboardingAnswersV1,
+  type OnboardingAnswers,
   onboardingAnswersSchema,
   planUpdate,
   repairService,
@@ -87,16 +87,16 @@ export interface DeploymentCliAdapter {
   inspectRollbackUpdate?(): Promise<unknown>;
   applyRollbackUpdate?(inspection: unknown): Promise<unknown>;
   inspectOnboarding(
-    answers: OnboardingAnswersV1,
+    answers: OnboardingAnswers,
     secrets: Readonly<Record<string, string>>,
   ): Promise<unknown>;
   applyOnboarding(
-    answers: OnboardingAnswersV1,
+    answers: OnboardingAnswers,
     secrets: Readonly<Record<string, string>>,
     inspection: unknown,
   ): Promise<unknown>;
   verifyOnboarding(
-    answers: OnboardingAnswersV1,
+    answers: OnboardingAnswers,
     applied?: unknown,
   ): Promise<unknown>;
 }
@@ -129,16 +129,16 @@ export interface ReleaseOnboardingApplication {
 /** Signed-release integration supplied by release Tasks 1–5. */
 export interface ProductionOnboardingIntegration {
   inspect(input: {
-    answers: OnboardingAnswersV1;
+    answers: OnboardingAnswers;
     secrets: Readonly<Record<string, string>>;
   }): Promise<ReleaseOnboardingInspection>;
   apply(input: {
-    answers: OnboardingAnswersV1;
+    answers: OnboardingAnswers;
     secrets: Readonly<Record<string, string>>;
     inspection: ReleaseOnboardingInspection;
   }): Promise<ReleaseOnboardingApplication>;
   verify(input: {
-    answers: OnboardingAnswersV1;
+    answers: OnboardingAnswers;
     application: ReleaseOnboardingApplication;
   }): Promise<{
     healthy: boolean;
@@ -263,7 +263,7 @@ const rejectSecretFields = (value: unknown, path: string[] = []): void => {
 const readOnboardingAnswers = async (
   path: string,
   files: CliFiles,
-): Promise<OnboardingAnswersV1> => {
+): Promise<OnboardingAnswers> => {
   const metadata = await files.stat(resolve(path)).catch(() => undefined);
   if (metadata !== undefined && (metadata.mode & 0o022) !== 0) {
     throw new DeploymentError(
@@ -290,14 +290,14 @@ const readOnboardingAnswers = async (
   if (!parsed.success) {
     throw new DeploymentError(
       "ONBOARDING_ANSWERS_INVALID",
-      "The onboarding answers file does not match the version 1 schema.",
+      "The onboarding answers file does not match the version 2 schema.",
       {
         recovery:
           "Run 'argus config schema --json' and correct the answers file.",
       },
     );
   }
-  return parsed.data as OnboardingAnswersV1;
+  return parsed.data as OnboardingAnswers;
 };
 
 const confirmationRequired = (): DeploymentError =>
@@ -671,7 +671,7 @@ export const createProgram = (dependencies: CliDependencies): Command => {
               };
         const answers = onboardingAnswersSchema.parse(
           collected.answers,
-        ) as OnboardingAnswersV1;
+        ) as OnboardingAnswers;
         let secrets = collected.secrets;
         if (secrets === undefined) {
           if (

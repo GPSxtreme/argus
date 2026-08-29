@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import type { OnboardingAnswersV1 } from "./contracts.js";
 import { stringify } from "yaml";
+import type { OnboardingAnswers } from "./contracts.js";
 
 export interface InstanceEndpoints {
   searxng: string;
@@ -20,7 +20,7 @@ export interface RenderedInstanceConfig {
 const environmentReference = (name: string): string => `\${${name}}`;
 
 export const renderInstanceConfig = (
-  answers: OnboardingAnswersV1,
+  answers: OnboardingAnswers,
   endpoints: InstanceEndpoints,
 ): RenderedInstanceConfig => {
   const requiredSecret = (name: string, value: string | undefined): string => {
@@ -62,7 +62,15 @@ export const renderInstanceConfig = (
   );
   const searxngEnabled = answers.managed.searxng !== "disabled";
   const sources = {
-    ...(xEnabled ? { x: { enabled: true, endpoint: endpoints.fxembed } } : {}),
+    ...(xEnabled
+      ? {
+          x: {
+            enabled: true,
+            endpoint: endpoints.fxembed,
+            replies: answers.xReplies,
+          },
+        }
+      : {}),
     ...(telegramEnabled
       ? { telegram: { enabled: true, adapter: "public-web" } }
       : {}),
@@ -76,7 +84,7 @@ export const renderInstanceConfig = (
       : {}),
   };
   const yaml = stringify({
-    version: 1,
+    version: 2,
     runtime: { role: "all" },
     storage: {
       adapter: answers.deployment.storage,

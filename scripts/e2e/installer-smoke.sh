@@ -473,7 +473,7 @@ printf '%s  %s\n' "$ARGUS_EXPECTED_WRAPPER_SHA256" /usr/local/bin/argus \
   > "$argus_artifacts/wrapper.sha256"
 
 cat > "$argus_answers" <<'ARGUS_ONBOARDING'
-version: 1
+version: 2
 deployment:
   provider: vps-docker
   root: /opt/argus

@@ -4,11 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "@argus/config";
 import { afterEach, describe, expect, it } from "vitest";
-import type { OnboardingAnswersV1 } from "../src/contracts.js";
+import type { OnboardingAnswers } from "../src/contracts.js";
 import { renderInstanceConfig } from "../src/index.js";
 
-const answers: OnboardingAnswersV1 = {
-  version: 1,
+const answers: OnboardingAnswers = {
+  version: 2,
   deployment: {
     provider: "vps-docker",
     root: "/opt/argus",
@@ -17,6 +17,12 @@ const answers: OnboardingAnswersV1 = {
     apiPort: 8788,
   },
   managed: { searxng: "managed", fxembed: "managed" },
+  xReplies: {
+    enabled: true,
+    maxPerPost: 50,
+    maxTrackingHours: 168,
+    orderBy: "likes",
+  },
   cloudflare: { accountId: "test-account" },
   watches: [],
   intelligence: { enabled: false, model: "openai/gpt-4.1-mini" },
@@ -63,7 +69,7 @@ describe("renderInstanceConfig", () => {
       apiToken: "api-secret",
     });
 
-    expect(rendered.yaml).toBe(`version: 1
+    expect(rendered.yaml).toBe(`version: 2
 runtime:
   role: all
 storage:
@@ -158,6 +164,7 @@ api:
     );
     expect(rendered.yaml).toContain("id: research");
     expect(rendered.yaml).toContain("accounts:");
+    expect(rendered.yaml).toContain("maxTrackingHours: 168");
     expect(rendered.yaml).toContain("- argus");
     expect(rendered.yaml).toContain("id: daily");
     expect(rendered.yaml).toContain("kind: summary");

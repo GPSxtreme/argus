@@ -76,7 +76,7 @@ export const createApp = ({ config, repository, diagnosticResolver }: CreateAppI
   registerApiRoute(app, API_ROUTES.health, (context) =>
     context.json({
       status: "ok",
-      version: 1,
+      version: 2,
       role: config.runtime.role,
       intelligence: config.intelligence.enabled,
     }),

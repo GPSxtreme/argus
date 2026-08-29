@@ -26,7 +26,7 @@ describe("runtime repository", () => {
       `?password=${encodeURIComponent(password)}` +
       "&sslmode=verify-full&application_name=argus";
     const config = validateConfig({
-      version: 1,
+      version: 2,
       runtime: { role: "api" },
       storage: { adapter: "postgres", url: liveUrl },
       sources: {},
@@ -46,7 +46,7 @@ describe("runtime repository", () => {
       "postgres://user:Runtime-Secret@%2Fvar%2Frun%2Fpostgresql/argus";
     const unsafe = {
       ...validateConfig({
-        version: 1,
+        version: 2,
         runtime: { role: "api" },
         storage: { adapter: "postgres", url: "postgres://localhost/argus" },
         sources: {},

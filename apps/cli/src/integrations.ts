@@ -21,7 +21,7 @@ import {
   inspectDeployment,
   loadDeploymentState,
   loadRollbackReleaseContext,
-  type OnboardingAnswersV1,
+  type OnboardingAnswers,
   planDeployment,
   reconcileFxEmbed,
   renderCompose,
@@ -1172,7 +1172,7 @@ export const createProductionOnboardingIntegration = ({
   };
 
   const endpointsFor = async (
-    answers: OnboardingAnswersV1,
+    answers: OnboardingAnswers,
     secrets: Readonly<Record<string, string>>,
   ): Promise<{
     searxng: string;
@@ -1245,7 +1245,7 @@ export const createProductionOnboardingIntegration = ({
   };
 
   const inspectExact = async (
-    answers: OnboardingAnswersV1,
+    answers: OnboardingAnswers,
     secrets: Readonly<Record<string, string>>,
   ): Promise<
     ReleaseOnboardingInspection & {

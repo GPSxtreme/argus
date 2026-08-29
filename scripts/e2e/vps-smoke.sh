@@ -538,7 +538,7 @@ grep -F "Argus diagnostics: healthy" "$argus_vps_work/doctor.txt" >/dev/null ||
   argus_vps_die "human argus doctor was not readable"
 argus config show > "$argus_vps_work/config.yaml" ||
   argus_vps_die "argus config show failed"
-grep -F "version: 1" "$argus_vps_work/config.yaml" >/dev/null ||
+grep -F "version: 2" "$argus_vps_work/config.yaml" >/dev/null ||
   argus_vps_die "argus config show did not return YAML"
 argus config validate > "$argus_vps_work/config-validate.txt" ||
   argus_vps_die "argus config validate failed"

@@ -9,7 +9,7 @@ import {
 describe("runtime role override", () => {
   it("rejects split roles when the configured storage is SQLite", () => {
     const config = validateConfig({
-      version: 1,
+      version: 2,
       storage: { adapter: "sqlite", url: ":memory:" },
       sources: {},
       watches: [],
@@ -21,7 +21,7 @@ describe("runtime role override", () => {
 
   it("allows a PostgreSQL service to select a split role", () => {
     const config = validateConfig({
-      version: 1,
+      version: 2,
       storage: { adapter: "postgres", url: "postgresql://localhost/argus" },
       sources: {},
       watches: [],
@@ -31,7 +31,7 @@ describe("runtime role override", () => {
 
   it("runs schema migration as a one-shot runtime and closes the repository", async () => {
     const config = validateConfig({
-      version: 1,
+      version: 2,
       storage: { adapter: "sqlite", url: ":memory:" },
       sources: {},
       watches: [],
@@ -53,7 +53,7 @@ describe("runtime role override", () => {
 
   it("refuses a non-loopback bind without an API token", () => {
     const exposed = validateConfig({
-      version: 1,
+      version: 2,
       storage: { adapter: "sqlite", url: ":memory:" },
       sources: {},
       watches: [],
@@ -63,7 +63,7 @@ describe("runtime role override", () => {
       "api.token is required when the API binds a non-loopback host",
     );
     const v6Exposed = validateConfig({
-      version: 1,
+      version: 2,
       storage: { adapter: "sqlite", url: ":memory:" },
       sources: {},
       watches: [],
@@ -75,7 +75,7 @@ describe("runtime role override", () => {
   it("allows loopback binds and token-protected binds", () => {
     for (const host of ["127.0.0.1", "::1", "localhost"]) {
       const config = validateConfig({
-        version: 1,
+        version: 2,
         storage: { adapter: "sqlite", url: ":memory:" },
         sources: {},
         watches: [],
@@ -84,7 +84,7 @@ describe("runtime role override", () => {
       expect(() => assertApiBindGuard(config)).not.toThrow();
     }
     const protectedBind = validateConfig({
-      version: 1,
+      version: 2,
       storage: { adapter: "sqlite", url: ":memory:" },
       sources: {},
       watches: [],

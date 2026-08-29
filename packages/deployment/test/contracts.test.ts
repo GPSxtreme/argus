@@ -9,7 +9,7 @@ describe("deployment contracts", () => {
   it("rejects managed X without a Cloudflare account id", () => {
     expect(() =>
       onboardingAnswersSchema.parse({
-        version: 1,
+        version: 2,
         deployment: {
           provider: "vps-docker",
           root: "/opt/argus",
@@ -18,6 +18,7 @@ describe("deployment contracts", () => {
           apiPort: 8788,
         },
         managed: { searxng: "disabled", fxembed: "managed" },
+        xReplies: { enabled: false, maxPerPost: 50, maxTrackingHours: 168, orderBy: "likes" },
         cloudflare: {},
         watches: [],
         intelligence: { enabled: false, model: "openai/gpt-4.1-mini" },
@@ -40,7 +41,7 @@ describe("deployment contracts", () => {
 
   it("requires endpoints for external managed services", () => {
     const answers = {
-      version: 1,
+      version: 2,
       deployment: {
         provider: "vps-docker",
         root: "/opt/argus",
@@ -49,6 +50,7 @@ describe("deployment contracts", () => {
         apiPort: 8788,
       },
       managed: { searxng: "external", fxembed: "external" },
+      xReplies: { enabled: false, maxPerPost: 50, maxTrackingHours: 168, orderBy: "likes" },
       watches: [],
       intelligence: { enabled: false, model: "openai/gpt-4.1-mini" },
     };

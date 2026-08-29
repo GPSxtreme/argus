@@ -41,7 +41,7 @@ describe("scheduler", () => {
 
   it("skips targets with invalid cron schedules instead of aborting the tick", async () => {
     const base = validateConfig({
-      version: 1,
+      version: 2,
       storage: { adapter: "sqlite", url: ":memory:" },
       sources: {},
       watches: [],

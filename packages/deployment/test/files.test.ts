@@ -2,6 +2,7 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { DeploymentStateV1, OnboardingAnswers } from "../src/contracts.js";
 import {
   instancePaths,
   loadDeploymentState,
@@ -10,7 +11,6 @@ import {
   saveDeploymentState,
   writeInstanceFiles,
 } from "../src/index.js";
-import type { DeploymentStateV1, OnboardingAnswersV1 } from "../src/contracts.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -18,8 +18,8 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { force: true, recursive: true })));
 });
 
-const answers: OnboardingAnswersV1 = {
-  version: 1,
+const answers: OnboardingAnswers = {
+  version: 2,
   deployment: {
     provider: "vps-docker",
     root: "/opt/argus",
@@ -28,6 +28,12 @@ const answers: OnboardingAnswersV1 = {
     apiPort: 8788,
   },
   managed: { searxng: "managed", fxembed: "managed" },
+  xReplies: {
+    enabled: false,
+    maxPerPost: 50,
+    maxTrackingHours: 168,
+    orderBy: "likes",
+  },
   cloudflare: { accountId: "test-account" },
   watches: [],
   intelligence: { enabled: false, model: "openai/gpt-4.1-mini" },

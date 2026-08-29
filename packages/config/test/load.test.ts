@@ -13,6 +13,14 @@ const fixture = (name: string): string =>
   fileURLToPath(new URL(`./fixtures/${name}`, import.meta.url));
 
 describe("loadConfig", () => {
+  it("defaults reply tracking off with bounded standard settings", () => {
+    expect(validateConfig({ version: 2, storage: { adapter: "sqlite", url: ":memory:" } }).sources.x.replies).toEqual({ enabled: false, maxPerPost: 50, maxTrackingHours: 168, orderBy: "likes" });
+  });
+
+  it("validates reply tracking bounds and requires X", () => {
+    expect(() => validateConfig({ version: 2, storage: { adapter: "sqlite", url: ":memory:" }, sources: { x: { enabled: false, replies: { enabled: true } } } })).toThrow("X reply tracking requires the X source to be enabled");
+    for (const replies of [{ maxPerPost: 0 }, { maxPerPost: 201 }, { maxTrackingHours: 0 }, { maxTrackingHours: 2161 }, { orderBy: "viral" }]) expect(() => validateConfig({ version: 2, storage: { adapter: "sqlite", url: ":memory:" }, sources: { x: { enabled: true, replies } } })).toThrow();
+  });
   it("resolves the short default configuration filename from the working directory", () => {
     expect(
       resolveConfigPath({
@@ -26,7 +34,7 @@ describe("loadConfig", () => {
     const config = await loadConfig(fixture("valid.yaml"), {
       OPENROUTER_API_KEY: "secret",
     });
-    expect(config.version).toBe(1);
+    expect(config.version).toBe(2);
     expect(config.watches[0]?.inputs.telegram?.channels).toEqual([
       "solana_announcements",
     ]);
@@ -57,13 +65,14 @@ describe("loadConfig", () => {
     const encodedPassword = encodeURIComponent(password);
     const liveUrl = `postgres://argus-admin:${encodedPassword}@postgres:5432/argus`;
     const config = {
-      version: 1 as const,
+      version: 2 as const,
       runtime: { role: "api" as const },
       storage: { adapter: "postgres" as const, url: liveUrl },
       sources: {
         x: {
           enabled: false,
           endpoint: "http://localhost:8787/api",
+          replies: { enabled: false, maxPerPost: 50, maxTrackingHours: 168, orderBy: "likes" as const },
         },
         telegram: { enabled: false, adapter: "public-web" as const },
         web: {
@@ -107,11 +116,11 @@ describe("loadConfig", () => {
       `&user=query-user&password=${encodeURIComponent(effectivePassword)}` +
       "&application_name=argus";
     const config = {
-      version: 1 as const,
+      version: 2 as const,
       runtime: { role: "api" as const },
       storage: { adapter: "postgres" as const, url: liveUrl },
       sources: {
-        x: { enabled: false, endpoint: "http://localhost:8787/api" },
+        x: { enabled: false, endpoint: "http://localhost:8787/api", replies: { enabled: false, maxPerPost: 50, maxTrackingHours: 168, orderBy: "likes" as const } },
         telegram: { enabled: false, adapter: "public-web" as const },
         web: {
           enabled: false,
@@ -179,7 +188,7 @@ describe("loadConfig", () => {
       let thrown: unknown;
       try {
         validateConfig({
-          version: 1,
+          version: 2,
           runtime: { role: "api" },
           storage: { adapter: "postgres", url },
           sources: {},
@@ -237,7 +246,7 @@ describe("loadConfig", () => {
     ]) {
       expect(
         validateConfig({
-          version: 1,
+          version: 2,
           runtime: { role: "api" },
           storage: { adapter: "postgres", url },
           sources: {},
@@ -251,11 +260,11 @@ describe("loadConfig", () => {
   it("never returns an invalid credential-bearing PostgreSQL URL from redaction", () => {
     const invalidUrl = "postgres://user:Projection-Secret@/argus";
     const unsafe = {
-      version: 1 as const,
+      version: 2 as const,
       runtime: { role: "api" as const },
       storage: { adapter: "postgres" as const, url: invalidUrl },
       sources: {
-        x: { enabled: false, endpoint: "http://localhost:8787/api" },
+        x: { enabled: false, endpoint: "http://localhost:8787/api", replies: { enabled: false, maxPerPost: 50, maxTrackingHours: 168, orderBy: "likes" as const } },
         telegram: { enabled: false, adapter: "public-web" as const },
         web: {
           enabled: false,
@@ -313,7 +322,7 @@ describe("loadConfig", () => {
     ]) {
       expect(() =>
         validateConfig({
-          version: 1,
+          version: 2,
           storage: { adapter: "sqlite", url: ":memory:" },
           sources: {},
           watches: [
@@ -338,7 +347,7 @@ describe("loadConfig", () => {
     ]) {
       expect(() =>
         validateConfig({
-          version: 1,
+          version: 2,
           storage: { adapter: "sqlite", url: ":memory:" },
           sources: {},
           watches: [

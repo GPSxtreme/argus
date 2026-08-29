@@ -1,5 +1,5 @@
-import { z } from "zod";
 import { Cron } from "croner";
+import { z } from "zod";
 
 import { isCanonicalPostgresUrl, POSTGRES_URL_ERROR } from "./sanitize.js";
 
@@ -45,9 +45,18 @@ const sourcesSchema = z
       .object({
         enabled: z.boolean().default(false),
         endpoint: z.url().default("http://localhost:8787/api"),
+        replies: z
+          .object({
+            enabled: z.boolean().default(false),
+            maxPerPost: z.number().int().min(1).max(200).default(50),
+            maxTrackingHours: z.number().int().min(1).max(2160).default(168),
+            orderBy: z.enum(["likes", "newest", "oldest", "replies", "reposts", "views", "source"]).default("likes"),
+          })
+          .strict()
+          .default({ enabled: false, maxPerPost: 50, maxTrackingHours: 168, orderBy: "likes" }),
       })
       .strict()
-      .default({ enabled: false, endpoint: "http://localhost:8787/api" }),
+      .default({ enabled: false, endpoint: "http://localhost:8787/api", replies: { enabled: false, maxPerPost: 50, maxTrackingHours: 168, orderBy: "likes" } }),
     telegram: z
       .object({
         enabled: z.boolean().default(false),
@@ -71,7 +80,7 @@ const sourcesSchema = z
   })
   .strict()
   .default({
-    x: { enabled: false, endpoint: "http://localhost:8787/api" },
+    x: { enabled: false, endpoint: "http://localhost:8787/api", replies: { enabled: false, maxPerPost: 50, maxTrackingHours: 168, orderBy: "likes" } },
     telegram: { enabled: false, adapter: "public-web" },
     web: {
       enabled: false,
@@ -147,7 +156,7 @@ const intelligenceSchema = z
 
 export const argusConfigSchema = z
   .object({
-    version: z.literal(1),
+    version: z.literal(2),
     runtime: z
       .object({ role: runtimeRoleSchema.default("all") })
       .strict()
@@ -170,6 +179,9 @@ export const argusConfigSchema = z
   })
   .strict()
   .superRefine((config, context) => {
+    if (config.sources.x.replies.enabled && !config.sources.x.enabled) {
+      context.addIssue({ code: "custom", path: ["sources", "x", "replies", "enabled"], message: "X reply tracking requires the X source to be enabled" });
+    }
     if (config.storage.adapter === "sqlite" && config.runtime.role !== "all") {
       context.addIssue({
         code: "custom",

@@ -19,7 +19,7 @@ import {
   type CommandExecutor,
   DeploymentError,
   loadDeploymentState,
-  type OnboardingAnswersV1,
+  type OnboardingAnswers,
   planUpdate,
   saveDeploymentState,
 } from "@argus/deployment";
@@ -68,7 +68,7 @@ afterEach(() => {
 });
 
 const config = validateConfig({
-  version: 1,
+  version: 2,
   storage: { adapter: "sqlite", url: "/app/data/argus.db" },
   sources: {},
   watches: [],
@@ -209,8 +209,8 @@ MC4CAQAwBQYDK2VwBCIEIGJqC73Ezwmnx3FFQ5W1czmiNwXmLFn2Xso+6xXKPXKf
 -----END PRIVATE KEY-----`;
 const digest = (character: string): string => character.repeat(64);
 const stableUpdateManifestUrl = "https://argus.gpsxtre.me/releases/stable/manifest.json";
-const answers: OnboardingAnswersV1 = {
-  version: 1,
+const answers: OnboardingAnswers = {
+  version: 2,
   deployment: {
     provider: "vps-docker",
     root: "/opt/argus",
@@ -219,6 +219,12 @@ const answers: OnboardingAnswersV1 = {
     apiPort: 8788,
   },
   managed: { searxng: "managed", fxembed: "disabled" },
+  xReplies: {
+    enabled: false,
+    maxPerPost: 50,
+    maxTrackingHours: 168,
+    orderBy: "likes",
+  },
   watches: [],
   intelligence: { enabled: false, model: "openai/gpt-4.1-mini" },
 };

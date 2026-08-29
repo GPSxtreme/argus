@@ -1,4 +1,4 @@
-version: 1
+version: 2
 
 runtime:
   role: all
@@ -11,6 +11,11 @@ sources:
   x:
     enabled: false
     endpoint: http://localhost:8787/api
+    replies:
+      enabled: false
+      maxPerPost: 50
+      maxTrackingHours: 168
+      orderBy: likes
   telegram:
     enabled: true
     adapter: public-web

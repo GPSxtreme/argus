@@ -148,7 +148,7 @@ const commandSurface = (
 
 const registeredApiRoutes = (): Set<string> => {
   const config = validateConfig({
-    version: 1,
+    version: 2,
     storage: { adapter: "sqlite", url: ":memory:" },
     sources: {},
     watches: [],

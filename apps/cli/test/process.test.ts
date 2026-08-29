@@ -205,7 +205,7 @@ describe("direct CLI process contracts", () => {
     const credentialUrl = `https://user:${longSecret}@example.com/api`;
     await writeFile(
       join(installRoot, "argus.yaml"),
-      `version: 1
+      `version: 2
 runtime: { role: all }
 storage: { adapter: sqlite, url: "${join(installRoot, "argus.db")}" }
 sources:

@@ -1,27 +1,24 @@
 import {
-  chmod,
   access,
+  chmod,
   mkdir,
   mkdtemp,
-  readFile,
   readdir,
+  readFile,
   stat,
   symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parse } from "yaml";
+import type { OnboardingAnswers } from "@argus/deployment";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import { afterEach, describe, expect, it } from "vitest";
+import { parse } from "yaml";
 import {
-  collectOnboarding,
-  type PromptAdapter,
-} from "../src/prompts.js";
-import {
+  type CliDependencies,
   createNodeCliDependencies,
   createProgram,
-  type CliDependencies,
   type DeploymentCliAdapter,
   type InstalledConfigApplication,
   type InstalledConfigPlan,
@@ -30,7 +27,10 @@ import {
   type ReleaseOnboardingInspection,
   type VerifiedOnboardingRelease,
 } from "../src/program.js";
-import type { OnboardingAnswersV1 } from "@argus/deployment";
+import {
+  collectOnboarding,
+  type PromptAdapter,
+} from "../src/prompts.js";
 
 const temporaryDirectories: string[] = [];
 const onboardingFixture = await readFile(
@@ -110,6 +110,17 @@ describe("onboarding wizard", () => {
     ).toBe(false);
   });
 
+  it("recommends the standard seven-day X reply profile", async () => {
+    const result = await collectOnboarding(promptHarness(["x"]).prompt);
+
+    expect(result.answers.xReplies).toEqual({
+      enabled: true,
+      maxPerPost: 50,
+      maxTrackingHours: 168,
+      orderBy: "likes",
+    });
+  });
+
   it("handles prompt cancellation as a stable deployment error", async () => {
     const prompt = promptHarness([]).prompt;
     prompt.select = async () => {
@@ -181,7 +192,7 @@ describe("onboarding file and config contracts", () => {
     const setup = join(directory, "setup.yaml");
     await writeFile(
       setup,
-      `version: 1
+      `version: 2
 deployment:
   provider: vps-docker
   root: /opt/argus
@@ -191,6 +202,11 @@ deployment:
 managed:
   searxng: managed
   fxembed: disabled
+xReplies:
+  enabled: false
+  maxPerPost: 50
+  maxTrackingHours: 168
+  orderBy: likes
 watches:
   - id: web
     enabled: true
@@ -533,7 +549,7 @@ intelligence:
   it.each([
     [
       "secret fields",
-      `version: 1
+      `version: 2
 apiToken: forbidden
 `,
       "ONBOARDING_FILE_CONTAINS_SECRET",
@@ -735,7 +751,7 @@ apiToken: forbidden
     const database = join(directory, "must-not-open.db");
     await writeFile(
       join(directory, "argus.yaml"),
-      `version: 1
+      `version: 2
 storage: { adapter: sqlite, url: "${database}" }
 sources: {}
 watches: []
@@ -836,10 +852,10 @@ watches: []
       onboardingIntegration: integration,
     });
 
-  const parsedReleaseAnswers = async (): Promise<OnboardingAnswersV1> =>
+  const parsedReleaseAnswers = async (): Promise<OnboardingAnswers> =>
     (await import("@argus/deployment")).onboardingAnswersSchema.parse(
       parse(onboardingFixture),
-    ) as OnboardingAnswersV1;
+    ) as OnboardingAnswers;
 
   it("re-onboards when the persisted managed deployment owns the API port", async () => {
     const directory = await mkdtemp(join(tmpdir(), "argus-cli-reonboard-"));

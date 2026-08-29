@@ -17,7 +17,7 @@ afterEach(() => {
 describe("target worker", () => {
   it("creates a query adapter capability from the configured SearXNG origin", async () => {
     const config = validateConfig({
-      version: 1,
+      version: 2,
       storage: { adapter: "sqlite", url: ":memory:" },
       sources: {
         web: {
@@ -70,7 +70,7 @@ describe("target worker", () => {
     const repository = await createSqliteRepository({ filename: ":memory:" });
     repositories.push(repository);
     const config = validateConfig({
-      version: 1,
+      version: 2,
       storage: { adapter: "sqlite", url: ":memory:" },
       sources: { telegram: { enabled: true } },
       watches: [],
@@ -106,7 +106,7 @@ describe("target worker", () => {
   it("does not commit a diagnostic target cancelled while its adapter is in flight", async () => {
     const repository = await createSqliteRepository({ filename: ":memory:" });
     repositories.push(repository);
-    const config = validateConfig({ version: 1, storage: { adapter: "sqlite", url: ":memory:" }, sources: { web: { enabled: true } }, watches: [] });
+    const config = validateConfig({ version: 2, storage: { adapter: "sqlite", url: ":memory:" }, sources: { web: { enabled: true } }, watches: [] });
     let active = true;
     let release!: () => void;
     const barrier = new Promise<void>((resolve) => { release = resolve; });

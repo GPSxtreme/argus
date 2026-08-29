@@ -1,8 +1,8 @@
-import * as clack from "@clack/prompts";
 import {
   DeploymentError,
-  type OnboardingAnswersV1,
+  type OnboardingAnswers,
 } from "@argus/deployment";
+import * as clack from "@clack/prompts";
 
 export interface PromptChoice {
   value: string;
@@ -131,7 +131,7 @@ const commaSeparated = (value: string): string[] =>
 const urlList = (value: string): string[] => commaSeparated(value);
 
 export interface CollectedOnboarding {
-  answers: OnboardingAnswersV1;
+  answers: OnboardingAnswers;
   secrets: Record<string, string>;
 }
 
@@ -210,7 +210,7 @@ export const collectOnboarding = async (
       )
     : [];
 
-  let searxng: OnboardingAnswersV1["managed"]["searxng"] = "disabled";
+  let searxng: OnboardingAnswers["managed"]["searxng"] = "disabled";
   let searxngEndpoint: string | undefined;
   if (webQueries.length > 0) {
     searxng = (await prompt.select({
@@ -228,7 +228,7 @@ export const collectOnboarding = async (
     }
   }
 
-  let fxembed: OnboardingAnswersV1["managed"]["fxembed"] = "disabled";
+  let fxembed: OnboardingAnswers["managed"]["fxembed"] = "disabled";
   let fxembedEndpoint: string | undefined;
   let cloudflareAccountId: string | undefined;
   if (enabled.has("x")) {
@@ -250,6 +250,61 @@ export const collectOnboarding = async (
       });
     }
   }
+
+  const xRepliesEnabled = enabled.has("x")
+    ? await prompt.confirm({
+        message: "Track replies to X posts?",
+        initialValue: true,
+      })
+    : false;
+  let xReplyProfile = "standard";
+  if (xRepliesEnabled) {
+    xReplyProfile = await prompt.select({
+      message: "X reply tracking profile",
+      options: [
+        { value: "standard", label: "Standard · 7 days", hint: "recommended" },
+        { value: "hot", label: "Hot · 24 hours" },
+        { value: "niche", label: "Niche · 30 days" },
+        { value: "custom", label: "Custom" },
+      ],
+      initialValue: "standard",
+    });
+  }
+  const profileHours = { hot: 24, standard: 168, niche: 720 } as const;
+  const maxTrackingHours =
+    xReplyProfile === "custom"
+      ? Number(
+          (await prompt.text({
+            message: "Track replies for how many hours?",
+            initialValue: "168",
+          })) || "168",
+        )
+      : profileHours[xReplyProfile as keyof typeof profileHours] ?? 168;
+  const maxPerPost =
+    xReplyProfile === "custom"
+      ? Number(
+          (await prompt.text({
+            message: "Maximum observed replies per post",
+            initialValue: "50",
+          })) || "50",
+        )
+      : 50;
+  const orderBy =
+    xReplyProfile === "custom"
+      ? ((await prompt.select({
+          message: "Order observed replies by",
+          options: [
+            { value: "likes", label: "Likes", hint: "recommended" },
+            { value: "newest", label: "Newest" },
+            { value: "oldest", label: "Oldest" },
+            { value: "replies", label: "Reply count" },
+            { value: "reposts", label: "Reposts" },
+            { value: "views", label: "Views" },
+            { value: "source", label: "Source order" },
+          ],
+          initialValue: "likes",
+        })) as OnboardingAnswers["xReplies"]["orderBy"])
+      : "likes";
 
   const intelligenceEnabled = await prompt.confirm({
     message: "Enable OpenRouter summaries?",
@@ -286,7 +341,7 @@ export const collectOnboarding = async (
 
   return {
     answers: {
-      version: 1,
+      version: 2,
       deployment: {
         provider: "vps-docker",
         root: "/opt/argus",
@@ -295,6 +350,12 @@ export const collectOnboarding = async (
         apiPort,
       },
       managed: { searxng, fxembed },
+      xReplies: {
+        enabled: xRepliesEnabled,
+        maxPerPost,
+        maxTrackingHours,
+        orderBy,
+      },
       ...(cloudflareAccountId
         ? { cloudflare: { accountId: cloudflareAccountId } }
         : {}),
@@ -327,7 +388,7 @@ export const collectOnboarding = async (
 };
 
 export const collectRequiredSecrets = async (
-  answers: OnboardingAnswersV1,
+  answers: OnboardingAnswers,
   prompt: PromptAdapter,
 ): Promise<Record<string, string>> => {
   const secrets: Record<string, string> = {

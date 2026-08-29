@@ -13,7 +13,7 @@ afterEach(() => {
 });
 
 const config = validateConfig({
-  version: 1,
+  version: 2,
   storage: { adapter: "sqlite", url: ":memory:" },
   sources: { web: { enabled: true } },
   watches: [

@@ -1,4 +1,4 @@
-version: 1
+version: 2
 deployment:
   provider: vps-docker
   root: /opt/argus
@@ -8,6 +8,11 @@ deployment:
 managed:
   searxng: managed
   fxembed: disabled
+xReplies:
+  enabled: false
+  maxPerPost: 50
+  maxTrackingHours: 168
+  orderBy: likes
 watches:
   - id: web
     enabled: true
