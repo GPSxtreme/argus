@@ -3,12 +3,16 @@ import { OpenRouterClient } from "../src/index.js";
 
 describe("OpenRouter intelligence", () => {
   it("creates a sourced summary from canonical records", async () => {
-    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
-      Response.json({
-        id: "generation-1",
-        choices: [{ message: { content: "Argus shipped. [1]" } }],
-        model: "openai/gpt-4.1-mini",
-      }),
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async (input) =>
+      String(input).includes("/api/v1/model/")
+        ? Response.json({
+            data: { architecture: { input_modalities: ["text"] } },
+          })
+        : Response.json({
+            id: "generation-1",
+            choices: [{ message: { content: "Argus shipped. [1]" } }],
+            model: "openai/gpt-4.1-mini",
+          }),
     );
     const client = new OpenRouterClient({
       apiKey: "secret",
@@ -32,6 +36,7 @@ describe("OpenRouter intelligence", () => {
     expect(result.sources).toEqual([
       { index: 1, recordId: "web:argus:1", url: "https://example.com/1" },
     ]);
+    expect(result.capabilitiesSource).toBe("openrouter");
     expect(fetcher.mock.calls[0]?.[1]?.headers).toMatchObject({
       Authorization: "Bearer secret",
     });

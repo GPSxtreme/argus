@@ -47,6 +47,8 @@ describe("scheduled summary processor", () => {
           sources: [
             { index: 1, recordId: recordIdentity("web", "1"), url: "https://example.com/1" },
           ],
+          media: [],
+          capabilitiesSource: "fallback",
         }),
       });
     expect((await repository.queryArtifacts({})).items[0]?.content).toBe(
@@ -135,7 +137,13 @@ describe("scheduled summary processor", () => {
     await runSummaryProcessor(processor, config, repository, {
       summarize: async (records) => {
         summarizedIds = records.map(({ id }) => id);
-        return { content: "summary", model: "test", sources: [] };
+        return {
+          content: "summary",
+          model: "test",
+          sources: [],
+          media: [],
+          capabilitiesSource: "fallback",
+        };
       },
     });
 

@@ -82,6 +82,10 @@ const tokenMatches = (
 export const createApp = ({ config, repository, diagnosticResolver, primitiveFetcher, primitiveLimiter, openRouterFetcher }: CreateAppInput): Hono => {
   const app = new Hono();
   const query = new QueryService(repository);
+  const richRecords = async (records: Array<{ id: string }>) =>
+    (
+      await Promise.all(records.map((record) => repository.getRecord(record.id)))
+    ).filter((record) => record !== undefined);
 
   registerApiRoute(app, API_ROUTES.health, (context) =>
     context.json({
@@ -367,15 +371,20 @@ export const createApp = ({ config, repository, diagnosticResolver, primitiveFet
       ...(request.watchIds ? { watchIds: request.watchIds } : {}),
       limit,
     });
+    const contextRecords = await richRecords(records.items);
     const result = await new OpenRouterClient({
       apiKey: config.intelligence.apiKey,
       model: config.intelligence.model,
       ...(openRouterFetcher ? { fetcher: openRouterFetcher } : {}),
-    }).summarize(records.items, request.prompt);
+    }).summarize(contextRecords, request.prompt);
     const id = randomUUID();
     await repository.saveArtifact({
       id,
       recordIds: records.items.map((record) => record.id),
+      media: result.media.map(({ mediaAssetId, disposition }) => ({
+        mediaAssetId,
+        disposition,
+      })),
       kind: "summary",
       content: result.content,
       provider: "openrouter",
@@ -383,6 +392,8 @@ export const createApp = ({ config, repository, diagnosticResolver, primitiveFet
       provenance: {
         generationId: result.generationId,
         sources: result.sources,
+        capabilitiesSource: result.capabilitiesSource,
+        media: result.media,
       },
       createdAt: new Date().toISOString(),
     });
@@ -423,18 +434,23 @@ export const createApp = ({ config, repository, diagnosticResolver, primitiveFet
       ...(request?.until ? { until: request.until } : {}),
       limit,
     });
+    const contextRecords = await richRecords(records.items);
     const result = await new OpenRouterClient({
       apiKey: config.intelligence.apiKey,
       model: config.intelligence.model,
       ...(openRouterFetcher ? { fetcher: openRouterFetcher } : {}),
     }).summarize(
-      records.items,
+      contextRecords,
       `Answer the user's question directly and concisely: ${question}`,
     );
     const id = randomUUID();
     await repository.saveArtifact({
       id,
       recordIds: records.items.map((record) => record.id),
+      media: result.media.map(({ mediaAssetId, disposition }) => ({
+        mediaAssetId,
+        disposition,
+      })),
       kind: "answer",
       content: result.content,
       provider: "openrouter",
@@ -443,6 +459,8 @@ export const createApp = ({ config, repository, diagnosticResolver, primitiveFet
         question,
         generationId: result.generationId,
         sources: result.sources,
+        capabilitiesSource: result.capabilitiesSource,
+        media: result.media,
       },
       createdAt: new Date().toISOString(),
     });

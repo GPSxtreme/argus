@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type { ArgusConfig } from "@argus/config";
-import type { RecordEnvelope, StorageRepository } from "@argus/contracts";
+import type {
+  RecordDetail,
+  RecordEnvelope,
+  StorageRepository,
+} from "@argus/contracts";
 import {
   OpenRouterClient,
   type SourcedSummary,
@@ -8,7 +12,10 @@ import {
 
 type Processor = ArgusConfig["intelligence"]["processors"][number];
 interface SummaryClient {
-  summarize(records: RecordEnvelope[], prompt?: string): Promise<SourcedSummary>;
+  summarize(
+    records: Array<RecordEnvelope | RecordDetail>,
+    prompt?: string,
+  ): Promise<SourcedSummary>;
 }
 
 export const runSummaryProcessor = async (
@@ -27,10 +34,20 @@ export const runSummaryProcessor = async (
     ...(processor.watchIds ? { watchIds: processor.watchIds } : {}),
     limit: 100,
   });
-  const result = await client.summarize(records.items, processor.prompt);
+  const details = await Promise.all(
+    records.items.map((record) => repository.getRecord(record.id)),
+  );
+  const context = details.filter(
+    (record): record is RecordDetail => record !== undefined,
+  );
+  const result = await client.summarize(context, processor.prompt);
   await repository.saveArtifact({
     id: randomUUID(),
     recordIds: records.items.map((record) => record.id),
+    media: result.media.map(({ mediaAssetId, disposition }) => ({
+      mediaAssetId,
+      disposition,
+    })),
     kind: "summary",
     content: result.content,
     provider: "openrouter",
@@ -38,6 +55,8 @@ export const runSummaryProcessor = async (
     provenance: {
       processorId: processor.id,
       sources: result.sources,
+      capabilitiesSource: result.capabilitiesSource,
+      media: result.media,
       ...(result.generationId ? { generationId: result.generationId } : {}),
     },
     createdAt: new Date().toISOString(),
