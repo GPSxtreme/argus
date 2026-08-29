@@ -192,7 +192,20 @@ describe("deployment reconciliation", () => {
 
     expect(executor.calls.map(({ command, args }) => [command, args])).toEqual([
       ["docker", ["compose", "-p", "argus", "config"]],
-      ["docker", ["compose", "-p", "argus", "up", "-d", "--remove-orphans"]],
+      [
+        "docker",
+        [
+          "compose",
+          "-p",
+          "argus",
+          "up",
+          "-d",
+          "--remove-orphans",
+          "--wait",
+          "--wait-timeout",
+          "60",
+        ],
+      ],
       ["docker", ["compose", "-p", "argus", "ps", "--format", "json"]],
     ]);
   });

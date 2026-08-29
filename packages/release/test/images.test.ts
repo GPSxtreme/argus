@@ -435,7 +435,7 @@ describe("production image definitions", () => {
     expect(appDockerfile).toContain('ENV ARGUS_CONFIG="/app/argus.yaml"');
     expect(appDockerfile).toContain('VOLUME ["/app/data"]');
     expect(appDockerfile).toContain("EXPOSE 8788");
-    expect(appDockerfile).toContain("HEALTHCHECK");
+    expect(appDockerfile).toContain("HEALTHCHECK --interval=5s");
     expect(appDockerfile).toContain("http://127.0.0.1:8788/health");
     expect(appDockerfile).toContain('ENTRYPOINT ["tini", "--", "node"');
     expect(appDockerfile).toContain("org.opencontainers.image.version");

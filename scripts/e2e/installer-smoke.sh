@@ -100,9 +100,8 @@ argus_sanitize() {
 
 argus_collect_failure() {
   argus_status=$?
-  if [ "$argus_status" -ne 0 ] && command -v docker >/dev/null 2>&1; then
-    docker compose -p argus -f /opt/argus/compose.yaml \
-      logs --no-color --tail 200 2>&1 |
+  if [ "$argus_status" -ne 0 ] && command -v argus >/dev/null 2>&1; then
+    argus logs --raw --tail 200 2>&1 |
       argus_sanitize > "$argus_artifacts/compose.log" || true
   fi
   if [ -f "$argus_doctor" ]; then

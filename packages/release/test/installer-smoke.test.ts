@@ -1010,6 +1010,7 @@ exit 42
   orderBy: likes`);
     expect(smoke).toContain("https://example.com/");
     expect(smoke).toContain("argus doctor --json");
+    expect(smoke).toContain("argus logs --raw --tail 200");
     expect(smoke).toContain(".ok == true");
     expect(smoke).toContain(".data.healthy == true");
     expect(smoke).toContain(".argusVersion == $version");

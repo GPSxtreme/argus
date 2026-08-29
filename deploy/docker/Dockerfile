@@ -158,7 +158,7 @@ VOLUME ["/app/data"]
 EXPOSE 8788
 USER 10001:10001
 
-HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+HEALTHCHECK --interval=5s --timeout=5s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:8788/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
 
 ENTRYPOINT ["tini", "--", "node", "/app/apps/argus/dist/main.js"]
