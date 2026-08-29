@@ -42,6 +42,7 @@ describe("interactive home menu routing", () => {
     expect(labels).toEqual([
       "Set up Argus",
       "Check status",
+      "Ask Argus",
       "View logs",
       "Manage configuration",
       "Run diagnostics",
@@ -65,6 +66,12 @@ describe("interactive home menu routing", () => {
 
   it("can exit without invoking a command", async () => {
     await expect(selectMenuInvocation(promptQueue("exit"))).resolves.toBeNull();
+  });
+
+  it("collects a plain-language query", async () => {
+    await expect(
+      selectMenuInvocation(promptQueue("query", "new listings since 9am")),
+    ).resolves.toEqual(["query", "new listings since 9am"]);
   });
 
   it("collects bounded log choices", async () => {

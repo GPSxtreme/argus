@@ -23,6 +23,7 @@ export interface CreateAppInput {
   diagnosticResolver?: DiagnosticResolver;
   primitiveFetcher?: typeof fetch;
   primitiveLimiter?: PrimitiveRateLimiter;
+  openRouterFetcher?: typeof fetch;
 }
 
 export const API_ROUTES = {
@@ -42,6 +43,7 @@ export const API_ROUTES = {
   applyManagementConfig: { method: "POST", path: "/v1/management/config/apply" },
   verifyManagementConfig: { method: "POST", path: "/v1/management/config/verify" },
   createSummary: { method: "POST", path: "/v1/summaries" },
+  query: { method: "POST", path: "/v1/query" },
 } as const;
 
 type ApiRoute = (typeof API_ROUTES)[keyof typeof API_ROUTES];
@@ -77,7 +79,7 @@ const tokenMatches = (
   );
 };
 
-export const createApp = ({ config, repository, diagnosticResolver, primitiveFetcher, primitiveLimiter }: CreateAppInput): Hono => {
+export const createApp = ({ config, repository, diagnosticResolver, primitiveFetcher, primitiveLimiter, openRouterFetcher }: CreateAppInput): Hono => {
   const app = new Hono();
   const query = new QueryService(repository);
 
@@ -368,6 +370,7 @@ export const createApp = ({ config, repository, diagnosticResolver, primitiveFet
     const result = await new OpenRouterClient({
       apiKey: config.intelligence.apiKey,
       model: config.intelligence.model,
+      ...(openRouterFetcher ? { fetcher: openRouterFetcher } : {}),
     }).summarize(records.items, request.prompt);
     const id = randomUUID();
     await repository.saveArtifact({
@@ -384,6 +387,74 @@ export const createApp = ({ config, repository, diagnosticResolver, primitiveFet
       createdAt: new Date().toISOString(),
     });
     return context.json({ id, ...result }, 201);
+  });
+
+  registerApiRoute(app, API_ROUTES.query, async (context) => {
+    if (!config.intelligence.enabled || !config.intelligence.apiKey) {
+      return context.json({ error: "intelligence is disabled" }, 409);
+    }
+    const request = await context.req
+      .json<{
+        question?: string;
+        watchIds?: string[];
+        since?: string;
+        until?: string;
+        limit?: number;
+      }>()
+      .catch(() => undefined);
+    const question = request?.question?.trim();
+    const limit = request?.limit ?? 50;
+    if (!question) return context.json({ error: "question is required" }, 400);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+      return context.json({ error: "limit must be an integer from 1 to 100" }, 400);
+    }
+    if (
+      (request?.since !== undefined && Number.isNaN(Date.parse(request.since))) ||
+      (request?.until !== undefined && Number.isNaN(Date.parse(request.until)))
+    ) {
+      return context.json(
+        { error: "since and until must be ISO-8601 timestamps" },
+        400,
+      );
+    }
+    const records = await repository.queryRecords({
+      ...(request?.watchIds ? { watchIds: request.watchIds } : {}),
+      ...(request?.since ? { since: request.since } : {}),
+      ...(request?.until ? { until: request.until } : {}),
+      limit,
+    });
+    const result = await new OpenRouterClient({
+      apiKey: config.intelligence.apiKey,
+      model: config.intelligence.model,
+      ...(openRouterFetcher ? { fetcher: openRouterFetcher } : {}),
+    }).summarize(
+      records.items,
+      `Answer the user's question directly and concisely: ${question}`,
+    );
+    const id = randomUUID();
+    await repository.saveArtifact({
+      id,
+      recordIds: records.items.map((record) => record.id),
+      kind: "answer",
+      content: result.content,
+      provider: "openrouter",
+      model: result.model,
+      provenance: {
+        question,
+        generationId: result.generationId,
+        sources: result.sources,
+      },
+      createdAt: new Date().toISOString(),
+    });
+    return context.json(
+      {
+        id,
+        answer: result.content,
+        model: result.model,
+        sources: result.sources,
+      },
+      201,
+    );
   });
 
   return app;

@@ -191,6 +191,72 @@ describe("Argus API", () => {
     });
   });
 
+  it("answers a natural-language query from recent records with source links", async () => {
+    const repository = await createSqliteRepository({ filename: ":memory:" });
+    repositories.push(repository);
+    await repository.upsertRecord({
+      id: recordIdentity("web", "listing"),
+      source: "web",
+      targetId: "listings:web:feed:example",
+      watchIds: ["listings"],
+      externalId: "listing",
+      url: "https://example.com/listing",
+      text: "A new listing appeared at 10am.",
+      raw: {},
+      contentHash: "listing-hash",
+      firstSeenAt: "2026-08-29T10:00:00.000Z",
+      lastSeenAt: "2026-08-29T10:00:00.000Z",
+    });
+    const intelligenceConfig = validateConfig({
+      version: 2,
+      storage: { adapter: "sqlite", url: ":memory:" },
+      sources: {},
+      watches: [],
+      api: { token: "secret" },
+      intelligence: {
+        enabled: true,
+        apiKey: "openrouter-key",
+        model: "openai/gpt-4.1-mini",
+      },
+    });
+    const openRouterFetcher = vi.fn(async () =>
+      Response.json({
+        id: "generation-1",
+        model: "openai/gpt-4.1-mini",
+        choices: [{ message: { content: "One new listing appeared. [1]" } }],
+      }),
+    ) as unknown as typeof fetch;
+    const response = await createApp({
+      config: intelligenceConfig,
+      repository,
+      openRouterFetcher,
+    }).request("/v1/query", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        question: "new listings since 9am",
+        watchIds: ["listings"],
+        since: "2026-08-29T09:00:00.000Z",
+      }),
+    });
+
+    expect(response.status).toBe(201);
+    expect(await response.json()).toMatchObject({
+      answer: "One new listing appeared. [1]",
+      sources: [
+        {
+          index: 1,
+          recordId: recordIdentity("web", "listing"),
+          url: "https://example.com/listing",
+        },
+      ],
+    });
+    expect((await repository.queryArtifacts({ kind: "answer" })).items).toHaveLength(1);
+  });
+
   it("queues an immediate ingestion trigger for a configured watch", async () => {
     const repository = await createSqliteRepository({ filename: ":memory:" });
     repositories.push(repository);

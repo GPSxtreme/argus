@@ -92,6 +92,7 @@ export const selectMenuInvocation = async (
     options: [
       { value: "onboard", label: "Set up Argus", hint: "first-time setup" },
       { value: "status", label: "Check status" },
+      { value: "query", label: "Ask Argus" },
       { value: "logs", label: "View logs" },
       { value: "config", label: "Manage configuration" },
       { value: "doctor", label: "Run diagnostics" },
@@ -109,6 +110,11 @@ export const selectMenuInvocation = async (
     case "doctor":
     case "update":
       return [selection];
+    case "query":
+      return [
+        "query",
+        await prompt.text({ message: "What do you want to know?" }),
+      ];
     case "logs":
       return selectLogsInvocation(prompt);
     case "config":

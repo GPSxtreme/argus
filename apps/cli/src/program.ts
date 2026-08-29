@@ -44,15 +44,15 @@ import { targetsFromConfig } from "@argus/scheduler";
 import { Command, CommanderError } from "commander";
 import { parse } from "yaml";
 import { z } from "zod";
-import type { ProductionUpdateIntegration } from "./integrations.js";
 import {
+  humanServiceStates,
   renderHumanConfig,
   renderHumanDoctor,
   renderHumanLogs,
   renderHumanPlan,
   renderHumanStatus,
-  humanServiceStates,
 } from "./human.js";
+import type { ProductionUpdateIntegration } from "./integrations.js";
 import { selectMenuInvocation } from "./menu.js";
 import {
   CliExitError,
@@ -210,6 +210,17 @@ export interface CliDependencies {
   version?: string;
   interactive?: boolean;
   secretValues(): Promise<Record<string, string>>;
+  query?(input: {
+    question: string;
+    watchIds?: string[];
+    since?: string;
+    until?: string;
+    limit?: number;
+  }): Promise<{
+    answer: string;
+    sources: Array<{ index: number; recordId: string; url: string }>;
+    [key: string]: unknown;
+  }>;
 }
 
 interface CommonOptions {
@@ -742,6 +753,64 @@ export const createProgram = (dependencies: CliDependencies): Command => {
       return { data: status, human: renderHumanStatus(status) };
     });
   });
+
+  commonOptions(
+    program
+      .command("query")
+      .argument("<question>", "question to answer from collected records")
+      .option("--watch <ids...>", "limit context to watch ids")
+      .option("--since <timestamp>", "only use records seen after this time")
+      .option("--until <timestamp>", "only use records seen before this time")
+      .option("--limit <records>", "maximum context records", "50")
+      .description("Ask Argus about collected data"),
+  ).action(
+    async (
+      question: string,
+      options: CommonOptions & {
+        watch?: string[];
+        since?: string;
+        until?: string;
+        limit: string;
+      },
+    ) => {
+      await execute(dependencies, options, async () => {
+        if (!dependencies.query) {
+          throw new DeploymentError(
+            "QUERY_UNAVAILABLE",
+            "This Argus CLI cannot reach the local query API.",
+          );
+        }
+        if (!/^[1-9]\d*$/u.test(options.limit) || Number(options.limit) > 100) {
+          throw new DeploymentError(
+            "QUERY_LIMIT_INVALID",
+            "Query limit must be an integer from 1 to 100.",
+          );
+        }
+        const result = await dependencies.query({
+          question,
+          ...(options.watch ? { watchIds: options.watch } : {}),
+          ...(options.since ? { since: options.since } : {}),
+          ...(options.until ? { until: options.until } : {}),
+          limit: Number(options.limit),
+        });
+        return {
+          data: result,
+          human: [
+            result.answer,
+            ...(result.sources.length
+              ? [
+                  "",
+                  "Sources:",
+                  ...result.sources.map(
+                    (source) => `[${source.index}] ${source.url}`,
+                  ),
+                ]
+              : []),
+          ].join("\n"),
+        };
+      });
+    },
+  );
 
   commonOptions(
     program
@@ -1578,6 +1647,49 @@ export const createNodeCliDependencies = ({
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return fileSecrets;
       throw error;
     }
+  },
+  query: async (input) => {
+    const { config } = await loadInstalledConfig(root);
+    if (!config.api.token) {
+      throw new DeploymentError(
+        "API_TOKEN_UNAVAILABLE",
+        "The Argus API token is unavailable.",
+        { recovery: "Set ARGUS_API_TOKEN with 'argus secrets set'." },
+      );
+    }
+    const response = await fetch(`http://127.0.0.1:${config.api.port}/v1/query`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${config.api.token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(input),
+      signal: AbortSignal.timeout(30_000),
+    });
+    const text = await response.text();
+    if (text.length > 2 * 1024 * 1024) {
+      throw new DeploymentError("QUERY_RESPONSE_TOO_LARGE", "The Argus query response exceeded 2 MiB.");
+    }
+    if (!response.ok) {
+      throw new DeploymentError(
+        "QUERY_FAILED",
+        `Argus query failed (${response.status}).`,
+        { recovery: "Run 'argus doctor' and confirm intelligence is enabled." },
+      );
+    }
+    const result = JSON.parse(text) as {
+      answer?: unknown;
+      sources?: unknown;
+      [key: string]: unknown;
+    };
+    if (typeof result.answer !== "string" || !Array.isArray(result.sources)) {
+      throw new DeploymentError("QUERY_RESPONSE_INVALID", "Argus returned an invalid query response.");
+    }
+    return result as {
+      answer: string;
+      sources: Array<{ index: number; recordId: string; url: string }>;
+      [key: string]: unknown;
+    };
   },
   config: {
     async validate(path) {

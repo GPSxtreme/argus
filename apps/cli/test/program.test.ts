@@ -172,6 +172,7 @@ describe("CLI JSON contract", () => {
       "stop",
       "restart",
       "status",
+      "query",
       "logs",
       "doctor",
       "repair",
@@ -179,6 +180,21 @@ describe("CLI JSON contract", () => {
       "config",
       "secrets",
     ]);
+  });
+
+  it("renders a sourced natural-language answer", async () => {
+    const harness = createHarness();
+    harness.dependencies.query = async () => ({
+      answer: "One new listing appeared. [1]",
+      sources: [
+        { index: 1, recordId: "record-1", url: "https://example.com/1" },
+      ],
+    });
+
+    await run(["query", "new listings since 9am"], harness.dependencies);
+
+    expect(harness.output().stdout).toContain("One new listing appeared. [1]");
+    expect(harness.output().stdout).toContain("[1] https://example.com/1");
   });
 
   it("emits a stable success envelope and no stderr output", async () => {
