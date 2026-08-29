@@ -144,6 +144,8 @@ RUN DEBIAN_SNAPSHOT="$DEBIAN_SNAPSHOT" sh /usr/local/bin/configure-snapshot.sh \
 COPY --from=build --chown=10001:10001 /workspace/app-main.js /app/apps/argus/dist/main.js
 COPY --from=build --chown=10001:10001 /workspace/xhr-sync-worker.js /app/apps/argus/dist/xhr-sync-worker.js
 COPY --from=build --chown=10001:10001 /workspace/apps/argus/package.json /app/apps/argus/package.json
+COPY --from=build --chown=10001:10001 /workspace/packages/storage-sqlite/drizzle/0000_schema_v2.sql /app/migrations/sqlite.sql
+COPY --from=build --chown=10001:10001 /workspace/packages/storage-postgres/drizzle/0000_schema_v2.sql /app/migrations/postgres.sql
 COPY --from=native-build --chown=10001:10001 /workspace/runtime-node-modules/ /app/node_modules/
 COPY --from=build --chown=10001:10001 /workspace/notices/THIRD_PARTY_NOTICES.md /app/THIRD_PARTY_NOTICES.md
 COPY --from=build --chown=10001:10001 /workspace/notices/licenses/ /app/licenses/
@@ -153,6 +155,7 @@ RUN cp /usr/share/doc/tini/copyright /app/licenses/tini-copyright \
 ENV NODE_ENV="production"
 ENV ARGUS_CONFIG="/app/argus.yaml"
 ENV ARGUS_ROLE="all"
+ENV ARGUS_MIGRATIONS_ROOT="/app/migrations"
 WORKDIR /app
 VOLUME ["/app/data"]
 EXPOSE 8788

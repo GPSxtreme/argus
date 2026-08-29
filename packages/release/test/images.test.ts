@@ -433,6 +433,9 @@ describe("production image definitions", () => {
   it("runs the application as a fixed non-root user with its runtime contract", () => {
     expect(appDockerfile).toMatch(/USER 10001:10001/u);
     expect(appDockerfile).toContain('ENV ARGUS_CONFIG="/app/argus.yaml"');
+    expect(appDockerfile).toContain('ENV ARGUS_MIGRATIONS_ROOT="/app/migrations"');
+    expect(appDockerfile).toContain("/app/migrations/sqlite.sql");
+    expect(appDockerfile).toContain("/app/migrations/postgres.sql");
     expect(appDockerfile).toContain('VOLUME ["/app/data"]');
     expect(appDockerfile).toContain("EXPOSE 8788");
     expect(appDockerfile).toContain("HEALTHCHECK --interval=5s");

@@ -33,10 +33,11 @@ describe("runtime repository", () => {
       watches: [],
     });
 
-    await openRepository(config);
+    await openRepository(config, "/app/migrations");
 
     expect(postgres.create).toHaveBeenCalledWith({
       connectionString: liveUrl,
+      migrationFile: "/app/migrations/postgres.sql",
     });
     expect(config.storage.url).toBe(liveUrl);
   });
