@@ -1,0 +1,27 @@
+{
+  "status": "success",
+  "code": 200,
+  "replies": [
+    {
+      "id": "190",
+      "url": "https://x.com/chartist/status/190",
+      "text": "Reply with evidence",
+      "raw_text": "Reply with evidence",
+      "created_at": "Sat Aug 29 12:00:00 +0000 2026",
+      "author": {
+        "screen_name": "chartist",
+        "name": "Chartist"
+      },
+      "likes": 44,
+      "replies": 8,
+      "reposts": 6,
+      "quotes": 3,
+      "views": 900,
+      "bookmarks": 4
+    }
+  ],
+  "thread": [],
+  "cursor": {
+    "bottom": "next-page"
+  }
+}

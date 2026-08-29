@@ -13,7 +13,7 @@ const tweetsFrom = (payload: unknown): Tweet[] => {
   if (Array.isArray(payload)) return payload as Tweet[];
   if (!payload || typeof payload !== "object") return [];
   const object = payload as Record<string, unknown>;
-  for (const key of ["tweets", "data", "results"]) {
+  for (const key of ["tweets", "replies", "data", "results"]) {
     if (Array.isArray(object[key])) return object[key] as Tweet[];
   }
   return [];
@@ -46,7 +46,11 @@ export class FxEmbedClient {
     const path = `/2/conversation/${encodeURIComponent(id)}${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`;
     const payload = await this.requestPayload(path);
     const root = payload && typeof payload === "object" && !Array.isArray(payload) ? payload as Record<string, unknown> : {};
-    const next = root.next_cursor ?? root.cursor;
+    const rawCursor = root.next_cursor ?? root.cursor;
+    const next =
+      typeof rawCursor === "object" && rawCursor !== null
+        ? (rawCursor as Record<string, unknown>).bottom
+        : rawCursor;
     return {
       items: tweetsFrom(payload).map(normalizeXStatus).filter((item): item is SourceItem => item !== undefined),
       ...(typeof next === "string" && next ? { cursor: next } : {}),

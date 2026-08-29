@@ -5,6 +5,9 @@ import { describe, expect, it, vi } from "vitest";
 import { FxEmbedClient, normalizeXStatus } from "../src/index.js";
 
 const richStatus = JSON.parse(readFileSync(new URL("./fixtures/status-rich.json", import.meta.url), "utf8")) as unknown;
+const conversationPage = JSON.parse(
+  readFileSync(new URL("./fixtures/conversation-page.json", import.meta.url), "utf8"),
+) as unknown;
 
 describe("FxEmbed client", () => {
   it("normalizes media-only posts, relations, and engagement", () => {
@@ -24,8 +27,8 @@ describe("FxEmbed client", () => {
   });
 
   it("reads bounded conversation pages", async () => {
-    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ tweets: [richStatus], next_cursor: "next" }));
-    await expect(new FxEmbedClient("https://fx.example", fetcher).conversation("190", "first")).resolves.toMatchObject({ items: [{ externalId: "190" }], cursor: "next" });
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json(conversationPage));
+    await expect(new FxEmbedClient("https://fx.example", fetcher).conversation("190", "first")).resolves.toMatchObject({ items: [{ externalId: "190" }], cursor: "next-page" });
     expect(fetcher).toHaveBeenCalledWith("https://fx.example/2/conversation/190?cursor=first", expect.anything());
   });
   it("normalizes account posts into source items", async () => {
