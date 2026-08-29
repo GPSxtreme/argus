@@ -1,8 +1,8 @@
 import type {
-  DerivedArtifact,
   ConversationSnapshot,
   ConversationSnapshotItem,
   ConversationTracking,
+  DerivedArtifact,
   IngestionRecord,
   RecordDetail,
   RecordEnvelope,
@@ -139,6 +139,9 @@ export interface StorageRepository {
   listRevisions(recordId: string): Promise<Page<RecordRevision>>;
   queryRecords(input: QueryRecordsInput): Promise<Page<RecordEnvelope>>;
   getRecord(id: string): Promise<RecordDetail | undefined>;
+  getConversationTracking(
+    rootRecordId: string,
+  ): Promise<ConversationTracking | undefined>;
   upsertConversationTracking(tracking: ConversationTracking): Promise<void>;
   listDueConversationTracking(
     now: string,

@@ -25,6 +25,11 @@ export interface CreateAppInput {
 export const API_ROUTES = {
   health: { method: "GET", path: "/health" },
   records: { method: "GET", path: "/v1/records" },
+  record: { method: "GET", path: "/v1/records/:id" },
+  conversationSnapshots: {
+    method: "GET",
+    path: "/v1/records/:id/conversation-snapshots",
+  },
   artifacts: { method: "GET", path: "/v1/artifacts" },
   ingestWatch: { method: "POST", path: "/v1/watches/:watchId/ingest" },
   createSmokeWatch: { method: "POST", path: "/v1/diagnostics/smoke-watches" },
@@ -134,6 +139,25 @@ export const createApp = ({ config, repository, diagnosticResolver }: CreateAppI
       }
       throw error;
     }
+  });
+
+  registerApiRoute(app, API_ROUTES.record, async (context) => {
+    const id = context.req.param("id");
+    if (!id) return context.json({ error: "record id is required" }, 400);
+    const record = await repository.getRecord(id);
+    return record
+      ? context.json(record)
+      : context.json({ error: "record not found" }, 404);
+  });
+
+  registerApiRoute(app, API_ROUTES.conversationSnapshots, async (context) => {
+    const id = context.req.param("id");
+    if (!id) return context.json({ error: "record id is required" }, 400);
+    const record = await repository.getRecord(id);
+    if (!record) return context.json({ error: "record not found" }, 404);
+    return context.json(
+      await repository.queryConversationSnapshots(record.id),
+    );
   });
 
   registerApiRoute(app, API_ROUTES.artifacts, async (context) => {

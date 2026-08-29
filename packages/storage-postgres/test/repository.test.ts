@@ -34,6 +34,7 @@ describe.skipIf(!enabled)("PostgreSQL repository", () => {
       listRevisions: repository.listRevisions.bind(repository),
       queryRecords: repository.queryRecords.bind(repository),
       getRecord: repository.getRecord.bind(repository),
+      getConversationTracking: repository.getConversationTracking.bind(repository),
       upsertConversationTracking: repository.upsertConversationTracking.bind(repository),
       listDueConversationTracking: repository.listDueConversationTracking.bind(repository),
       saveConversationSnapshot: repository.saveConversationSnapshot.bind(repository),

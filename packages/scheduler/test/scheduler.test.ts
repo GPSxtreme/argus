@@ -1,7 +1,12 @@
-import { describe, expect, it } from "vitest";
 import { validateConfig } from "@argus/config";
 import type { StorageRepository } from "@argus/contracts";
-import { backoffDelay, enqueueDueTargets, expandWatchTargets } from "../src/index.js";
+import { describe, expect, it } from "vitest";
+import {
+  backoffDelay,
+  enqueueDueConversationTracking,
+  enqueueDueTargets,
+  expandWatchTargets,
+} from "../src/index.js";
 
 describe("scheduler", () => {
   it("uses bounded exponential retry delays", () => {
@@ -79,5 +84,42 @@ describe("scheduler", () => {
     );
     expect(queued).toBe(1);
     expect(enqueued).toBe(1);
+  });
+
+  it("queues each due X conversation once for its scheduled run", async () => {
+    const jobs: Array<{ targetId: string; runAt: string }> = [];
+    const repository = {
+      listDueConversationTracking: async () => [
+        {
+          rootRecordId: "root-record-id",
+          watchId: "markets",
+          status: "active",
+          orderBy: "likes",
+          maxPerPost: 50,
+          maxTrackingHours: 168,
+          publishedAt: "2026-08-29T00:00:00.000Z",
+          nextRunAt: "2026-08-29T01:00:00.000Z",
+          stopsAt: "2026-09-05T00:00:00.000Z",
+          updatedAt: "2026-08-29T00:00:00.000Z",
+        },
+      ],
+      enqueueJob: async (job: { targetId: string; runAt: string }) => {
+        jobs.push(job);
+        return jobs.length === 1;
+      },
+    } as unknown as StorageRepository;
+
+    expect(
+      await enqueueDueConversationTracking(
+        repository,
+        new Date("2026-08-29T01:01:00.000Z"),
+      ),
+    ).toBe(1);
+    expect(jobs).toEqual([
+      expect.objectContaining({
+        targetId: "__argus_x_conversation:root-record-id",
+        runAt: "2026-08-29T01:00:00.000Z",
+      }),
+    ]);
   });
 });

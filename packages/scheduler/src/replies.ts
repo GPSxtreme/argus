@@ -1,4 +1,48 @@
-import type { ReplyOrdering, SourceItem } from "@argus/contracts";
+import {
+  contentHash,
+  type Job,
+  type ReplyOrdering,
+  type SourceItem,
+  type StorageRepository,
+} from "@argus/contracts";
+
+export const X_CONVERSATION_TARGET_PREFIX = "__argus_x_conversation:";
+
+export const conversationTargetId = (rootRecordId: string): string =>
+  `${X_CONVERSATION_TARGET_PREFIX}${rootRecordId}`;
+
+export const conversationRootRecordId = (
+  targetId: string,
+): string | undefined =>
+  targetId.startsWith(X_CONVERSATION_TARGET_PREFIX)
+    ? targetId.slice(X_CONVERSATION_TARGET_PREFIX.length) || undefined
+    : undefined;
+
+export const enqueueDueConversationTracking = async (
+  repository: StorageRepository,
+  now = new Date(),
+  limit = 100,
+): Promise<number> => {
+  let queued = 0;
+  const due = await repository.listDueConversationTracking(
+    now.toISOString(),
+    limit,
+  );
+  for (const tracking of due) {
+    if (!tracking.nextRunAt) continue;
+    const targetId = conversationTargetId(tracking.rootRecordId);
+    const job: Job = {
+      id: contentHash({ targetId, runAt: tracking.nextRunAt }).slice(0, 32),
+      targetId,
+      source: "x",
+      status: "queued",
+      attempt: 0,
+      runAt: tracking.nextRunAt,
+    };
+    if (await repository.enqueueJob(job)) queued += 1;
+  }
+  return queued;
+};
 
 const HOUR = 60 * 60 * 1000;
 export interface ReplyScheduleInput {
@@ -10,11 +54,20 @@ export interface ReplyScheduleInput {
   burstUntil?: string;
 }
 
+export const replyGrowthDetected = (
+  previous: number | undefined,
+  observed: number | undefined,
+): boolean =>
+  previous !== undefined &&
+  observed !== undefined &&
+  observed - previous >=
+    Math.max(1, Math.min(10, Math.ceil(previous * 0.2)));
+
 export const nextReplyRun = (input: ReplyScheduleInput): string | undefined => {
   const now = new Date(input.now).getTime(); const published = new Date(input.publishedAt).getTime(); const stops = new Date(input.stopsAt).getTime();
   if (now >= stops) return undefined;
   const previous = input.previousObservedReplies; const observed = input.observedReplies;
-  const growth = previous !== undefined && observed !== undefined && observed - previous >= Math.max(1, Math.min(10, Math.ceil(previous * 0.2)));
+  const growth = replyGrowthDetected(previous, observed);
   const activeBurst = input.burstUntil ? now < new Date(input.burstUntil).getTime() : false;
   const age = Math.max(0, now - published);
   const interval = growth || activeBurst ? HOUR : age < HOUR ? HOUR / 4 : age < 6 * HOUR ? HOUR : age < 24 * HOUR ? 6 * HOUR : age < 72 * HOUR ? 24 * HOUR : 72 * HOUR;

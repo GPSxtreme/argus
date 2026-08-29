@@ -4,6 +4,7 @@ import type {
   SourceItem,
   StorageRepository,
 } from "@argus/contracts";
+import { recordIdentity } from "@argus/contracts";
 import { ingestItems } from "@argus/engine";
 import { type ScheduledTarget, targetsFromConfig } from "@argus/scheduler";
 import { TelegramAdapter } from "@argus/source-telegram";
@@ -67,6 +68,8 @@ export const runTarget = async (
   revised: number;
   duplicates: number;
   diagnosticCommitted?: boolean;
+  replyTrackingStarted?: number;
+  replyTrackingFailed?: number;
 }> => {
   const sourceAdapter = adapter ?? createAdapterFactory(config)(target);
   if (isActive && !(await isActive())) return { inserted: 0, revised: 0, duplicates: 0 };
@@ -111,7 +114,61 @@ export const runTarget = async (
         }
       : {}),
   });
-  if (!diagnosticJobId) return result;
+  let replyTrackingStarted = 0;
+  let replyTrackingFailed = 0;
+  if (
+    !diagnosticJobId &&
+    target.source === "x" &&
+    config.sources.x.replies.enabled
+  ) {
+    const observedAt = new Date();
+    for (const item of items) {
+      const isReply = item.relations?.some(
+        (relation) => relation.kind === "reply_to",
+      );
+      const isRepost = item.relations?.some(
+        (relation) => relation.kind === "repost_of",
+      );
+      if (isReply || isRepost) continue;
+      const rootRecordId = recordIdentity("x", item.externalId);
+      try {
+        if (await repository.getConversationTracking(rootRecordId)) continue;
+        const parsedPublishedAt = item.publishedAt
+          ? new Date(item.publishedAt)
+          : observedAt;
+        const publishedAt = Number.isNaN(parsedPublishedAt.getTime())
+          ? observedAt.toISOString()
+          : parsedPublishedAt.toISOString();
+        const stopsAt = new Date(
+          new Date(publishedAt).getTime() +
+            config.sources.x.replies.maxTrackingHours * 60 * 60 * 1000,
+        ).toISOString();
+        if (stopsAt <= observedAt.toISOString()) continue;
+        await repository.upsertConversationTracking({
+          rootRecordId,
+          watchId: target.watchId,
+          status: "active",
+          orderBy: config.sources.x.replies.orderBy,
+          maxPerPost: config.sources.x.replies.maxPerPost,
+          maxTrackingHours: config.sources.x.replies.maxTrackingHours,
+          publishedAt,
+          nextRunAt: observedAt.toISOString(),
+          stopsAt,
+          updatedAt: observedAt.toISOString(),
+        });
+        replyTrackingStarted += 1;
+      } catch {
+        replyTrackingFailed += 1;
+      }
+    }
+  }
+  if (!diagnosticJobId) {
+    return {
+      ...result,
+      ...(replyTrackingStarted > 0 ? { replyTrackingStarted } : {}),
+      ...(replyTrackingFailed > 0 ? { replyTrackingFailed } : {}),
+    };
+  }
   return {
     ...result,
     diagnosticCommitted:

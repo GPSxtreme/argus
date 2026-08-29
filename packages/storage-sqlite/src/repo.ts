@@ -7,14 +7,14 @@ import type {
   RecordDetail, RecordEnvelope, RecordRevision, SourceItem, StorageRepository,
 } from "@argus/contracts";
 import { decodeRecordsCursor, encodeRecordsCursor, escapeSubstringPattern } from "@argus/contracts";
-import { and, asc, desc, eq, exists, inArray, isNull, lt, lte, notExists, notInArray, or, sql } from "drizzle-orm";
 import type { SQLWrapper } from "drizzle-orm";
+import { and, asc, desc, eq, exists, inArray, isNull, lt, lte, notExists, notInArray, or, sql } from "drizzle-orm";
 import type { SqliteConnection } from "./db.js";
 import {
   appliedConfig, artifactMedia, artifactRecords, artifacts, checkpoints,
   conversationSnapshotItems, conversationSnapshots, conversationTracking,
   diagnosticWatches, engagementSnapshots, jobs, mediaAssets, recordRelations,
-  recordRevisions, recordWatches, records,
+  recordRevisions, records, recordWatches,
 } from "./schema.js";
 
 type Orm = SqliteConnection["orm"];
@@ -294,6 +294,17 @@ export class SqliteRepository implements StorageRepository {
   async upsertConversationTracking(tracking: ConversationTracking): Promise<void> {
     const row = { ...tracking, nextRunAt: tracking.nextRunAt ?? null, lastObservedReplies: tracking.lastObservedReplies ?? null, burstUntil: tracking.burstUntil ?? null, lastError: tracking.lastError ?? null };
     this.orm.insert(conversationTracking).values(row).onConflictDoUpdate({ target: conversationTracking.rootRecordId, set: row }).run();
+  }
+
+  async getConversationTracking(
+    rootRecordId: string,
+  ): Promise<ConversationTracking | undefined> {
+    const row = this.orm
+      .select()
+      .from(conversationTracking)
+      .where(eq(conversationTracking.rootRecordId, rootRecordId))
+      .get();
+    return row ? mapTracking(row) : undefined;
   }
 
   async listDueConversationTracking(now: string, limit: number): Promise<ConversationTracking[]> {

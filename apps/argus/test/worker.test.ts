@@ -1,5 +1,5 @@
 import { validateConfig } from "@argus/config";
-import type { SourceItem } from "@argus/contracts";
+import { recordIdentity, type SourceItem } from "@argus/contracts";
 import type { ScheduledTarget } from "@argus/scheduler";
 import { createSqliteRepository } from "@argus/storage-sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -101,6 +101,128 @@ describe("target worker", () => {
     expect(
       await repository.getCheckpoint<{ lastId: string }>(target.id),
     ).toMatchObject({ lastId: "42" });
+  });
+
+  it("starts independent reply tracking for newly observed top-level X posts", async () => {
+    const repository = await createSqliteRepository({ filename: ":memory:" });
+    repositories.push(repository);
+    const config = validateConfig({
+      version: 2,
+      storage: { adapter: "sqlite", url: ":memory:" },
+      sources: {
+        x: {
+          enabled: true,
+          replies: {
+            enabled: true,
+            maxPerPost: 50,
+            maxTrackingHours: 168,
+            orderBy: "likes",
+          },
+        },
+      },
+      watches: [],
+    });
+    const target: ScheduledTarget = {
+      id: "movies:x:account:FilmUpdates",
+      source: "x",
+      watchId: "movies",
+      schedule: "* * * * *",
+      kind: "account",
+      value: "FilmUpdates",
+      keywords: [],
+    };
+    await runTarget(target, config, repository, {
+      kind: "x",
+      capabilities: { polling: true, backfill: true, realtime: false },
+      validate: async () => ({ valid: true, errors: [] }),
+      pull: async function* () {
+        yield {
+          externalId: "1900",
+          url: "https://x.com/FilmUpdates/status/1900",
+          text: "A new trailer",
+          publishedAt: "2026-08-29T00:00:00.000Z",
+          raw: {},
+        };
+        yield {
+          externalId: "1901",
+          url: "https://x.com/someone/status/1901",
+          text: "a reply",
+          relations: [
+            {
+              kind: "reply_to",
+              objectSource: "x",
+              objectExternalId: "1900",
+            },
+          ],
+          raw: {},
+        };
+      },
+    });
+
+    const tracking = await repository.getConversationTracking(
+      recordIdentity("x", "1900"),
+    );
+    expect(tracking).toMatchObject({
+      watchId: "movies",
+      orderBy: "likes",
+      maxPerPost: 50,
+      maxTrackingHours: 168,
+      publishedAt: "2026-08-29T00:00:00.000Z",
+      status: "active",
+    });
+    expect(
+      await repository.getConversationTracking(recordIdentity("x", "1901")),
+    ).toBeUndefined();
+  });
+
+  it("keeps root X ingestion successful when reply tracking initialization fails", async () => {
+    const repository = await createSqliteRepository({ filename: ":memory:" });
+    repositories.push(repository);
+    const config = validateConfig({
+      version: 2,
+      storage: { adapter: "sqlite", url: ":memory:" },
+      sources: { x: { enabled: true, replies: { enabled: true } } },
+      watches: [],
+    });
+    const target: ScheduledTarget = {
+      id: "movies:x:account:FilmUpdates",
+      source: "x",
+      watchId: "movies",
+      schedule: "* * * * *",
+      kind: "account",
+      value: "FilmUpdates",
+      keywords: [],
+    };
+    const isolatedRepository = new Proxy(repository, {
+      get(targetRepository, property, receiver) {
+        if (property === "upsertConversationTracking") {
+          return async () => {
+            throw new Error("tracking unavailable");
+          };
+        }
+        const value = Reflect.get(targetRepository, property, receiver);
+        return typeof value === "function"
+          ? value.bind(targetRepository)
+          : value;
+      },
+    });
+
+    await expect(
+      runTarget(target, config, isolatedRepository, {
+        kind: "x",
+        capabilities: { polling: true, backfill: true, realtime: false },
+        validate: async () => ({ valid: true, errors: [] }),
+        pull: async function* () {
+          yield {
+            externalId: "root",
+            url: "https://x.com/FilmUpdates/status/root",
+            text: "Trailer",
+            raw: {},
+          };
+        },
+      }),
+    ).resolves.toMatchObject({ inserted: 1, replyTrackingFailed: 1 });
+    expect(await repository.getRecord(recordIdentity("x", "root"))).toBeDefined();
   });
 
   it("does not commit a diagnostic target cancelled while its adapter is in flight", async () => {

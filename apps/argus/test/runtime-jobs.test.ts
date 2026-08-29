@@ -1,7 +1,11 @@
 import { validateConfig } from "@argus/config";
+import { contentHash, recordIdentity } from "@argus/contracts";
+import {
+  conversationTargetId,
+} from "@argus/scheduler";
 import { SAFE_HTTP_MAX_TIMEOUT_MS } from "@argus/source-web";
 import { createSqliteRepository } from "@argus/storage-sqlite";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { JOB_LEASE_MS, processNextJob } from "../src/runtime.js";
 
 const config = validateConfig({ version: 2, storage: { adapter: "sqlite", url: ":memory:" }, sources: { web: { enabled: true } }, watches: [{ id: "watch", schedule: "* * * * *", inputs: { web: { urls: ["https://example.com"] } } }] });
@@ -32,6 +36,55 @@ describe("processNextJob", () => {
   it("returns idle when no job exists", async () => {
     const repo = await createSqliteRepository({ filename: ":memory:" });
     expect(await processNextJob(config, repo)).toEqual({ status: "idle" });
+    repo.close();
+  });
+  it("dispatches a conversation job without resolving a configured target", async () => {
+    const repo = await createSqliteRepository({ filename: ":memory:" });
+    const rootRecordId = recordIdentity("x", "root");
+    await repo.upsertRecord({
+      id: rootRecordId,
+      source: "x",
+      externalId: "root",
+      targetId: "watch:x:account:argus",
+      watchIds: ["watch"],
+      url: "https://x.com/argus/status/root",
+      text: "root",
+      raw: {},
+      contentHash: contentHash({ text: "root" }),
+      firstSeenAt: "2026-08-29T00:00:00.000Z",
+      lastSeenAt: "2026-08-29T00:00:00.000Z",
+    });
+    const tracking = {
+      rootRecordId,
+      watchId: "watch",
+      status: "active" as const,
+      orderBy: "likes" as const,
+      maxPerPost: 50,
+      maxTrackingHours: 168,
+      publishedAt: "2026-08-29T00:00:00.000Z",
+      nextRunAt: "2026-08-29T01:00:00.000Z",
+      stopsAt: "2026-09-05T00:00:00.000Z",
+      updatedAt: "2026-08-29T00:00:00.000Z",
+    };
+    await repo.upsertConversationTracking(tracking);
+    await repo.enqueueJob({
+      id: "conversation-job",
+      targetId: conversationTargetId(rootRecordId),
+      source: "x",
+      status: "queued",
+      attempt: 0,
+      runAt: "2026-08-29T01:00:00.000Z",
+    });
+    const runConversationRefresh = vi.fn(async () => ({
+      observed: 12,
+      retained: 12,
+      pages: 1,
+    }));
+
+    await expect(
+      processNextJob(config, repo, { runConversationRefresh }),
+    ).resolves.toEqual({ status: "complete" });
+    expect(runConversationRefresh).toHaveBeenCalledWith(config, repo, tracking);
     repo.close();
   });
   it("processes an active diagnostic job with its injected runner", async () => {

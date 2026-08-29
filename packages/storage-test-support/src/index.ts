@@ -79,6 +79,11 @@ export const storageContract = (factory: RepositoryFactory): void => {
       const reply = fixture({ externalId: "reply", id: recordIdentity("x", "reply") });
       await repository.commitIngestion({ records: [root, reply], targetId: root.targetId, checkpoint: {} });
       await repository.upsertConversationTracking({ rootRecordId: root.id, watchId: "markets", status: "active", orderBy: "likes", maxPerPost: 50, maxTrackingHours: 168, publishedAt: observedAt, nextRunAt: observedAt, stopsAt: "2026-09-05T00:00:00.000Z", updatedAt: observedAt });
+      expect(await repository.getConversationTracking(root.id)).toMatchObject({
+        rootRecordId: root.id,
+        status: "active",
+        maxTrackingHours: 168,
+      });
       expect((await repository.listDueConversationTracking("2026-08-29T00:01:00.000Z", 10))[0]?.rootRecordId).toBe(root.id);
       const snapshotId = randomUUID();
       await repository.saveConversationSnapshot({ snapshot: { id: snapshotId, rootRecordId: root.id, observedCount: 1, retainedCount: 1, orderBy: "likes", pagesFetched: 1, complete: true, truncated: false, collectedAt: observedAt }, items: [{ snapshotId, replyRecordId: reply.id, rank: 1, sortValue: 5 }] });

@@ -1,7 +1,7 @@
 import { validateConfig } from "@argus/config";
 import { recordIdentity } from "@argus/contracts";
-import { createSqliteRepository } from "@argus/storage-sqlite";
 import { targetsFromConfig } from "@argus/scheduler";
+import { createSqliteRepository } from "@argus/storage-sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 
@@ -51,6 +51,80 @@ describe("Argus API", () => {
     });
     expect(response.status).toBe(200);
     expect((await response.json()).items[0].url).toBe("https://example.com/1");
+  });
+
+  it("serves rich record detail and observed conversation snapshots", async () => {
+    const repository = await createSqliteRepository({ filename: ":memory:" });
+    repositories.push(repository);
+    const rootRecordId = recordIdentity("x", "root");
+    const replyRecordId = recordIdentity("x", "reply");
+    await repository.upsertRecord({
+      id: rootRecordId,
+      source: "x",
+      targetId: "movies:x:account:FilmUpdates",
+      watchIds: ["movies"],
+      externalId: "root",
+      url: "https://x.com/FilmUpdates/status/root",
+      text: "Trailer",
+      media: [{ kind: "image", url: "https://cdn.example/trailer.jpg" }],
+      raw: {},
+      contentHash: "root-hash",
+      firstSeenAt: "2026-08-29T00:00:00.000Z",
+      lastSeenAt: "2026-08-29T00:00:00.000Z",
+    });
+    await repository.upsertRecord({
+      id: replyRecordId,
+      source: "x",
+      targetId: `__argus_x_conversation:${rootRecordId}`,
+      watchIds: ["movies"],
+      externalId: "reply",
+      url: "https://x.com/viewer/status/reply",
+      text: "Looks great",
+      raw: {},
+      contentHash: "reply-hash",
+      firstSeenAt: "2026-08-29T01:00:00.000Z",
+      lastSeenAt: "2026-08-29T01:00:00.000Z",
+    });
+    await repository.saveConversationSnapshot({
+      snapshot: {
+        id: "snapshot",
+        rootRecordId,
+        observedCount: 1,
+        retainedCount: 1,
+        orderBy: "likes",
+        pagesFetched: 1,
+        complete: true,
+        truncated: false,
+        collectedAt: "2026-08-29T01:00:00.000Z",
+      },
+      items: [
+        { snapshotId: "snapshot", replyRecordId, rank: 1, sortValue: 10 },
+      ],
+    });
+    const app = createApp({ config, repository });
+    const headers = { authorization: "Bearer secret" };
+
+    const detail = await app.request(`/v1/records/${rootRecordId}`, { headers });
+    expect(detail.status).toBe(200);
+    expect(await detail.json()).toMatchObject({
+      id: rootRecordId,
+      media: [{ kind: "image", url: "https://cdn.example/trailer.jpg" }],
+      watches: [{ watchId: "movies" }],
+    });
+    const conversation = await app.request(
+      `/v1/records/${rootRecordId}/conversation-snapshots`,
+      { headers },
+    );
+    expect(conversation.status).toBe(200);
+    expect(await conversation.json()).toMatchObject({
+      items: [
+        {
+          observedCount: 1,
+          retainedCount: 1,
+          items: [{ replyRecordId, rank: 1 }],
+        },
+      ],
+    });
   });
 
   it("queues an immediate ingestion trigger for a configured watch", async () => {

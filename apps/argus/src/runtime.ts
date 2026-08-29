@@ -1,12 +1,18 @@
 import { hostname } from "node:os";
 import { type ArgusConfig, loadConfig, reconcileConfig } from "@argus/config";
 import type { StorageRepository } from "@argus/contracts";
-import { backoffDelay, enqueueDueTargets } from "@argus/scheduler";
+import {
+  backoffDelay,
+  conversationRootRecordId,
+  enqueueDueConversationTracking,
+  enqueueDueTargets,
+} from "@argus/scheduler";
 import { SAFE_HTTP_MAX_TIMEOUT_MS } from "@argus/source-web";
 import { type ServerType, serve } from "@hono/node-server";
 import { Cron } from "croner";
 import pino from "pino";
 import { createApp } from "./app.js";
+import { runConversationRefresh } from "./conversation.js";
 import { runSummaryProcessor } from "./processor.js";
 import { openRepository, type RepositoryHandle } from "./repository.js";
 import { type AdapterFactory, createAdapterFactory, findDiagnosticTarget, findTarget, runTarget } from "./worker.js";
@@ -71,6 +77,7 @@ export const resolveRuntimeRole = (
 
 export interface ProcessNextJobDependencies {
   runTarget?: typeof runTarget;
+  runConversationRefresh?: typeof runConversationRefresh;
   adapterFactory?: AdapterFactory;
   workerId?: string;
   logger?: JobLogger;
@@ -81,6 +88,7 @@ export const processNextJob = async (
   repository: StorageRepository,
   {
     runTarget: execute = runTarget,
+    runConversationRefresh: executeConversation = runConversationRefresh,
     adapterFactory,
     workerId = `${hostname()}:${process.pid}`,
     logger: jobLogger = logger,
@@ -90,6 +98,7 @@ export const processNextJob = async (
   const job = (await repository.claimJobs(workerId, 1, JOB_LEASE_MS))[0];
   if (!job) return { status: "idle" };
   if (!job.leaseToken) throw new Error("Claimed job is missing its lease token");
+  const leaseToken = job.leaseToken;
   const isDiagnostic = job.targetId.startsWith("__argus_doctor:");
   const diagnostic = await repository.getDiagnosticWatch(job.targetId);
   if (isDiagnostic && diagnostic?.status !== "active") {
@@ -97,35 +106,53 @@ export const processNextJob = async (
     return { status: "cancelled" };
   }
   try {
-    const target =
-      findTarget(config, job.targetId) ??
-      (await findDiagnosticTarget(repository, job.targetId));
-    if (!target) throw new Error(`Unknown target: ${job.targetId}`);
-    const result = await execute(
-      target,
-      config,
-      repository,
-      adapters(target),
-      diagnostic
-        ? async () =>
-            (await repository.getDiagnosticWatch(job.targetId))?.status ===
-            "active"
-        : undefined,
-      isDiagnostic ? job.id : undefined,
-      isDiagnostic ? { owner: workerId, token: job.leaseToken } : undefined,
-    );
-    if (diagnostic && result.diagnosticCommitted === false) {
+    const conversationRoot = conversationRootRecordId(job.targetId);
+    const result = conversationRoot
+      ? await (async () => {
+          const tracking =
+            await repository.getConversationTracking(conversationRoot);
+          if (!tracking) {
+            throw new Error(`Unknown X conversation: ${conversationRoot}`);
+          }
+          return executeConversation(config, repository, tracking);
+        })()
+      : await (async () => {
+          const target =
+            findTarget(config, job.targetId) ??
+            (await findDiagnosticTarget(repository, job.targetId));
+          if (!target) throw new Error(`Unknown target: ${job.targetId}`);
+          return execute(
+            target,
+            config,
+            repository,
+            adapters(target),
+            diagnostic
+              ? async () =>
+                  (await repository.getDiagnosticWatch(job.targetId))
+                    ?.status === "active"
+              : undefined,
+            isDiagnostic ? job.id : undefined,
+            isDiagnostic
+              ? { owner: workerId, token: leaseToken }
+              : undefined,
+          );
+        })();
+    const diagnosticCommitted =
+      "diagnosticCommitted" in result
+        ? result.diagnosticCommitted
+        : undefined;
+    if (diagnostic && diagnosticCommitted === false) {
       return { status: "cancelled" };
     }
     if (
       isDiagnostic &&
-      result.diagnosticCommitted === undefined &&
+      diagnosticCommitted === undefined &&
       (await repository.getDiagnosticWatch(job.targetId))?.status !== "active"
     ) {
       await repository.completeJob(job.id, workerId, job.leaseToken);
       return { status: "cancelled" };
     }
-    if (!isDiagnostic || result.diagnosticCommitted === undefined) {
+    if (!isDiagnostic || diagnosticCommitted === undefined) {
       await repository.completeJob(job.id, workerId, job.leaseToken);
     }
     jobLogger.info(
@@ -152,6 +179,19 @@ export const processNextJob = async (
               }),
           ).toISOString()
         : undefined;
+    const failedConversationRoot = conversationRootRecordId(job.targetId);
+    if (failedConversationRoot) {
+      const tracking =
+        await repository.getConversationTracking(failedConversationRoot);
+      if (tracking) {
+        await repository.upsertConversationTracking({
+          ...tracking,
+          status: retryAt ? tracking.status : "failed",
+          lastError: message,
+          updatedAt: new Date().toISOString(),
+        });
+      }
+    }
     const failureSettled = await repository.failJob(
       job.id,
       workerId,
@@ -233,10 +273,12 @@ export const startRuntime = async (
     logger.info({ host: config.api.host, port: config.api.port }, "API listening");
   }
   if (config.runtime.role === "all" || config.runtime.role === "scheduler") {
-    const tick = () =>
-      void enqueueDueTargets(config, repository.repository).catch((error) =>
-        logger.error({ error }, "scheduler tick failed"),
-      );
+    const tick = () => {
+      void Promise.all([
+        enqueueDueTargets(config, repository.repository),
+        enqueueDueConversationTracking(repository.repository),
+      ]).catch((error) => logger.error({ error }, "scheduler tick failed"));
+    };
     tick();
     timers.push(setInterval(tick, 30_000));
   }
