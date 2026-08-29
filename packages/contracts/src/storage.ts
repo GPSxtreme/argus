@@ -1,5 +1,10 @@
 import type {
   DerivedArtifact,
+  ConversationSnapshot,
+  ConversationSnapshotItem,
+  ConversationTracking,
+  IngestionRecord,
+  RecordDetail,
   RecordEnvelope,
   RecordRevision,
   SourceName,
@@ -22,7 +27,7 @@ export interface QueryRecordsInput {
 }
 
 export interface IngestionCommit {
-  records: RecordEnvelope[];
+  records: IngestionRecord[];
   targetId: string;
   checkpoint: unknown;
 }
@@ -66,22 +71,22 @@ export class InvalidRecordsCursorError extends Error {
   }
 }
 
-export interface RecordsCursorV1 {
-  v: 1;
-  ingestedAt: string;
+export interface RecordsCursorV2 {
+  v: 2;
+  lastSeenAt: string;
   id: string;
 }
 
 export const encodeRecordsCursor = (
-  record: Pick<RecordEnvelope, "ingestedAt" | "id">,
+  record: Pick<RecordEnvelope, "lastSeenAt" | "id">,
 ): string =>
   Buffer.from(
-    JSON.stringify({ v: 1, ingestedAt: record.ingestedAt, id: record.id }),
+    JSON.stringify({ v: 2, lastSeenAt: record.lastSeenAt, id: record.id }),
   ).toString("base64url");
 
 export const decodeRecordsCursor = (
   cursor?: string,
-): RecordsCursorV1 | undefined => {
+): RecordsCursorV2 | undefined => {
   if (!cursor) return undefined;
   try {
     if (
@@ -101,17 +106,17 @@ export const decodeRecordsCursor = (
     ) {
       throw new Error("invalid shape");
     }
-    const value = parsed as Partial<RecordsCursorV1>;
+    const value = parsed as Partial<RecordsCursorV2>;
     if (
-      value.v !== 1 ||
-      typeof value.ingestedAt !== "string" ||
-      new Date(value.ingestedAt).toISOString() !== value.ingestedAt ||
+      value.v !== 2 ||
+      typeof value.lastSeenAt !== "string" ||
+      new Date(value.lastSeenAt).toISOString() !== value.lastSeenAt ||
       typeof value.id !== "string" ||
       value.id.length === 0
     ) {
       throw new Error("invalid value");
     }
-    return value as RecordsCursorV1;
+    return value as RecordsCursorV2;
   } catch {
     throw new InvalidRecordsCursorError();
   }
@@ -128,11 +133,24 @@ export type CreateDiagnosticWatchInput = Omit<DiagnosticWatch, "expiresAt"> & {
 
 export interface StorageRepository {
   upsertRecord(
-    record: RecordEnvelope,
+    record: IngestionRecord,
   ): Promise<{ record: RecordEnvelope; revision?: RecordRevision; created: boolean }>;
   commitIngestion(input: IngestionCommit): Promise<IngestionCommitResult>;
   listRevisions(recordId: string): Promise<Page<RecordRevision>>;
   queryRecords(input: QueryRecordsInput): Promise<Page<RecordEnvelope>>;
+  getRecord(id: string): Promise<RecordDetail | undefined>;
+  upsertConversationTracking(tracking: ConversationTracking): Promise<void>;
+  listDueConversationTracking(
+    now: string,
+    limit: number,
+  ): Promise<ConversationTracking[]>;
+  saveConversationSnapshot(input: {
+    snapshot: ConversationSnapshot;
+    items: ConversationSnapshotItem[];
+  }): Promise<void>;
+  queryConversationSnapshots(
+    rootRecordId: string,
+  ): Promise<Page<ConversationSnapshot & { items: ConversationSnapshotItem[] }>>;
   getCheckpoint<T>(targetId: string): Promise<T | undefined>;
   setCheckpoint<T>(targetId: string, checkpoint: T): Promise<void>;
   enqueueJob(job: Job): Promise<boolean>;

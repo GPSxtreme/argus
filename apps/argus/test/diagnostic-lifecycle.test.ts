@@ -1,5 +1,5 @@
 import { validateConfig } from "@argus/config";
-import type { SourceAdapter } from "@argus/contracts";
+import { recordIdentity, type SourceAdapter } from "@argus/contracts";
 import { targetsFromConfig } from "@argus/scheduler";
 import { createSqliteRepository } from "@argus/storage-sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -66,7 +66,7 @@ describe("diagnostic watch lifecycle", () => {
       checkpoint: { lastId: "user-1" },
       records: [
         {
-          id: "web:user-target:user-1",
+          id: recordIdentity("web", "user-1"),
           source: "web",
           targetId: "user-target",
           externalId: "user-1",
@@ -75,7 +75,8 @@ describe("diagnostic watch lifecycle", () => {
           raw: {},
           watchIds: ["user-watch"],
           contentHash: "user-hash",
-          ingestedAt: "2026-08-01T00:00:00.000Z",
+          firstSeenAt: "2026-08-01T00:00:00.000Z",
+          lastSeenAt: "2026-08-01T00:00:00.000Z",
         },
       ],
     });
@@ -89,7 +90,7 @@ describe("diagnostic watch lifecycle", () => {
     });
     await repository.saveArtifact({
       id: "user-artifact",
-      recordIds: ["web:user-target:user-1"],
+      recordIds: [recordIdentity("web", "user-1")],
       kind: "summary",
       content: "user only",
       provenance: {},
@@ -116,7 +117,12 @@ describe("diagnostic watch lifecycle", () => {
       diagnostic.targetId,
     );
     expect(diagnosticRecords).toHaveLength(1);
-    expect(diagnosticRecords[0]?.watchIds).toEqual([diagnostic.targetId]);
+    const diagnosticDetail = await repository.getRecord(
+      diagnosticRecords[0]?.id ?? "missing",
+    );
+    expect(diagnosticDetail?.watches.map(({ watchId }) => watchId)).toEqual([
+      diagnostic.targetId,
+    ]);
     const ordinaryResponse = await app.request(
       `/v1/records?target=${encodeURIComponent(diagnostic.targetId)}`,
       { headers: auth },
@@ -141,7 +147,7 @@ describe("diagnostic watch lifecycle", () => {
     await repository.saveArtifact({
       id: "mixed-artifact",
       recordIds: [
-        "web:user-target:user-1",
+        recordIdentity("web", "user-1"),
         diagnosticRecords[0]?.id ?? "missing",
       ],
       kind: "summary",

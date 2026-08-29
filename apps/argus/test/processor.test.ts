@@ -1,4 +1,5 @@
 import { validateConfig } from "@argus/config";
+import { recordIdentity } from "@argus/contracts";
 import { createSqliteRepository } from "@argus/storage-sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import { runSummaryProcessor } from "../src/processor.js";
@@ -13,7 +14,7 @@ describe("scheduled summary processor", () => {
     const repository = await createSqliteRepository({ filename: ":memory:" });
     repositories.push(repository);
     await repository.upsertRecord({
-      id: "web:site:1",
+      id: recordIdentity("web", "1"),
       source: "web",
       targetId: "site",
       externalId: "1",
@@ -22,7 +23,8 @@ describe("scheduled summary processor", () => {
       raw: {},
       watchIds: ["release"],
       contentHash: "hash",
-      ingestedAt: "2026-07-31T00:00:00.000Z",
+      firstSeenAt: "2026-07-31T00:00:00.000Z",
+      lastSeenAt: "2026-07-31T00:00:00.000Z",
     });
     const config = validateConfig({
       version: 1,
@@ -43,7 +45,7 @@ describe("scheduled summary processor", () => {
           content: "Argus shipped. [1]",
           model: "test",
           sources: [
-            { index: 1, recordId: "web:site:1", url: "https://example.com/1" },
+            { index: 1, recordId: recordIdentity("web", "1"), url: "https://example.com/1" },
           ],
         }),
       });
@@ -58,7 +60,7 @@ describe("scheduled summary processor", () => {
     const now = new Date().toISOString();
     const targetId = "__argus_doctor:summary-isolation";
     await repository.upsertRecord({
-      id: "web:user:1",
+      id: recordIdentity("web", "1"),
       source: "web",
       targetId: "user",
       externalId: "1",
@@ -67,7 +69,8 @@ describe("scheduled summary processor", () => {
       raw: {},
       watchIds: ["release"],
       contentHash: "user",
-      ingestedAt: now,
+      firstSeenAt: now,
+      lastSeenAt: now,
     });
     await repository.createDiagnosticWatch({
       id: "summary-isolation",
@@ -100,16 +103,17 @@ describe("scheduled summary processor", () => {
       targetId,
       records: [
         {
-          id: "web:diagnostic:1",
+          id: recordIdentity("web", "diagnostic-1"),
           source: "web",
           targetId,
-          externalId: "1",
+          externalId: "diagnostic-1",
           url: "https://example.com/diagnostic",
           text: "Diagnostic data",
           raw: {},
           watchIds: [targetId],
           contentHash: "diagnostic",
-          ingestedAt: now,
+          firstSeenAt: now,
+          lastSeenAt: now,
         },
       ],
       checkpoint: {},
@@ -135,6 +139,6 @@ describe("scheduled summary processor", () => {
       },
     });
 
-    expect(summarizedIds).toEqual(["web:user:1"]);
+    expect(summarizedIds).toEqual([recordIdentity("web", "1")]);
   });
 });

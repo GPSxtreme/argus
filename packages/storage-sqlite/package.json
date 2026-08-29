@@ -10,9 +10,11 @@
   },
   "dependencies": {
     "@argus/contracts": "workspace:*",
-    "better-sqlite3": "^12.0.0"
+    "better-sqlite3": "^12.0.0",
+    "drizzle-orm": "^0.45.2"
   },
   "devDependencies": {
+    "@argus/storage-test-support": "workspace:*",
     "@types/better-sqlite3": "^7.6.0"
   }
 }

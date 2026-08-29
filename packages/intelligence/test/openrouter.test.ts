@@ -19,14 +19,13 @@ describe("OpenRouter intelligence", () => {
       {
         id: "web:argus:1",
         source: "web",
-        targetId: "argus",
         externalId: "1",
         url: "https://example.com/1",
         text: "Argus shipped",
         raw: {},
-        watchIds: ["release"],
         contentHash: "hash",
-        ingestedAt: "2026-07-31T00:00:00.000Z",
+        firstSeenAt: "2026-07-31T00:00:00.000Z",
+        lastSeenAt: "2026-07-31T00:00:00.000Z",
       },
     ]);
     expect(result.content).toBe("Argus shipped. [1]");

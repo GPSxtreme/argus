@@ -1,4 +1,5 @@
 import { createSqliteRepository } from "@argus/storage-sqlite";
+import { recordIdentity } from "@argus/contracts";
 import { afterEach, describe, expect, it } from "vitest";
 import { QueryService } from "../src/index.js";
 
@@ -12,7 +13,7 @@ describe("query service", () => {
     const repository = await createSqliteRepository({ filename: ":memory:" });
     repositories.push(repository);
     await repository.upsertRecord({
-      id: "telegram:argus:1",
+      id: recordIdentity("telegram", "1"),
       source: "telegram",
       targetId: "argus",
       externalId: "1",
@@ -21,7 +22,8 @@ describe("query service", () => {
       raw: {},
       watchIds: ["releases"],
       contentHash: "hash",
-      ingestedAt: "2026-07-31T00:00:00.000Z",
+      firstSeenAt: "2026-07-31T00:00:00.000Z",
+      lastSeenAt: "2026-07-31T00:00:00.000Z",
     });
     const result = await new QueryService(repository).search({
       text: "V1",

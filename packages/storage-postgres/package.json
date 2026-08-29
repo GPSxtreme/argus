@@ -10,9 +10,11 @@
   },
   "dependencies": {
     "@argus/contracts": "workspace:*",
+    "drizzle-orm": "^0.45.2",
     "pg": "^8.16.0"
   },
   "devDependencies": {
+    "@argus/storage-test-support": "workspace:*",
     "@testcontainers/postgresql": "^11.5.0",
     "@types/pg": "^8.15.0"
   }

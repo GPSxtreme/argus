@@ -62,19 +62,21 @@ export interface SourceItem {
 export interface RecordEnvelope extends SourceItem {
   id: string;
   source: SourceName;
+  contentHash: string;
+  firstSeenAt: string;
+  lastSeenAt: string;
+}
+
+export interface IngestionRecord extends RecordEnvelope {
   targetId: string;
   watchIds: string[];
-  contentHash: string;
-  ingestedAt: string;
 }
 
 export interface RecordRevision {
   id: string;
   recordId: string;
   contentHash: string;
-  title?: string;
-  text: string;
-  raw: unknown;
+  snapshot: SourceItem;
   createdAt: string;
 }
 
@@ -175,6 +177,10 @@ export type RecordDetail = Omit<
 export interface DerivedArtifact {
   id: string;
   recordIds: string[];
+  media?: Array<{
+    mediaAssetId: string;
+    disposition: string;
+  }>;
   kind: string;
   content: string;
   provider?: string;

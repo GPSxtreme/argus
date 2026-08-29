@@ -1,4 +1,5 @@
 import { validateConfig } from "@argus/config";
+import { recordIdentity } from "@argus/contracts";
 import { createSqliteRepository } from "@argus/storage-sqlite";
 import { targetsFromConfig } from "@argus/scheduler";
 import { afterEach, describe, expect, it } from "vitest";
@@ -30,7 +31,7 @@ describe("Argus API", () => {
     const repository = await createSqliteRepository({ filename: ":memory:" });
     repositories.push(repository);
     await repository.upsertRecord({
-      id: "web:site:1",
+      id: recordIdentity("web", "1"),
       source: "web",
       targetId: "site",
       externalId: "1",
@@ -39,7 +40,8 @@ describe("Argus API", () => {
       raw: {},
       watchIds: ["argus"],
       contentHash: "hash",
-      ingestedAt: "2026-07-31T00:00:00.000Z",
+      firstSeenAt: "2026-07-31T00:00:00.000Z",
+      lastSeenAt: "2026-07-31T00:00:00.000Z",
     });
     const diagnosticConfig = validateConfig({ version: 1, storage: { adapter: "sqlite", url: ":memory:" }, sources: { web: { enabled: true } }, watches: [{ id: "diagnostic-source", schedule: "* * * * *", inputs: { web: { urls: ["https://example.com/a"] } } }], api: { token: "secret" } });
     const app = createApp({ config: diagnosticConfig, repository });
@@ -97,7 +99,7 @@ describe("Argus API", () => {
       ["old", "2026-08-01T00:00:00.000Z"],
     ] as const) {
       await repository.upsertRecord({
-        id,
+        id: recordIdentity("web", id),
         source: "web",
         targetId: "site",
         externalId: id,
@@ -106,7 +108,8 @@ describe("Argus API", () => {
         raw: {},
         watchIds: ["argus"],
         contentHash: id,
-        ingestedAt,
+        firstSeenAt: ingestedAt,
+        lastSeenAt: ingestedAt,
       });
     }
     const app = createApp({ config, repository });
@@ -114,17 +117,17 @@ describe("Argus API", () => {
       headers: { authorization: "Bearer secret" },
     });
     const firstBody = (await first.json()) as {
-      items: Array<{ id: string }>;
+      items: Array<{ externalId: string }>;
       nextCursor: string;
     };
-    expect(firstBody.items.map(({ id }) => id)).toEqual(["new"]);
+    expect(firstBody.items.map(({ externalId }) => externalId)).toEqual(["new"]);
     const second = await app.request(
       `/v1/records?limit=1&cursor=${encodeURIComponent(firstBody.nextCursor)}`,
       { headers: { authorization: "Bearer secret" } },
     );
     expect(second.status).toBe(200);
-    expect(((await second.json()) as { items: Array<{ id: string }> }).items).toEqual([
-      expect.objectContaining({ id: "old" }),
+    expect(((await second.json()) as { items: Array<{ externalId: string }> }).items).toEqual([
+      expect.objectContaining({ externalId: "old" }),
     ]);
 
     for (const cursor of [

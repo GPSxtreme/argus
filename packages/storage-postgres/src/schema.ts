@@ -1,83 +1,25 @@
-export const POSTGRES_SCHEMA = `
-CREATE TABLE IF NOT EXISTS records (
-  id text PRIMARY KEY,
-  source text NOT NULL,
-  target_id text NOT NULL,
-  external_id text NOT NULL,
-  url text NOT NULL,
-  title text,
-  text text NOT NULL,
-  author text,
-  published_at timestamptz,
-  raw_json jsonb NOT NULL,
-  metadata_json jsonb,
-  watch_ids_json jsonb NOT NULL,
-  content_hash text NOT NULL,
-  ingested_at timestamptz NOT NULL,
-  UNIQUE(source, target_id, external_id)
-);
-CREATE INDEX IF NOT EXISTS records_ingested_idx ON records(ingested_at DESC, id);
+import { sql } from "drizzle-orm";
+import { boolean, check, index, integer, jsonb, pgTable, primaryKey, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
 
-CREATE TABLE IF NOT EXISTS revisions (
-  id text PRIMARY KEY,
-  record_id text NOT NULL REFERENCES records(id) ON DELETE CASCADE,
-  content_hash text NOT NULL,
-  title text,
-  text text NOT NULL,
-  raw_json jsonb NOT NULL,
-  created_at timestamptz NOT NULL,
-  UNIQUE(record_id, content_hash)
-);
+const time = (name: string) => timestamp(name, { withTimezone: true, mode: "string" }).notNull();
+const optionalTime = (name: string) => timestamp(name, { withTimezone: true, mode: "string" });
 
-CREATE TABLE IF NOT EXISTS checkpoints (
-  target_id text PRIMARY KEY,
-  value_json jsonb NOT NULL,
-  updated_at timestamptz NOT NULL
-);
+export const schemaMeta = pgTable("schema_meta", { id: integer("id").primaryKey(), version: integer("version").notNull(), createdAt: time("created_at") });
+export const records = pgTable("records", { id: text("id").primaryKey(), source: text("source").notNull(), externalId: text("external_id").notNull(), url: text("url").notNull(), title: text("title"), text: text("text").notNull(), author: text("author"), publishedAt: optionalTime("published_at"), raw: jsonb("raw_json").notNull(), metadata: jsonb("metadata_json"), contentHash: text("content_hash").notNull(), firstSeenAt: time("first_seen_at"), lastSeenAt: time("last_seen_at") }, (t) => [uniqueIndex("records_source_external_idx").on(t.source, t.externalId), index("records_last_seen_idx").on(t.lastSeenAt, t.id), check("records_id_sha256", sql`length(${t.id}) = 64`)]);
+export const recordWatches = pgTable("record_watches", { recordId: text("record_id").notNull().references(() => records.id, { onDelete: "cascade" }), watchId: text("watch_id").notNull(), targetId: text("target_id").notNull(), firstSeenAt: time("first_seen_at"), lastSeenAt: time("last_seen_at") }, (t) => [primaryKey({ columns: [t.recordId, t.watchId, t.targetId] }), index("record_watches_watch_idx").on(t.watchId, t.lastSeenAt), index("record_watches_target_idx").on(t.targetId, t.lastSeenAt)]);
+export const recordRevisions = pgTable("record_revisions", { id: text("id").primaryKey(), recordId: text("record_id").notNull().references(() => records.id, { onDelete: "cascade" }), contentHash: text("content_hash").notNull(), snapshot: jsonb("snapshot_json").notNull(), createdAt: time("created_at") }, (t) => [uniqueIndex("record_revisions_record_hash_idx").on(t.recordId, t.contentHash), index("record_revisions_record_created_idx").on(t.recordId, t.createdAt)]);
+export const mediaAssets = pgTable("media_assets", { id: text("id").primaryKey(), recordId: text("record_id").notNull().references(() => records.id, { onDelete: "cascade" }), sourceMediaId: text("source_media_id"), kind: text("kind").notNull(), url: text("url").notNull(), previewUrl: text("preview_url"), mimeType: text("mime_type"), width: integer("width"), height: integer("height"), durationMs: integer("duration_ms"), altText: text("alt_text"), position: integer("position").notNull(), metadata: jsonb("metadata_json"), firstSeenAt: time("first_seen_at"), lastSeenAt: time("last_seen_at") }, (t) => [uniqueIndex("media_assets_record_position_idx").on(t.recordId, t.position), check("media_assets_position_nonnegative", sql`${t.position} >= 0`)]);
+export const recordRelations = pgTable("record_relations", { id: text("id").primaryKey(), subjectRecordId: text("subject_record_id").notNull().references(() => records.id, { onDelete: "cascade" }), kind: text("kind").notNull(), objectSource: text("object_source").notNull(), objectExternalId: text("object_external_id").notNull(), objectRecordId: text("object_record_id").references(() => records.id, { onDelete: "set null" }), objectUrl: text("object_url"), metadata: jsonb("metadata_json"), firstSeenAt: time("first_seen_at"), lastSeenAt: time("last_seen_at") }, (t) => [uniqueIndex("record_relations_edge_idx").on(t.subjectRecordId, t.kind, t.objectSource, t.objectExternalId), index("record_relations_object_idx").on(t.objectSource, t.objectExternalId)]);
+export const engagementSnapshots = pgTable("engagement_snapshots", { id: text("id").primaryKey(), recordId: text("record_id").notNull().references(() => records.id, { onDelete: "cascade" }), likes: integer("likes"), replies: integer("replies"), reposts: integer("reposts"), quotes: integer("quotes"), views: integer("views"), bookmarks: integer("bookmarks"), collectedAt: time("collected_at") }, (t) => [index("engagement_record_collected_idx").on(t.recordId, t.collectedAt)]);
+export const conversationTracking = pgTable("conversation_tracking", { rootRecordId: text("root_record_id").primaryKey().references(() => records.id, { onDelete: "cascade" }), watchId: text("watch_id").notNull(), status: text("status").notNull(), orderBy: text("order_by").notNull(), maxPerPost: integer("max_per_post").notNull(), maxTrackingHours: integer("max_tracking_hours").notNull(), publishedAt: time("published_at"), nextRunAt: optionalTime("next_run_at"), stopsAt: time("stops_at"), lastObservedReplies: integer("last_observed_replies"), burstUntil: optionalTime("burst_until"), lastError: text("last_error"), updatedAt: time("updated_at") }, (t) => [index("conversation_tracking_due_idx").on(t.status, t.nextRunAt)]);
+export const conversationSnapshots = pgTable("conversation_snapshots", { id: text("id").primaryKey(), rootRecordId: text("root_record_id").notNull().references(() => records.id, { onDelete: "cascade" }), observedCount: integer("observed_count").notNull(), retainedCount: integer("retained_count").notNull(), orderBy: text("order_by").notNull(), pagesFetched: integer("pages_fetched").notNull(), complete: boolean("complete").notNull(), truncated: boolean("truncated").notNull(), truncationReason: text("truncation_reason"), upstreamCursor: text("upstream_cursor"), collectedAt: time("collected_at") }, (t) => [index("conversation_snapshots_root_collected_idx").on(t.rootRecordId, t.collectedAt)]);
+export const conversationSnapshotItems = pgTable("conversation_snapshot_items", { snapshotId: text("snapshot_id").notNull().references(() => conversationSnapshots.id, { onDelete: "cascade" }), replyRecordId: text("reply_record_id").notNull().references(() => records.id, { onDelete: "cascade" }), rank: integer("rank").notNull(), sortValue: integer("sort_value") }, (t) => [primaryKey({ columns: [t.snapshotId, t.replyRecordId] }), uniqueIndex("conversation_snapshot_rank_idx").on(t.snapshotId, t.rank)]);
+export const checkpoints = pgTable("checkpoints", { targetId: text("target_id").primaryKey(), value: jsonb("value_json").notNull(), updatedAt: time("updated_at") });
+export const jobs = pgTable("jobs", { id: text("id").primaryKey(), targetId: text("target_id").notNull(), source: text("source").notNull(), status: text("status").notNull(), attempt: integer("attempt").notNull(), runAt: time("run_at"), leaseOwner: text("lease_owner"), leaseToken: text("lease_token"), leaseExpiresAt: optionalTime("lease_expires_at"), error: text("error") }, (t) => [index("jobs_due_idx").on(t.status, t.runAt, t.leaseExpiresAt)]);
+export const diagnosticWatches = pgTable("diagnostic_watches", { id: text("id").primaryKey(), targetId: text("target_id").notNull().unique(), source: text("source").notNull(), target: jsonb("target_json").notNull(), status: text("status").notNull(), createdAt: time("created_at"), updatedAt: time("updated_at"), expiresAt: time("expires_at") }, (t) => [index("diagnostic_watches_expiry_idx").on(t.expiresAt)]);
+export const artifacts = pgTable("artifacts", { id: text("id").primaryKey(), kind: text("kind").notNull(), content: text("content").notNull(), provider: text("provider"), model: text("model"), provenance: jsonb("provenance_json").notNull(), createdAt: time("created_at") });
+export const artifactRecords = pgTable("artifact_records", { artifactId: text("artifact_id").notNull().references(() => artifacts.id, { onDelete: "cascade" }), recordId: text("record_id").notNull().references(() => records.id, { onDelete: "cascade" }), position: integer("position").notNull() }, (t) => [primaryKey({ columns: [t.artifactId, t.recordId] }), uniqueIndex("artifact_records_position_idx").on(t.artifactId, t.position)]);
+export const artifactMedia = pgTable("artifact_media", { artifactId: text("artifact_id").notNull().references(() => artifacts.id, { onDelete: "cascade" }), mediaAssetId: text("media_asset_id").notNull().references(() => mediaAssets.id, { onDelete: "cascade" }), position: integer("position").notNull(), disposition: text("disposition").notNull() }, (t) => [primaryKey({ columns: [t.artifactId, t.mediaAssetId] }), uniqueIndex("artifact_media_position_idx").on(t.artifactId, t.position)]);
+export const appliedConfig = pgTable("applied_config", { id: integer("id").primaryKey(), config: jsonb("config_json").notNull(), contentHash: text("content_hash").notNull(), appliedAt: time("applied_at") });
 
-CREATE TABLE IF NOT EXISTS jobs (
-  id text PRIMARY KEY,
-  target_id text NOT NULL,
-  source text NOT NULL,
-  status text NOT NULL,
-  attempt integer NOT NULL,
-  run_at timestamptz NOT NULL,
-  lease_owner text,
-  lease_token text,
-  lease_expires_at timestamptz,
-  error text
-);
-ALTER TABLE jobs ADD COLUMN IF NOT EXISTS lease_token text;
-CREATE INDEX IF NOT EXISTS jobs_due_idx ON jobs(status, run_at, lease_expires_at);
-CREATE TABLE IF NOT EXISTS diagnostic_watches (
- id text PRIMARY KEY, target_id text NOT NULL UNIQUE, source text NOT NULL, target_json jsonb NOT NULL,
- status text NOT NULL, created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL,
- expires_at timestamptz NOT NULL
-);
-ALTER TABLE diagnostic_watches
-  ADD COLUMN IF NOT EXISTS expires_at timestamptz;
-UPDATE diagnostic_watches
-  SET expires_at = created_at + interval '15 minutes'
-  WHERE expires_at IS NULL;
-ALTER TABLE diagnostic_watches
-  ALTER COLUMN expires_at SET NOT NULL;
-CREATE INDEX IF NOT EXISTS diagnostic_watches_expiry_idx ON diagnostic_watches(expires_at);
-
-CREATE TABLE IF NOT EXISTS artifacts (
-  id text PRIMARY KEY,
-  record_ids_json jsonb NOT NULL,
-  kind text NOT NULL,
-  content text NOT NULL,
-  provider text,
-  model text,
-  provenance_json jsonb NOT NULL,
-  created_at timestamptz NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS applied_config (
-  id integer PRIMARY KEY CHECK (id = 1),
-  config_json jsonb NOT NULL,
-  content_hash text NOT NULL,
-  applied_at timestamptz NOT NULL
-);
-`;
+export const postgresSchema = { schemaMeta, records, recordWatches, recordRevisions, mediaAssets, recordRelations, engagementSnapshots, conversationTracking, conversationSnapshots, conversationSnapshotItems, checkpoints, jobs, diagnosticWatches, artifacts, artifactRecords, artifactMedia, appliedConfig };

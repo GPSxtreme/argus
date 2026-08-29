@@ -1,7 +1,7 @@
 import {
   contentHash,
   recordIdentity,
-  type RecordEnvelope,
+  type IngestionRecord,
   type SourceItem,
   type SourceName,
 } from "@argus/contracts";
@@ -14,7 +14,7 @@ export interface NormalizeItemInput {
   now?: string;
 }
 
-export const normalizeItem = (input: NormalizeItemInput): RecordEnvelope => {
+export const normalizeItem = (input: NormalizeItemInput): IngestionRecord => {
   const { item } = input;
   return {
     ...item,
@@ -30,6 +30,7 @@ export const normalizeItem = (input: NormalizeItemInput): RecordEnvelope => {
       media: item.media,
       relations: item.relations,
     }),
-    ingestedAt: input.now ?? new Date().toISOString(),
+    firstSeenAt: input.now ?? new Date().toISOString(),
+    lastSeenAt: input.now ?? new Date().toISOString(),
   };
 };
