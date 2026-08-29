@@ -1,9 +1,33 @@
 import { once } from "node:events";
+import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { describe, expect, it, vi } from "vitest";
-import { FxEmbedClient } from "../src/index.js";
+import { FxEmbedClient, normalizeXStatus } from "../src/index.js";
+
+const richStatus = JSON.parse(readFileSync(new URL("./fixtures/status-rich.json", import.meta.url), "utf8")) as unknown;
 
 describe("FxEmbed client", () => {
+  it("normalizes media-only posts, relations, and engagement", () => {
+    expect(normalizeXStatus(richStatus)).toMatchObject({
+      externalId: "190", text: "", author: "chartist",
+      media: [
+        { sourceMediaId: "m1", kind: "image", url: "https://cdn.example/chart.jpg", altText: "Price prediction chart" },
+        { sourceMediaId: "m2", kind: "video", previewUrl: "https://cdn.example/video.jpg", durationMs: 12000 },
+      ],
+      relations: [
+        { kind: "reply_to", objectExternalId: "100" },
+        { kind: "quote_of", objectExternalId: "101" },
+        { kind: "repost_of", objectExternalId: "102" },
+      ],
+      engagement: { likes: 44, replies: 8, reposts: 6, quotes: 3, views: 900, bookmarks: 4 },
+    });
+  });
+
+  it("reads bounded conversation pages", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ tweets: [richStatus], next_cursor: "next" }));
+    await expect(new FxEmbedClient("https://fx.example", fetcher).conversation("190", "first")).resolves.toMatchObject({ items: [{ externalId: "190" }], cursor: "next" });
+    expect(fetcher).toHaveBeenCalledWith("https://fx.example/2/conversation/190?cursor=first", expect.anything());
+  });
   it("normalizes account posts into source items", async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(

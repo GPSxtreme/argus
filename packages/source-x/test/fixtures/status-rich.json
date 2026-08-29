@@ -1,0 +1,21 @@
+{
+  "id": "190",
+  "text": "",
+  "created_at": "2026-08-29T00:00:00.000Z",
+  "author": { "screen_name": "chartist" },
+  "media": {
+    "all": [
+      { "id": "m1", "type": "photo", "url": "https://cdn.example/chart.jpg", "width": 1200, "height": 800, "alt_text": "Price prediction chart" },
+      { "id": "m2", "type": "video", "url": "https://cdn.example/video.mp4", "thumbnail_url": "https://cdn.example/video.jpg", "duration_millis": 12000 }
+    ]
+  },
+  "replying_to": "100",
+  "quote": { "id": "101" },
+  "retweet": { "id": "102" },
+  "likes": 44,
+  "replies": 8,
+  "retweets": 6,
+  "quotes": 3,
+  "views": 900,
+  "bookmarks": 4
+}

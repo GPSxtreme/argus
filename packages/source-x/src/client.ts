@@ -3,15 +3,11 @@ import {
   readBoundedBody,
   SAFE_HTTP_MAX_TIMEOUT_MS,
 } from "@argus/source-web";
+import { normalizeXStatus } from "./normalize.js";
 
 const FXEMBED_MAX_BODY_BYTES = 2 * 1024 * 1024;
 
 type Tweet = Record<string, unknown>;
-
-const stringValue = (value: unknown): string | undefined =>
-  typeof value === "string" || typeof value === "number"
-    ? String(value)
-    : undefined;
 
 const tweetsFrom = (payload: unknown): Tweet[] => {
   if (Array.isArray(payload)) return payload as Tweet[];
@@ -23,33 +19,10 @@ const tweetsFrom = (payload: unknown): Tweet[] => {
   return [];
 };
 
-const toItem = (tweet: Tweet): SourceItem | undefined => {
-  const id = stringValue(tweet.id ?? tweet.rest_id);
-  const text = stringValue(tweet.text ?? tweet.full_text);
-  if (!id || !text) return undefined;
-  const authorObject =
-    tweet.author && typeof tweet.author === "object"
-      ? (tweet.author as Record<string, unknown>)
-      : {};
-  const author = stringValue(
-    authorObject.screen_name ??
-      authorObject.username ??
-      tweet.screen_name ??
-      tweet.username,
-  );
-  return {
-    externalId: id,
-    url: author
-      ? `https://x.com/${author}/status/${id}`
-      : `https://x.com/i/status/${id}`,
-    text,
-    ...(author ? { author } : {}),
-    ...(stringValue(tweet.created_at)
-      ? { publishedAt: stringValue(tweet.created_at) as string }
-      : {}),
-    raw: tweet,
-  };
-};
+export interface XConversationPage {
+  items: SourceItem[];
+  cursor?: string;
+}
 
 export class FxEmbedClient {
   private readonly endpoint: string;
@@ -69,7 +42,23 @@ export class FxEmbedClient {
     return this.request(`/2/search?query=${encodeURIComponent(query)}`);
   }
 
+  async conversation(id: string, cursor?: string): Promise<XConversationPage> {
+    const path = `/2/conversation/${encodeURIComponent(id)}${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`;
+    const payload = await this.requestPayload(path);
+    const root = payload && typeof payload === "object" && !Array.isArray(payload) ? payload as Record<string, unknown> : {};
+    const next = root.next_cursor ?? root.cursor;
+    return {
+      items: tweetsFrom(payload).map(normalizeXStatus).filter((item): item is SourceItem => item !== undefined),
+      ...(typeof next === "string" && next ? { cursor: next } : {}),
+    };
+  }
+
   private async request(path: string): Promise<SourceItem[]> {
+    const payload = await this.requestPayload(path);
+    return tweetsFrom(payload).map(normalizeXStatus).filter((item): item is SourceItem => item !== undefined);
+  }
+
+  private async requestPayload(path: string): Promise<unknown> {
     const response = await this.fetcher(`${this.endpoint}${path}`, {
       headers: { accept: "application/json" },
       signal: AbortSignal.timeout(SAFE_HTTP_MAX_TIMEOUT_MS),
@@ -82,12 +71,6 @@ export class FxEmbedClient {
         ).catch(() => "")}`,
       );
     }
-    return tweetsFrom(
-      JSON.parse(
-        await readBoundedBody(response, FXEMBED_MAX_BODY_BYTES),
-      ) as unknown,
-    )
-      .map(toItem)
-      .filter((item): item is SourceItem => item !== undefined);
+    return JSON.parse(await readBoundedBody(response, FXEMBED_MAX_BODY_BYTES)) as unknown;
   }
 }
