@@ -40,6 +40,14 @@
       "sha256": "cdf4d87ae0a6c160227263bf4e39a0a10e30e89ae7256e0f7ac7bde0836552c6",
       "textFile": "./legal/npm/boolbase/1.0.0/LICENSE"
     },
+    "drizzle-orm@0.45.2": {
+      "spdx": "Apache-2.0",
+      "copyright": "Copyright (c) Drizzle Team",
+      "source": "https://raw.githubusercontent.com/drizzle-team/drizzle-orm/273c78071d4841b497f5144734b38294df7ec64b/LICENSE",
+      "sourceSha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "sha256": "16ee71fa4de40dc1142ab07bb09ee69bfd11fce07791c0236fa511391b4eb523",
+      "textFile": "./legal/npm/drizzle-orm/0.45.2/LICENSE"
+    },
     "pg-types@2.2.0": {
       "spdx": "MIT",
       "copyright": "Copyright (c) 2014 Brian M. Carlson",

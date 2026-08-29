@@ -116,6 +116,15 @@ const dockerAsync = async (
 };
 
 describe("production image definitions", () => {
+  it("includes build-time workspace dependencies used by storage tests", () => {
+    expect(appDockerfile).toContain(
+      "COPY packages/storage-test-support/package.json packages/storage-test-support/package.json",
+    );
+    expect(appDockerfile).toContain(
+      "COPY packages/storage-test-support packages/storage-test-support",
+    );
+  });
+
   it("pins every stage to the same official multi-architecture Node 24 base", () => {
     for (const dockerfile of [appDockerfile, cliDockerfile]) {
       const fromLines = dockerfile

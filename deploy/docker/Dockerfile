@@ -23,6 +23,7 @@ COPY packages/source-web/package.json packages/source-web/package.json
 COPY packages/source-x/package.json packages/source-x/package.json
 COPY packages/storage-postgres/package.json packages/storage-postgres/package.json
 COPY packages/storage-sqlite/package.json packages/storage-sqlite/package.json
+COPY packages/storage-test-support/package.json packages/storage-test-support/package.json
 RUN pnpm install --frozen-lockfile --ignore-scripts
 
 COPY deploy/docker/generate-third-party-notices.mjs /workspace/generate-third-party-notices.mjs
@@ -40,6 +41,7 @@ COPY packages/source-web packages/source-web
 COPY packages/source-x packages/source-x
 COPY packages/storage-postgres packages/storage-postgres
 COPY packages/storage-sqlite packages/storage-sqlite
+COPY packages/storage-test-support packages/storage-test-support
 
 RUN pnpm --filter @argus/app... build \
   && pnpm exec esbuild apps/argus/src/main.ts \
