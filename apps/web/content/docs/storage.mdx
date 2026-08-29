@@ -1,0 +1,62 @@
+---
+title: Storage schema
+description: See exactly what Argus stores in SQLite and PostgreSQL, including records, media, conversations, jobs, and intelligence artifacts.
+---
+
+Argus v2 defines its SQLite and PostgreSQL schemas with Drizzle. Both adapters
+implement the same repository contract and logical tables; SQLite stores JSON
+and timestamps as text while PostgreSQL uses `jsonb` and timezone-aware
+timestamps.
+
+## Record graph
+
+| Table | Stored data |
+| --- | --- |
+| `records` | One canonical source item: source/external identity, public URL, title/text/author, publication time, raw payload, metadata, content hash, and first/last seen. |
+| `record_watches` | Which watch and deterministic target observed a record, with first/last seen. |
+| `record_revisions` | Immutable content snapshots for each distinct content hash. |
+| `media_assets` | Ordered image, video, audio, or document URLs plus preview, MIME, dimensions, duration, alt text, and source metadata. No media bytes. |
+| `record_relations` | `reply_to`, `quote_of`, `repost_of`, `thread_parent`, and `links_to` edges, including unresolved external objects. |
+| `engagement_snapshots` | Likes, replies, reposts, quotes, views, and bookmarks at a collection time. |
+
+The record primary key is a 64-character SHA-256 identity derived from source
+and external ID. A source item shared by several watches therefore remains one
+record. Content revisions and changing engagement are separate histories.
+
+## X conversations
+
+| Table | Stored data |
+| --- | --- |
+| `conversation_tracking` | Root record, watch, state, ordering, sample/window limits, next run, stop time, burst state, and last error. |
+| `conversation_snapshots` | Observed and retained counts, order, pages, completeness, truncation, upstream cursor, and collection time. |
+| `conversation_snapshot_items` | Ranked reply-record membership and optional sort value for one snapshot. |
+
+Replies are ordinary rows in `records`; snapshot items reference them. This
+keeps reply provenance queryable without embedding a mutable reply array in the
+root post.
+
+## Intelligence artifacts
+
+| Table | Stored data |
+| --- | --- |
+| `artifacts` | Summary or answer content, provider, model, structured provenance, and creation time. |
+| `artifact_records` | Ordered canonical records used by the artifact. |
+| `artifact_media` | Ordered media assets considered by the model and their disposition. |
+
+Artifacts do not replace or rewrite source records. Provenance records the
+prompt or question, provider generation identifier, reply-sample bounds, and
+which media pointers were analyzed or omitted.
+
+## Runtime state
+
+| Table | Stored data |
+| --- | --- |
+| `schema_meta` | Exact schema version. v2 refuses legacy or unversioned layouts before mutation. |
+| `checkpoints` | Per-target source cursor/state used by deterministic ingestion. |
+| `jobs` | Queued/running/completed/failed work, retry attempt, schedule, lease, and error. |
+| `diagnostic_watches` | Expiring isolated watches created by `argus doctor`. |
+| `applied_config` | Sanitized applied config snapshot, content hash, and application time. Secret values are not stored here. |
+
+Foreign keys cascade owned rows such as media, revisions, snapshots, and
+artifact joins. Relation targets use `SET NULL` when a referenced local record
+is removed so the external source identity and URL can remain as evidence.

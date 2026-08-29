@@ -1,147 +1,130 @@
 ---
 title: API reference
-description: Query Argus records and artifacts, trigger supported operations, and use host-wrapper configuration routes.
+description: Query rich records and artifacts, inspect X samples, trigger ingestion, and traverse configured source primitives.
 ---
 
-The API serves JSON. `/health` is public. When `api.token` is configured, every `/v1/*` route requires `Authorization: Bearer <token>` and otherwise returns `401 {"error":"unauthorized"}`. The three management routes always require a configured token and an exact bearer match. Examples use `ARGUS_URL=http://127.0.0.1:8788` and `ARGUS_API_TOKEN`.
+`GET /health` is public. Every `/v1/*` route requires
+`Authorization: Bearer $ARGUS_API_TOKEN` when a token is configured. Primitive
+routes require a configured token even on a loopback-only instance.
+
+```bash
+export ARGUS_URL=http://127.0.0.1:8788
+curl -H "Authorization: Bearer $ARGUS_API_TOKEN" "$ARGUS_URL/v1/records"
+```
 
 ## `GET /health`
 
-Authentication: none. Request: no body. Success: `200` with `{ "status": "ok", "version": 1, "role": "all|api|scheduler|worker|processor", "intelligence": true }`. The route has no application-defined deterministic error response.
-
-```bash
-curl "$ARGUS_URL/health"
-```
+`GET /health` returns `{status, version: 2, role, intelligence}`.
 
 ## `GET /v1/records`
 
-Authentication: bearer token when configured. Request: no body. Repeat `source` (`x`, `telegram`, or `web`) and `target` to select any matching source or target; `q` is a text query. `since` and `until` are parseable ISO-8601 timestamp bounds. `limit` is an integer from 1 to 200 (default 50).
+`GET /v1/records` accepts repeated `source` and `target`, plus `q`, `since`,
+`until`, `limit` (1–200), and `cursor`. Pass `nextCursor` back unchanged. The v2
+cursor encodes `{v:2,lastSeenAt,id}`. List records are canonical envelopes.
 
-The optional `cursor` is strict: it must be the canonical base64url encoding of exactly `{ "v": 1, "ingestedAt": "<ISO timestamp>", "id": "<non-empty string>" }`. Do not construct a cursor from a record ID alone; pass the returned `nextCursor` unchanged.
+## `GET /v1/records/:id`
 
-Success: `200` with `{ "items": [record], "nextCursor": "...", "summary": "1 record" }`, where `nextCursor` is omitted at the end. A record has required `id`, `source`, `targetId`, `externalId`, `url`, `text`, `raw`, `watchIds`, `contentHash`, and `ingestedAt`; `title`, `author`, `publishedAt`, and `metadata` are optional.
+`GET /v1/records/:id` returns rich detail: watch/target observations, ordered
+media pointers, relations, and latest engagement. It returns 404 when absent.
 
-Deterministic errors: `400 {"error":"limit must be an integer from 1 to 200"}`, `400 {"error":"since and until must be ISO-8601 timestamps"}`, or `400 {"error":"invalid records cursor"}`; plus `401` authentication failure.
+## `GET /v1/records/:id/conversation-snapshots`
+
+`GET /v1/records/:id/conversation-snapshots` returns observed X reply snapshots
+and their ranked reply record IDs. Fetch each reply through the detail route.
 
 ```bash
 curl -H "Authorization: Bearer $ARGUS_API_TOKEN" \
-  "$ARGUS_URL/v1/records?source=web&source=telegram&target=public-signals%3Aweb%3Aurl%3Ahttps%253A%252F%252Fexample.com&since=2026-08-01T00%3A00%3A00.000Z&limit=50"
+  "$ARGUS_URL/v1/records?source=x&since=2026-08-29T00%3A00%3A00.000Z&limit=50"
+
+curl -H "Authorization: Bearer $ARGUS_API_TOKEN" \
+  "$ARGUS_URL/v1/records/$RECORD_ID/conversation-snapshots"
 ```
 
 ## `GET /v1/artifacts`
 
-Authentication: bearer token when configured. Request: no body; optional `kind` filters exact artifact kind and `limit` is an integer from 1 to 200 (default 50).
+`GET /v1/artifacts?kind=summary&limit=20` returns derived artifacts with exact
+record/media provenance.
 
-Success: `200` with `{ "items": [artifact] }`. There is no artifact cursor or `nextCursor`. An artifact has `id`, `recordIds`, `kind`, `content`, `provenance`, and `createdAt`, with optional `provider` and `model`.
+## `POST /v1/summaries`
 
-Deterministic errors: `400 {"error":"limit must be an integer from 1 to 200"}` and `401` authentication failure.
+`POST /v1/summaries` accepts `query`, `watchIds`, `limit`, and `prompt`. It
+requires enabled OpenRouter intelligence and stores a `summary` artifact.
+
+## `POST /v1/query`
+
+`POST /v1/query` accepts a required `question` and optional `watchIds`, `since`,
+`until`, and `limit` (1–100). It selects recent matching context, produces a
+sourced OpenRouter answer, stores an `answer` artifact, and returns numbered
+source links. The CLI command is the easiest client:
 
 ```bash
-curl -H "Authorization: Bearer $ARGUS_API_TOKEN" \
-  "$ARGUS_URL/v1/artifacts?kind=summary&limit=20"
+argus query latest-news --watch=screen-news --since=2026-08-29T09:00:00.000Z --until=2026-08-29T18:00:00.000Z --limit=50 --json
+
+curl -X POST -H "Authorization: Bearer $ARGUS_API_TOKEN" \
+  -H 'content-type: application/json' \
+  --data '{"question":"new listings since 9am","watchIds":["listings"],"since":"2026-08-29T09:00:00.000Z"}' \
+  "$ARGUS_URL/v1/query"
 ```
 
 ## `POST /v1/watches/:watchId/ingest`
 
-Authentication: bearer token when configured. Request: no body; `watchId` must name an enabled configured watch. Success: `202 { "queued": 2, "watchId": "public-signals" }`, where `queued` is the number of new immediate jobs.
+`POST /v1/watches/:watchId/ingest` queues each target in an enabled watch and
+returns 202 with `{queued, watchId}`.
 
-Deterministic errors: `404 {"error":"watch not found"}` and `401` authentication failure.
+## `GET /v1/primitives/x/*`
 
-```bash
-curl -X POST -H "Authorization: Bearer $ARGUS_API_TOKEN" \
-  "$ARGUS_URL/v1/watches/public-signals/ingest"
-```
+`GET /v1/primitives/x/2/*` proxies a normalized `/2/` path to the configured
+FxEmbed origin. Query parameters pass through. The agent cannot provide a host.
+Only GET and HEAD are supported; response bodies are capped at 2 MiB,
+same-origin redirects at five, requests at ten seconds, and each token/source
+at 60 calls per minute.
 
-## `POST /v1/summaries`
+## `HEAD /v1/primitives/x/*`
 
-Authentication: bearer token when configured. Request: a JSON object. Its optional `query`, `watchIds`, and `prompt` values are consumed directly: truthy `query` and `watchIds` are passed to the stored-record query, and `prompt` is passed to OpenRouter. This endpoint does not type-validate those values. `limit` defaults to 50 and is the only field with deterministic validation: it must be an integer from 1 through 100. Success: `201` with `{ "id": "...", "content": "...", "model": "...", "generationId": "...", "sources": [{ "index": 1, "recordId": "...", "url": "..." }] }`; `generationId` may be omitted.
-
-The generated summary is also persisted as a `summary` artifact. Deterministic errors: `409 {"error":"intelligence is disabled"}`, `400 {"error":"invalid summary request"}`, `400 {"error":"limit must be an integer from 1 to 100"}`, and `401` authentication failure.
-
-```bash
-curl -X POST "$ARGUS_URL/v1/summaries" \
-  -H "Authorization: Bearer $ARGUS_API_TOKEN" -H "Content-Type: application/json" \
-  --data '{"watchIds":["public-signals"],"limit":25,"prompt":"Summarize changes and cite them."}'
-```
-
-## Diagnostic smoke watches
-
-These routes are for the CLI doctor flow. They create a temporary, configured target snapshot with a 15-minute expiry; they are not a general watch-management API.
-
-### `POST /v1/diagnostics/smoke-watches`
-
-Authentication: bearer token when configured. Request: exactly `{ "source": "x|telegram|web", "targetId": "configured-target-id" }`. Success: `202 { "id": "uuid", "targetId": "__argus_doctor:uuid" }`.
-
-Deterministic errors: `400 {"error":"invalid diagnostic watch request"}`, `400 {"error":"configured web diagnostic target is not permitted"}`, `404 {"error":"configured enabled diagnostic target was not found"}`, `409 {"error":"diagnostic watch could not be created"}`, and `401` authentication failure.
-
-```bash
-curl -X POST "$ARGUS_URL/v1/diagnostics/smoke-watches" \
-  -H "Authorization: Bearer $ARGUS_API_TOKEN" -H "Content-Type: application/json" \
-  --data '{"source":"web","targetId":"public-signals:web:url:https%3A%2F%2Fexample.com"}'
-```
-
-### `GET /v1/diagnostics/smoke-watches/:id/records`
-
-Authentication: bearer token when configured. Request: no body. Success: `200 { "items": [record] }`, using the record shape from `GET /v1/records`.
-
-Deterministic errors: `404 {"error":"diagnostic watch not found"}` and `401` authentication failure.
+HEAD uses the same fixed-origin, path, authentication, redirect, timeout, and
+rate limits as GET, but returns no response body.
 
 ```bash
 curl -H "Authorization: Bearer $ARGUS_API_TOKEN" \
-  "$ARGUS_URL/v1/diagnostics/smoke-watches/0f1d2c3b-4a5b-678c-9d0e-1f2a3b4c5d6e/records"
+  "$ARGUS_URL/v1/primitives/x/2/conversation/1900?cursor=next"
 ```
 
-### `DELETE /v1/diagnostics/smoke-watches/:id`
+Primitive output is transient: Argus does not write records, checkpoints,
+artifacts, or jobs for this request.
 
-Authentication: bearer token when configured. Request: no body. Success: `204` with an empty body; Argus cancels and removes that temporary diagnostic watch.
+## `GET /v1/primitives/web/search`
 
-Deterministic errors: `404 {"error":"diagnostic watch not found"}` and `401` authentication failure.
+`GET /v1/primitives/web/search?q=...` calls only the configured SearXNG origin
+and forces `format=json`. It uses the same authentication, body, redirect,
+timeout, and rate bounds and also writes nothing.
 
 ```bash
-curl -X DELETE -H "Authorization: Bearer $ARGUS_API_TOKEN" \
-  "$ARGUS_URL/v1/diagnostics/smoke-watches/0f1d2c3b-4a5b-678c-9d0e-1f2a3b4c5d6e"
+curl -H "Authorization: Bearer $ARGUS_API_TOKEN" \
+  "$ARGUS_URL/v1/primitives/web/search?q=new+movies"
 ```
 
-## Host-wrapper configuration routes
+## `POST /v1/diagnostics/smoke-watches`
 
-The installed host wrapper uses these three routes to inspect, apply, and verify a configuration reconciliation. They are not a replacement for `argus config validate`, `argus config apply`, or the supported CLI workflow. Their request configuration is the parsed JSON/YAML configuration object, never a document containing unexpanded environment references.
+Creates a temporary watch for `argus doctor`. Its records are isolated from
+normal watches.
 
-### `POST /v1/management/config/plan`
+## `GET /v1/diagnostics/smoke-watches/:id/records`
 
-Authentication: a configured exact bearer token is required. Request: exactly `{ "path": "/absolute/path", "config": { ... } }`; `path` must start with `/`, and `config` must pass `validateConfig`. Success: `200` with `{ "contractVersion": 1, "planId": "sha256", "path": "/absolute/path", "baseContentHash": "sha256", "desiredContentHash": "sha256", "operations": [{ "resource": "applied-config", "action": "create|update", "summary": "..." }] }`; `baseContentHash` is omitted on first apply. Preserve the returned `path` verbatim in the plan object: it is part of the plan identity used by both apply and verify.
+Returns records collected for one temporary smoke watch.
 
-Deterministic errors: `400 {"error":"invalid configuration plan request"}` and `401 {"error":"unauthorized"}`.
+## `DELETE /v1/diagnostics/smoke-watches/:id`
 
-```bash
-curl -X POST "$ARGUS_URL/v1/management/config/plan" \
-  -H "Authorization: Bearer $ARGUS_API_TOKEN" -H "Content-Type: application/json" \
-  --data '{"path":"/opt/argus/argus.yaml","config":{"version":1,"storage":{"adapter":"sqlite","url":"./data/argus.db"},"sources":{},"watches":[]}}'
-```
+Removes the temporary watch and its isolated records.
 
-### `POST /v1/management/config/apply`
+## `POST /v1/management/config/plan`
 
-Authentication: a configured exact bearer token is required. Request: exactly `{ "path": "/absolute/path", "config": { ... }, "inspection": plan }`, where `inspection` is the unchanged successful plan response for the same path and config. Success: `200 { "planId": "sha256", "receipt": { ... } }`.
+Previews the managed configuration operations used by the CLI.
 
-Deterministic errors: `400 {"error":"invalid configuration apply request"}`, `409 {"error":"configuration plan is stale"}`, and `401 {"error":"unauthorized"}`.
+## `POST /v1/management/config/apply`
 
-```bash
-curl -X POST "$ARGUS_URL/v1/management/config/apply" \
-  -H "Authorization: Bearer $ARGUS_API_TOKEN" -H "Content-Type: application/json" \
-  --data @apply-request.json
-```
+Applies a previously planned managed configuration change.
 
-`apply-request.json` must contain the original `path`, `config`, and `inspection` from the plan call; preserve `inspection.path` verbatim and make the request `path` match it. Changing the path, any hash, or any operation makes the plan stale.
+## `POST /v1/management/config/verify`
 
-### `POST /v1/management/config/verify`
-
-Authentication: a configured exact bearer token is required. Request: exactly `{ "inspection": plan }`. Success: `200 { "healthy": true, "planId": "sha256", "status": { "desiredContentHash": "sha256" } }`.
-
-Deterministic errors: `400 {"error":"invalid configuration verify request"}`, `409 {"error":"configuration plan is stale"}`, and `401 {"error":"unauthorized"}`.
-
-```bash
-curl -X POST "$ARGUS_URL/v1/management/config/verify" \
-  -H "Authorization: Bearer $ARGUS_API_TOKEN" -H "Content-Type: application/json" \
-  --data @verify-request.json
-```
-
-`verify-request.json` contains `{ "inspection": <the unchanged plan response> }`, including its original `path`; changing that path invalidates the plan identity.
+Verifies the resulting managed deployment. Management routes require an exact
+configured bearer token; prefer the CLI rather than calling them directly.

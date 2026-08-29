@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import { buildSkillArchive } from "../src/index.js";
 
 const skillRoot = join(import.meta.dirname, "../../../skills/argus-setup");
+const researchSkillRoot = join(import.meta.dirname, "../../../skills/argus-research");
 
 describe("buildSkillArchive", () => {
   it("builds byte-identical, sorted Argus skill archives across source mtimes", async () => {
@@ -36,5 +37,17 @@ describe("buildSkillArchive", () => {
     await symlink(join(root, "LICENSE.txt"), join(root, "references", "linked.md"));
 
     await expect(buildSkillArchive(root)).rejects.toThrow(/symlink/u);
+  });
+
+  it("builds the research skill under its own portable root", async () => {
+    const archive = await buildSkillArchive(researchSkillRoot);
+
+    expect(Object.keys(unzipSync(archive.bytes))).toEqual([
+      "argus-research/LICENSE.txt",
+      "argus-research/SKILL.md",
+      "argus-research/references/api.md",
+      "argus-research/references/provenance.md",
+      "argus-research/references/traversal.md",
+    ]);
   });
 });

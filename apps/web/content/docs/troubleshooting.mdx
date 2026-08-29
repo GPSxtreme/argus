@@ -53,6 +53,10 @@ argus config apply /opt/argus/argus.yaml --dry-run
 
 **Recover:** Correct the non-secret YAML or set the missing secret, run `argus config apply /opt/argus/argus.yaml --dry-run --json`, then `argus config apply /opt/argus/argus.yaml --yes --json`.
 
+Argus v2 intentionally rejects `version: 1`, unversioned databases, and old
+table layouts before mutation. There is no compatibility migration. Point v2
+at an empty SQLite file or PostgreSQL database and ingest fresh data.
+
 ### A source yields no records
 
 **Inspect:** `argus doctor --json` and `argus logs argus --tail 200 --json`.
@@ -100,6 +104,35 @@ argus config apply /opt/argus/argus.yaml --dry-run
 **Meaning:** `409 {"error":"intelligence is disabled"}` means intelligence or its API key is unavailable. A malformed summary body or a limit outside 1 through 100 returns `400`. Provider failures are not converted into an Argus recovery mutation.
 
 **Recover:** Correct the intelligence configuration and secret reference, then run `argus config apply /opt/argus/argus.yaml --dry-run --json` followed by `argus config apply /opt/argus/argus.yaml --yes --json`. Correct a bad request without changing the service.
+
+### Query fails or returns weak context
+
+**Inspect:** `argus config show /opt/argus/argus.yaml --json`, then run
+`argus query latest-news --limit=50 --json`.
+
+**Meaning:** A `409` means OpenRouter intelligence is disabled or unavailable.
+A sourced but weak answer means the bounded recent-record selection did not
+contain enough matching evidence; `argus query` is not semantic retrieval or a
+replacement for an agent's deliberate API traversal.
+
+**Recover:** Fix intelligence configuration as for summaries. For evidence
+coverage, use record filters and the research skill to inspect the stored corpus
+and transient primitives; do not increase confidence beyond the returned data.
+
+### X replies look incomplete
+
+**Inspect:** Fetch the root record and
+`GET /v1/records/:id/conversation-snapshots` with the configured API token.
+
+**Meaning:** Reply tracking is opt-in, ends at `maxTrackingHours`, observes at
+most 10 pages or 500 replies per refresh, and retains at most `maxPerPost` in
+the configured order. `complete` describes the bounded collection run, not all
+replies on X.
+
+**Recover:** Choose a longer Hot, Standard, Niche, or custom tracking horizon
+for future posts and apply the reviewed configuration. Use the authenticated
+transient X conversation primitive for read-only deeper traversal when needed;
+its response is not persisted.
 
 ### Update fails
 

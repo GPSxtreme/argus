@@ -9,12 +9,11 @@ export const installerOptions = {
   publicKeyPem: releasePublicKey,
 } as const;
 
-const skillRoots = [
-  resolve(process.cwd(), "skills/argus-setup"),
-  resolve(process.cwd(), "../../skills/argus-setup"),
-];
-
-export const skillRoot: string = (() => {
+const findSkillRoot = (name: string): string => {
+  const skillRoots = [
+    resolve(process.cwd(), `skills/${name}`),
+    resolve(process.cwd(), `../../skills/${name}`),
+  ];
   const root = skillRoots.find((candidate) => {
     if (!existsSync(candidate)) return false;
     try {
@@ -26,8 +25,11 @@ export const skillRoot: string = (() => {
   });
 
   if (root === undefined) {
-    throw new Error("Argus Agent Skill package is unavailable.");
+    throw new Error(`Argus Agent Skill package is unavailable: ${name}.`);
   }
 
   return root;
-})();
+};
+
+export const setupSkillRoot = findSkillRoot("argus-setup");
+export const researchSkillRoot = findSkillRoot("argus-research");

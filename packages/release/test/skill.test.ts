@@ -89,3 +89,44 @@ describe("Argus Agent Skill", () => {
     expect(packageText).toContain("Stop when the CLI requests new authority");
   });
 });
+
+describe("Argus Research Skill", () => {
+  it("routes read-only research through stored context and transient traversal", async () => {
+    const skill = await loadSkill("skills/argus-research");
+    const api = await readFile(
+      join(repositoryRoot, "skills/argus-research/references/api.md"),
+      "utf8",
+    );
+    const traversal = await readFile(
+      join(repositoryRoot, "skills/argus-research/references/traversal.md"),
+      "utf8",
+    );
+    const provenance = await readFile(
+      join(repositoryRoot, "skills/argus-research/references/provenance.md"),
+      "utf8",
+    );
+
+    expect(skill.frontmatter.name).toBe("argus-research");
+    expect(skill.frontmatter.description).toMatch(/research|investigat|brief/u);
+    expect(skill.body).toContain("[API reference](references/api.md)");
+    expect(skill.body).toContain("[traversal guide](references/traversal.md)");
+    expect(skill.body).toContain("[provenance guide](references/provenance.md)");
+    expect(api).toContain("nextCursor");
+    expect(api).toContain("literal substring");
+    expect(traversal).toContain("/v1/primitives/x/2/conversation/");
+    expect(provenance).toContain("bounded sample");
+    expect([skill.body, api, traversal, provenance].join("\n")).not.toMatch(
+      /POST \/v1\/(?:query|summaries|watches|diagnostics|management)/u,
+    );
+  });
+
+  it("validates the portable research package", () => {
+    const result = spawnSync(
+      "pnpm",
+      ["tsx", "scripts/skills/validate.ts", "skills/argus-research"],
+      { cwd: repositoryRoot, encoding: "utf8" },
+    );
+
+    expect(result.status, result.stderr).toBe(0);
+  });
+});

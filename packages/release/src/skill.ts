@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { lstat, readdir, readFile, realpath } from "node:fs/promises";
-import { relative, resolve, sep } from "node:path";
+import { basename, relative, resolve, sep } from "node:path";
 import { zipSync, type Zippable } from "fflate";
 
 const isWithin = (root: string, candidate: string): boolean => {
@@ -38,11 +38,15 @@ const collectFiles = async (root: string, path = root): Promise<string[]> => {
   return files;
 };
 
-const archivePath = (root: string, file: string): string | undefined => {
+const archivePath = (
+  root: string,
+  skillName: string,
+  file: string,
+): string | undefined => {
   const path = relative(root, file).split(sep).join("/");
-  if (path === "SKILL.md" || path === "LICENSE.txt") return `argus-setup/${path}`;
+  if (path === "SKILL.md" || path === "LICENSE.txt") return `${skillName}/${path}`;
   if (path.startsWith("references/") && path.endsWith(".md")) {
-    return `argus-setup/${path}`;
+    return `${skillName}/${path}`;
   }
   return undefined;
 };
@@ -55,17 +59,24 @@ export const buildSkillArchive = async (
   if (inputMetadata.isSymbolicLink()) throw new Error("Skill archive root cannot be a symlink.");
   const root = await realpath(resolve(input));
   const files = await collectFiles(root);
+  const skillName = basename(root);
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(skillName)) {
+    throw new Error("Skill archive root must use a portable skill name.");
+  }
   const mtime = sourceDate();
   const entries: Array<[string, Uint8Array]> = [];
 
   for (const file of files) {
     const resolvedFile = await realpath(file);
     if (!isWithin(root, resolvedFile)) throw new Error(`Skill archive rejects out-of-root file: ${file}`);
-    const path = archivePath(root, file);
+    const path = archivePath(root, skillName, file);
     if (path) entries.push([path, await readFile(file)]);
   }
 
-  const required = new Set(["argus-setup/SKILL.md", "argus-setup/LICENSE.txt"]);
+  const required = new Set([
+    `${skillName}/SKILL.md`,
+    `${skillName}/LICENSE.txt`,
+  ]);
   for (const path of required) {
     if (!entries.some(([entry]) => entry === path)) throw new Error(`Skill archive requires ${path}.`);
   }

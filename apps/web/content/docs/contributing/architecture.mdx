@@ -17,10 +17,10 @@ layers explicit.
 | `packages/config` | YAML schema, loading, reconciliation, and secret-reference sanitization. |
 | `packages/source-x`, `packages/source-telegram`, `packages/source-web` | Adapters and clients for the three public source families. |
 | `packages/engine` | Source-item ingestion, normalization, and classification. |
-| `packages/storage-sqlite`, `packages/storage-postgres` | Repository implementations and their schemas. |
+| `packages/storage-sqlite`, `packages/storage-postgres` | Drizzle repository implementations and equivalent v2 schemas. |
 | `packages/scheduler` | Schedule derivation, job creation, backoff, and worker coordination. |
 | `packages/query` | Deterministic record and artifact query service. |
-| `packages/intelligence` | Optional OpenRouter-backed summaries, kept outside the ingestion path. |
+| `packages/intelligence` | Optional OpenRouter summaries, query answers, capability discovery, and pointer-only multimodal content. |
 | `apps/argus` | Runtime composition, HTTP application, workers, and role selection. |
 | `apps/cli` and `packages/deployment` | Stable management CLI, onboarding, Compose rendering, doctor, repair, update, and external-integration boundaries. |
 | `packages/release` | Release manifests, signed installer and wrapper generation, and deterministic Agent Skill archives. |
@@ -34,7 +34,8 @@ watches into leased jobs. A worker selects the relevant source adapter, passes
 items through `@argus/engine`, and stores records, revisions, checkpoints, and
 artifacts through the chosen repository. The API and query service expose
 deterministic records with source links. Optional intelligence reads stored
-records and writes a separate summary artifact.
+records and writes a separate summary or answer artifact. Authenticated source
+primitives proxy bounded FxEmbed and SearXNG reads without repository writes.
 
 SQLite runs only in the combined `all` runtime role. PostgreSQL supports the
 separate `api`, `scheduler`, `worker`, and `processor` roles. Keep this storage

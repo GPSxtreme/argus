@@ -97,6 +97,7 @@ describe("Argus documentation", () => {
       "index",
       "quick-start",
       "concepts",
+      "storage",
       "install",
       "configuration",
       "sources",

@@ -7,6 +7,8 @@ const nextConfig: NextConfig = {
   outputFileTracingIncludes: {
     "/skill/SKILL.md": ["../../skills/argus-setup/**/*"],
     "/skill/argus-skill.zip": ["../../skills/argus-setup/**/*"],
+    "/skill/research/SKILL.md": ["../../skills/argus-research/**/*"],
+    "/skill/argus-research.zip": ["../../skills/argus-research/**/*"],
   },
   webpack(config) {
     // The release package is authored as Node ESM, whose source imports retain

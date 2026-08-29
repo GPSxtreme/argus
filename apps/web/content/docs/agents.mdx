@@ -1,11 +1,11 @@
 ---
 title: Agents
-description: Give coding agents stable Argus documentation and a portable setup skill.
+description: Give coding agents stable Argus documentation plus portable setup and research skills.
 ---
 
-Argus exposes its documentation and setup skill in formats an agent can fetch
-directly. Human operational procedures remain canonical in this handbook;
-the Agent Skill carries the detailed request-routing rules.
+Argus exposes its documentation and two focused skills in formats an agent can
+fetch directly. Use `argus-setup` to operate a host and `argus-research` to turn
+an existing instance into sourced context without changing collection.
 
 ## Documentation interfaces
 
@@ -16,6 +16,8 @@ the Agent Skill carries the detailed request-routing rules.
 | `/docs/<path>.md` | Processed Markdown for one docs page, such as [`/docs/quick-start.md`](/docs/quick-start.md). |
 | [`/skill/SKILL.md`](/skill/SKILL.md) | The current portable `argus-setup` skill entry file. |
 | [`/skill/argus-skill.zip`](/skill/argus-skill.zip) | Deterministic archive containing `argus-setup`, its license, and references. |
+| [`/skill/research/SKILL.md`](/skill/research/SKILL.md) | The portable `argus-research` entry file. |
+| [`/skill/argus-research.zip`](/skill/argus-research.zip) | Deterministic research-skill archive with API, traversal, and provenance references. |
 
 ## Install the setup skill
 
@@ -40,6 +42,21 @@ Restart or refresh the client if it does not discover newly installed skills.
 Inspect the entry file before installation when your client or organization
 requires a review step.
 
+## Install the research skill
+
+Install this alongside setup when an agent needs to query stored records,
+inspect X reply samples, traverse configured FxEmbed/SearXNG primitives, and
+write briefs with honest coverage language.
+
+```bash
+curl -fsSLo /tmp/argus-research.zip https://argus.gpsxtre.me/skill/argus-research.zip
+unzip -o /tmp/argus-research.zip -d ~/.codex/skills
+```
+
+Use `~/.claude/skills` instead for Claude Code. API tokens belong in the
+agent's runtime environment. The research skill never instructs an agent to
+place a bearer token in a URL, transcript, or report.
+
 ## CLI and safety boundaries
 
 Use `--json` whenever an agent reads CLI output. Successful responses use the
@@ -63,5 +80,5 @@ For a failed health check or command, run `argus doctor --json`, report its
 component/code/message, and follow a returned recovery or log command exactly.
 If recovery is missing, unclear, outside approval, or requests new authority,
 stop and ask the user. Do not edit Compose files, deployment state, backups,
-managed settings, or secret files directly; the [Agent Skill](/skill/SKILL.md)
+managed settings, or secret files directly; the [setup skill](/skill/SKILL.md)
 contains the detailed routing rules.

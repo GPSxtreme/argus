@@ -3,6 +3,10 @@ title: Telegram
 description: Monitor anonymous public Telegram announcement channels without private access.
 ---
 
+v2 stores message text plus public image, video, audio, and document pointers
+when Telegram exposes them. It supports public announcement-channel previews
+only: no bot token, private chat, member-only group, or discussion replies.
+
 ## What it collects
 
 Argus anonymously scrapes Telegram’s public channel preview for announcement posts. Each parsed post uses the canonical `https://t.me/<channel>/<numeric-id>` URL.

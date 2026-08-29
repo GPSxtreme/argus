@@ -3,6 +3,25 @@ title: X
 description: Ingest X accounts and searches through your own FxEmbed API endpoint.
 ---
 
+v2 stores canonical X records, public media pointers, reply/quote/repost
+relations, and engagement snapshots. Record identity is source-global, not tied
+to a watch.
+
+## Reply tracking
+
+Reply tracking is opt-in under `sources.x.replies`. Onboarding offers Hot (24
+hours), Standard (168 hours), and Niche (720 hours). The default sample is the
+50 most-liked replies Argus observed. `orderBy` also supports `newest`,
+`oldest`, `replies`, `reposts`, `views`, and upstream `source` order. Tracking
+ends at the time window, not when the sample reaches 50.
+
+Each refresh stores a conversation snapshot with observed and retained counts,
+ranks, completeness, and truncation. Root-post ingestion and reply refresh are
+independent jobs.
+
+For agent traversal, use authenticated `GET|HEAD /v1/primitives/x/2/*` calls.
+These bounded FxEmbed reads are transient and never ingested automatically.
+
 ## What it collects
 
 Argus collects public X posts from configured accounts and search queries. It calls the operator-owned FxEmbed Worker endpoint; it does not use an arbitrary public FxTwitter/FxEmbed service.

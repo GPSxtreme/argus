@@ -1,221 +1,170 @@
 ---
 title: Configuration
-description: Define validated Argus storage, sources, watches, intelligence, and API access.
+description: Configure Argus v2 storage, public sources, reply tracking, watches, intelligence, and API access.
 ---
 
-Argus reads one strict, versioned YAML document. Unknown fields are rejected. Put secret values in the instance secrets environment and reference them as `${NAME}`; Argus resolves an entire string only when it has that form, and fails if the named variable is missing. `argus config show` prints readable YAML and redacts API keys, tokens, and credentials in configured URLs. Add `--json` when a script or agent needs the structured object.
+Argus reads one strict YAML file. Unknown fields and `version: 1` are rejected;
+v2 deliberately starts from a fresh database. Put secrets in
+`/opt/argus/secrets.env` and reference them as a complete `${NAME}` value.
 
 ```bash
 argus config validate /opt/argus/argus.yaml
 argus config show /opt/argus/argus.yaml
-argus config apply /opt/argus/argus.yaml
+argus config apply /opt/argus/argus.yaml --dry-run
+argus config apply /opt/argus/argus.yaml --yes
 argus config schema --json
 ```
 
-## Complete examples
+## Complete v2 examples
 
 ### Single VPS with SQLite
 
-This is the smallest managed Compose deployment: all runtime responsibilities share one SQLite database.
-
 ```yaml config
-version: 1
-runtime:
-  role: all
+version: 2
+runtime: { role: all }
 storage:
   adapter: sqlite
-  url: ./data/argus.db
-sources:
-  web:
-    enabled: true
-    browserFallback: false
-watches:
-  - id: argus-homepage
-    schedule: "*/15 * * * *"
-    inputs:
-      web:
-        urls: [https://argus.gpsxtre.me/]
-api:
-  host: 0.0.0.0
-  port: 8788
-  token: ${ARGUS_API_TOKEN}
-```
-
-### All sources with managed search and FxEmbed
-
-The X endpoint is the operator-owned FxEmbed Worker’s `/api` endpoint. The Web query endpoint is the managed SearXNG service.
-
-```yaml config
-version: 1
-runtime:
-  role: all
-storage:
-  adapter: sqlite
-  url: ./data/argus.db
+  url: /app/data/argus.db
 sources:
   x:
     enabled: true
     endpoint: https://fxembed.example.com/api
-  telegram:
-    enabled: true
-    adapter: public-web
+    replies:
+      enabled: true
+      maxPerPost: 50
+      maxTrackingHours: 168
+      orderBy: likes
+  telegram: { enabled: true, adapter: public-web }
   web:
     enabled: true
     searchEndpoint: http://searxng:8080
     userAgent: Argus/0.1
     browserFallback: false
 watches:
-  - id: public-signals
+  - id: screen-news
     enabled: true
     schedule: "*/10 * * * *"
     inputs:
       x:
-        accounts: [openai]
-        queries: ["open source AI"]
-      telegram:
-        channels: [telegram]
+        accounts: [DiscussingFilm, FilmUpdates]
+        queries: ["new movies and TV shows"]
+      telegram: { channels: [mcunewsandrumors] }
       web:
-        urls: [https://openai.com/news/]
-        feeds: [https://example.com/feed.xml]
-        queries: ["open source AI infrastructure"]
+        urls: [https://deadline.com/v/tv/]
+        feeds: [https://deadline.com/feed/]
+        queries: ["new movies and TV shows news"]
     classify:
-      keywords: [release, security]
+      keywords: [movie, film, tv, series, trailer, streaming]
 api:
   host: 0.0.0.0
   port: 8788
   token: ${ARGUS_API_TOKEN}
 ```
 
-### PostgreSQL roles with scheduled summaries
+## Storage
 
-Run this same configuration for an API, scheduler, worker, or processor process and set that process’s `runtime.role` (or `ARGUS_ROLE`). PostgreSQL is required when those roles do not share SQLite’s single process.
+`storage.adapter` is `sqlite` or `postgres`.
+
+- SQLite is the one-command VPS default and requires `runtime.role: all`.
+- PostgreSQL accepts a canonical `postgres://` or `postgresql://` URL and can
+  support separate `api`, `scheduler`, `worker`, and `processor` processes.
+- A v1 or unversioned database is refused before mutation. Argus does not run a
+  compatibility migration; start v2 with an empty database.
+
+Both adapters implement the same record, revision, media, relation,
+engagement, conversation, job, checkpoint, artifact, and configuration
+contracts.
+
+## X reply tracking
+
+`sources.x.endpoint` is the operator-selected FxEmbed `/api` base. Reply
+tracking is opt-in in hand-written YAML. The onboarding wizard recommends the
+Standard profile.
+
+| Profile | `maxTrackingHours` | Intended use |
+| --- | ---: | --- |
+| Hot | 24 | Fast-moving, high-volume topics |
+| Standard | 168 | General monitoring; onboarding default |
+| Niche | 720 | Slow-moving specialist topics |
+
+`maxPerPost` defaults to 50 and is bounded from 1 to 200. Argus retains the
+top configured number from the replies it actually observed; it never claims
+the sample is every reply on X. `orderBy` accepts `likes`, `newest`, `oldest`,
+`replies`, `reposts`, `views`, or `source`. Growth temporarily increases refresh
+frequency. Tracking stops at the configured time horizon even if the retained
+sample has not reached 50.
+
+## Telegram and Web
+
+Telegram v2 supports public announcement channels through
+`adapter: public-web`. No bot token, private chat, member-only group, or generic
+discussion ingestion is implemented.
+
+Direct Web URLs and feeds use the bounded public-Web fetch path. Search queries
+require `searchEndpoint`, normally managed SearXNG. `browserFallback: false` is
+the supported setting.
+
+## Watches
+
+A watch needs a lowercase `id`, a five-field cron `schedule`, and `inputs`.
+Inputs may contain X `accounts` and `queries`, Telegram `channels`, and Web
+`urls`, `feeds`, and `queries`. `classify.keywords` adds matching metadata; it
+does not discard unmatched records.
+
+## Intelligence
+
+Intelligence is optional and OpenRouter-only. Scheduled processors create
+sourced summary artifacts. `argus query` creates a sourced answer artifact on
+demand. Supported public image, video, and PDF pointers may be passed directly
+to a compatible model; Argus never downloads or base64-encodes media.
+
+## API and secrets
+
+`api.token` protects every `/v1/*` endpoint. The runtime refuses a non-loopback
+bind without it. The managed Compose topology publishes the selected port, so
+also use a firewall, private network, or reverse proxy policy.
+
+Use `argus secrets set ARGUS_API_TOKEN` and
+`argus secrets set OPENROUTER_API_KEY`; never place their values in YAML or a
+shell argument.
+
+### PostgreSQL service roles
 
 ```yaml config
-version: 1
-runtime:
-  role: processor
+version: 2
+runtime: { role: all }
 storage:
   adapter: postgres
   url: postgresql://postgres:5432/argus?sslmode=disable
-sources:
-  web:
-    enabled: true
-    browserFallback: false
-watches:
-  - id: public-signals
-    schedule: "*/15 * * * *"
-    inputs:
-      web:
-        urls: [https://example.com/news]
+sources: {}
+watches: []
 intelligence:
   enabled: true
   provider: openrouter
   apiKey: ${OPENROUTER_API_KEY}
   model: openai/gpt-4.1-mini
-  processors:
-    - id: daily-brief
-      kind: summary
-      schedule: "0 8 * * *"
-      watchIds: [public-signals]
-      prompt: "Summarize changes and cite every claim."
+  processors: []
 api:
-  host: 127.0.0.1
+  host: 0.0.0.0
   port: 8788
   token: ${ARGUS_API_TOKEN}
 ```
 
-## Root fields
+### Minimal Web-only instance
 
-### `version`
-
-Type: literal number `1`; required. Other versions fail validation. Example: `version: 1`.
-
-### `runtime.role`
-
-Type: one of `all`, `api`, `scheduler`, `worker`, or `processor`; default: `all`. SQLite requires `all`; PostgreSQL permits separate roles. Example: `runtime: { role: worker }`.
-
-### `storage`
-
-`storage.adapter` is required and is either `sqlite` or `postgres`.
-
-- `storage.url` for SQLite is a non-empty string, such as `./data/argus.db`. SQLite always runs with `runtime.role: all`.
-- `storage.url` for PostgreSQL must be a canonical `postgres://` or `postgresql://` URL with a non-empty valid TCP host, valid percent encoding, no fragment, and any query `host`/`port` valid. Example: `postgresql://db.example.com:5432/argus?sslmode=require`.
-
-Use a PostgreSQL URL for multi-role deployments. URL credentials are treated as secret material and redacted from configuration output.
-
-## `sources`
-
-`sources` is a strict object and defaults each source to disabled. Source enablement is an operator consistency invariant: enable a source whenever an enabled watch has inputs for it. The schema does not compare the two, and runtime target expansion and adapter selection do not filter on `enabled`; a disabled flag alone does not prevent an enabled watch’s target from being scheduled or collected.
-
-### `sources.x`
-
-- `enabled`: boolean, default `false`. Example: `enabled: true`.
-- `endpoint`: absolute URL, default `http://localhost:8787/api`. It is the FxEmbed API base, so use its `/api` suffix: `endpoint: https://fxembed.example.com/api`.
-
-### `sources.telegram`
-
-- `enabled`: boolean, default `false`. Example: `enabled: true`.
-- `adapter`: literal `public-web`, default `public-web`. No authenticated Telegram adapter exists. Example: `adapter: public-web`.
-
-### `sources.web`
-
-- `enabled`: boolean, default `false`. Example: `enabled: true`.
-- `searchEndpoint`: optional absolute URL. It is required operationally for Web query inputs and points to the trusted managed SearXNG origin. Example: `searchEndpoint: http://searxng:8080`.
-- `userAgent`: non-empty string, default `Argus/0.1`, sent for direct page requests. Example: `userAgent: Argus/0.1`.
-- `browserFallback`: boolean, default `false`; `false` is the only supported V1 setting. Example: `browserFallback: false`.
-
-## `watches`
-
-`watches` is an array and defaults to `[]`. Each enabled watch expands its inputs into scheduled collection targets.
-
-- `id`: required lowercase identifier matching `^[a-z0-9][a-z0-9_-]*$`; example `id: public-signals`.
-- `enabled`: boolean, default `true`; `false` prevents scheduled target expansion. Example: `enabled: false`.
-- `schedule`: required valid five-field cron expression. The fields are minute, hour, day of month, month, and day of week; seconds are not accepted. Example: `schedule: "*/15 * * * *"`.
-- `inputs`: required strict object with no default; omitted source objects create no targets for that source. Maintain the source-enable consistency invariant above. Example: `inputs: { web: { urls: [https://example.com/news] } }`.
-  - `inputs.x`: optional strict object with no default. Its presence creates X account and query targets; it does not itself require `sources.x.enabled`. Example: `x: { accounts: [openai] }`.
-    - `accounts`: array of non-empty strings, default `[]`; each value becomes an `account` target. Example: `accounts: [openai]`.
-    - `queries`: array of non-empty strings, default `[]`; each value becomes a `query` target. Example: `queries: ["AI safety"]`.
-  - `inputs.telegram`: optional strict object with no default. Its presence creates public channel targets; it does not itself require `sources.telegram.enabled`. Example: `telegram: { channels: [telegram] }`.
-    - `channels`: array of usernames matching `^[A-Za-z0-9_]+$`, default `[]`; each value becomes a `channel` target. Example: `channels: [telegram]`.
-  - `inputs.web`: optional strict object with no default. Its presence creates direct, feed, or query targets; it does not itself require `sources.web.enabled`. Example: `web: { urls: [https://example.com/news] }`.
-    - `urls`: array of absolute URLs, default `[]`; each value becomes a direct `url` target. Example: `urls: [https://example.com/news]`.
-    - `feeds`: array of absolute URLs, default `[]`; each value becomes a `feed` target. Example: `feeds: [https://example.com/feed.xml]`.
-    - `queries`: array of non-empty strings, default `[]`; each value becomes a Web `query` target and needs the Web source’s `searchEndpoint` at collection time. Example: `queries: ["critical infrastructure"]`.
-- `classify`: strict object, default `{ keywords: [] }`. During ingestion Argus searches each record’s title and text case-insensitively, then stores only matching configured values in `metadata.matchedKeywords` (an array that may be empty). Classification does not filter, discard, or change source data. Example: `classify: { keywords: [release, security] }`.
-  - `keywords`: array of non-empty strings, default `[]`; each value is a candidate classification term, and only matches appear in `metadata.matchedKeywords`. Example: `keywords: [release, security]`.
-
-## `intelligence`
-
-The strict `intelligence` object defaults to disabled with provider `openrouter`, model `openai/gpt-4.1-mini`, and no processors.
-
-- `enabled`: boolean, default `false`. If `true`, `apiKey` is required. Example: `enabled: true`.
-- `provider`: literal `openrouter`, default `openrouter`. Example: `provider: openrouter`.
-- `apiKey`: optional string, but required when enabled. Keep it in the environment: `apiKey: ${OPENROUTER_API_KEY}`.
-- `model`: non-empty string, default `openai/gpt-4.1-mini`. Example: `model: openai/gpt-4.1-mini`.
-- `processors`: array of strict processor objects, default `[]`. Each item is evaluated by an `all` or `processor` runtime; a processor without a schedule is not scheduled. Example: `processors: [{ id: daily, kind: summary, schedule: "0 8 * * *" }]`.
-  - `id`: required non-empty string; it identifies the processor in logs and saved artifact provenance. The schema does not require uniqueness. Example: `id: daily-brief`.
-  - `kind`: required literal `summary`; no other processor kind is valid. Example: `kind: summary`.
-  - `schedule`: optional valid five-field cron string, with no default. When present, it starts this processor on an `all` or `processor` runtime; when absent, it is not scheduled. Example: `schedule: "0 8 * * *"`.
-  - `watchIds`: optional array of strings, with no default and no schema referential check. When present, it is passed as the stored-record watch filter; non-matching IDs yield no matching records. Example: `watchIds: [public-signals]`.
-  - `prompt`: optional string, with no default or non-empty validation. When present, it replaces the summary client’s default prompt, including when it is an empty string. Example: `prompt: "Summarize changes and cite every claim."`.
-
-## `api`
-
-The strict `api` object defaults to host `0.0.0.0`, port `8788`, with no token.
-
-- `host`: string, default `0.0.0.0`. Example: `host: 127.0.0.1`.
-- `port`: positive integer from `1` through `65535`, default `8788`. Example: `port: 8788`.
-- `token`: optional string. The runtime refuses a non-loopback host without it, so use `token: ${ARGUS_API_TOKEN}` for any address other than `127.0.0.1`, `::1`, `::ffff:127.0.0.1`, or `localhost`. A configured token enables `Bearer` authentication for `/v1/*`; `/health` remains public.
-
-## Secret interpolation
-
-Use secret references as the complete string value, never inline composition:
-
-```yaml
+```yaml config
+version: 2
+runtime: { role: all }
+storage: { adapter: sqlite, url: /app/data/argus.db }
+sources:
+  web: { enabled: true, browserFallback: false }
+watches:
+  - id: public-site
+    schedule: "*/15 * * * *"
+    inputs:
+      web: { urls: [https://example.com/news] }
 api:
+  host: 0.0.0.0
+  port: 8788
   token: ${ARGUS_API_TOKEN}
-intelligence:
-  apiKey: ${OPENROUTER_API_KEY}
 ```
-
-For an installed instance, `argus secrets set ARGUS_API_TOKEN` stores the value in the owner-only secrets file. Do not commit that file or a YAML document containing resolved values.

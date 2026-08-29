@@ -27,6 +27,13 @@ The runtime refuses to bind a non-loopback API host without `api.token`. Loopbac
 
 ## Public-source and SSRF protections
 
+Transient source primitives require a configured API token. The X primitive
+accepts only GET/HEAD under normalized `/2/` paths on the configured FxEmbed
+origin; the Web primitive exposes only JSON search on the configured SearXNG
+origin. Callers cannot choose an upstream host. Both paths cap redirects,
+request time, body size, and per-token/source rate, strip caller headers, and
+never persist their response.
+
 Direct Web collection accepts only HTTP(S) URLs without URL userinfo. It resolves every destination and redirect hop, rejects private, loopback, link-local, documentation, multicast, and other non-public IP ranges, and pins the connection to the approved DNS result. This prevents DNS rebinding between validation and connection. Redirects are manual, capped, cannot downgrade HTTPS to HTTP, and are revalidated at every hop.
 
 Web requests have bounded DNS, request, redirect, and body handling. The diagnostic Web target is independently validated by the same public-destination policy before Argus creates its temporary diagnostic watch. These SSRF protections apply to Argus's Web fetch path; they do not make operator-selected external SearXNG, FxEmbed, Telegram, X, OpenRouter, reverse proxies, or arbitrary infrastructure trustworthy.

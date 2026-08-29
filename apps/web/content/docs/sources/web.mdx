@@ -3,6 +3,11 @@ title: Web
 description: Collect public direct URLs and feeds, or discover results through managed SearXNG.
 ---
 
+v2 extracts public page/feed image, video, audio, and document pointers in
+addition to text and links. Authenticated agents can call
+`GET /v1/primitives/web/search?q=...` for bounded transient SearXNG JSON; the
+response is not persisted.
+
 ## What it collects
 
 Direct URLs fetch a public HTML page and extract readable text. RSS and Atom feeds yield their entries. Queries ask the trusted, managed SearXNG endpoint for discovery results; a query is not a general browser crawl.
@@ -22,7 +27,7 @@ sources:
     browserFallback: false
 ```
 
-`browserFallback: false` is the only supported V1 value. Do not configure browser automation as a fallback.
+`browserFallback: false` is the only supported v2 value. Do not configure browser automation as a fallback.
 
 ## Configure watches
 
