@@ -2,7 +2,7 @@ import { validateConfig } from "@argus/config";
 import { recordIdentity } from "@argus/contracts";
 import { targetsFromConfig } from "@argus/scheduler";
 import { createSqliteRepository } from "@argus/storage-sqlite";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
 
 const repositories: Awaited<ReturnType<typeof createSqliteRepository>>[] = [];
@@ -124,6 +124,70 @@ describe("Argus API", () => {
           items: [{ replyRecordId, rank: 1 }],
         },
       ],
+    });
+  });
+
+  it("proxies authenticated X and web primitives without persistence", async () => {
+    const repository = await createSqliteRepository({ filename: ":memory:" });
+    repositories.push(repository);
+    const primitiveConfig = validateConfig({
+      version: 2,
+      storage: { adapter: "sqlite", url: ":memory:" },
+      sources: {
+        x: { enabled: true, endpoint: "https://fx.example.com/api" },
+        web: {
+          enabled: true,
+          searchEndpoint: "https://search.example.com/base",
+        },
+      },
+      watches: [],
+      api: { token: "secret" },
+    });
+    const fetcher = vi.fn(async (url: URL) =>
+      Response.json({ upstream: url.href }),
+    ) as unknown as typeof fetch;
+    const app = createApp({ config: primitiveConfig, repository, primitiveFetcher: fetcher });
+    const headers = { authorization: "Bearer secret" };
+
+    const x = await app.request(
+      "/v1/primitives/x/2/conversation/root?cursor=next",
+      { headers },
+    );
+    expect(x.status).toBe(200);
+    expect(await x.json()).toEqual({
+      upstream:
+        "https://fx.example.com/api/2/conversation/root?cursor=next",
+    });
+    const web = await app.request("/v1/primitives/web/search?q=movie+news", {
+      headers,
+    });
+    expect(web.status).toBe(200);
+    expect(await web.json()).toEqual({
+      upstream:
+        "https://search.example.com/base/search?q=movie+news&format=json",
+    });
+    expect((await repository.queryRecords({})).items).toEqual([]);
+    expect((await repository.queryArtifacts({})).items).toEqual([]);
+  });
+
+  it("never exposes primitives without a configured API token", async () => {
+    const repository = await createSqliteRepository({ filename: ":memory:" });
+    repositories.push(repository);
+    const publicConfig = validateConfig({
+      version: 2,
+      storage: { adapter: "sqlite", url: ":memory:" },
+      sources: { x: { enabled: true } },
+      watches: [],
+    });
+    const response = await createApp({ config: publicConfig, repository }).request(
+      "/v1/primitives/x/2/status/20",
+    );
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: {
+        code: "PRIMITIVE_AUTH_REQUIRED",
+        message: "Configure api.token before using source primitives.",
+      },
     });
   });
 

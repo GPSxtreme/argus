@@ -14,12 +14,15 @@ import {
   type ManagementConfigPlan,
   verifyManagementConfig,
 } from "./management-config.js";
+import { createPrimitiveRouter, type PrimitiveRateLimiter } from "./primitives/index.js";
 import { type DiagnosticResolver, safeDiagnosticWebTarget } from "./web-safety.js";
 
 export interface CreateAppInput {
   config: ArgusConfig;
   repository: StorageRepository;
   diagnosticResolver?: DiagnosticResolver;
+  primitiveFetcher?: typeof fetch;
+  primitiveLimiter?: PrimitiveRateLimiter;
 }
 
 export const API_ROUTES = {
@@ -74,7 +77,7 @@ const tokenMatches = (
   );
 };
 
-export const createApp = ({ config, repository, diagnosticResolver }: CreateAppInput): Hono => {
+export const createApp = ({ config, repository, diagnosticResolver, primitiveFetcher, primitiveLimiter }: CreateAppInput): Hono => {
   const app = new Hono();
   const query = new QueryService(repository);
 
@@ -93,6 +96,15 @@ export const createApp = ({ config, repository, diagnosticResolver }: CreateAppI
     }
     await next();
   });
+
+  app.route(
+    "/v1/primitives",
+    createPrimitiveRouter({
+      config,
+      ...(primitiveFetcher ? { fetcher: primitiveFetcher } : {}),
+      ...(primitiveLimiter ? { limiter: primitiveLimiter } : {}),
+    }),
+  );
 
   registerApiRoute(app, API_ROUTES.records, async (context) => {
     const sources = context.req.queries("source");
