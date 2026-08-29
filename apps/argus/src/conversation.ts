@@ -15,7 +15,6 @@ import {
 } from "@argus/scheduler";
 import { FxEmbedClient } from "@argus/source-x";
 
-const MAX_CONVERSATION_PAGES = 10;
 const MAX_OBSERVED_REPLIES = 500;
 
 interface ConversationClient {
@@ -43,40 +42,42 @@ export const runConversationRefresh = async (
   dependencies: ConversationRefreshDependencies = {},
 ): Promise<ConversationRefreshResult> => {
   const collectedAt = dependencies.now?.() ?? new Date().toISOString();
-  if (collectedAt >= tracking.stopsAt) {
-    const { nextRunAt: _nextRunAt, ...withoutNextRun } = tracking;
-    await repository.upsertConversationTracking({
-      ...withoutNextRun,
-      status: "complete",
-      updatedAt: collectedAt,
-    });
-    return { observed: 0, retained: 0, pages: 0 };
-  }
   const root = await repository.getRecord(tracking.rootRecordId);
   if (root?.source !== "x") {
     throw new Error(`Tracked X root is unavailable: ${tracking.rootRecordId}`);
   }
   const client =
     dependencies.client ?? new FxEmbedClient(config.sources.x.endpoint);
-  const observed: SourceItem[] = [];
+  const observed = new Map<string, SourceItem>();
+  const seenCursors = new Set<string>();
   let cursor: string | undefined;
   let pages = 0;
+  let continuationError: unknown;
   do {
-    const page = await client.conversation(root.externalId, cursor);
+    let page: { items: SourceItem[]; cursor?: string };
+    try {
+      page = await client.conversation(root.externalId, cursor);
+    } catch (error) {
+      if (pages === 0) throw error;
+      continuationError = error;
+      break;
+    }
     pages += 1;
     for (const item of page.items) {
       if (item.externalId === root.externalId) continue;
-      observed.push(item);
-      if (observed.length === MAX_OBSERVED_REPLIES) break;
+      observed.set(item.externalId, item);
+      if (observed.size === MAX_OBSERVED_REPLIES) break;
     }
     cursor = page.cursor;
-  } while (
-    cursor &&
-    pages < MAX_CONVERSATION_PAGES &&
-    observed.length < MAX_OBSERVED_REPLIES
-  );
+    if (cursor && seenCursors.has(cursor)) {
+      continuationError = new Error("FxEmbed conversation cursor repeated");
+      break;
+    }
+    if (cursor) seenCursors.add(cursor);
+  } while (cursor && observed.size < MAX_OBSERVED_REPLIES);
+  const observedItems = [...observed.values()];
   const selected = selectObservedReplies(
-    observed,
+    observedItems,
     tracking.orderBy,
     tracking.maxPerPost,
   );
@@ -95,19 +96,25 @@ export const runConversationRefresh = async (
     now: () => collectedAt,
   });
   const snapshotId = randomUUID();
-  const observationTruncated = Boolean(cursor);
-  const selectionTruncated = selected.length < observed.length;
+  const cursorFailed = continuationError !== undefined;
+  const observationTruncated = !cursorFailed && Boolean(cursor) && observed.size >= MAX_OBSERVED_REPLIES;
+  const selectionTruncated = selected.length < observed.size;
   await repository.saveConversationSnapshot({
     snapshot: {
       id: snapshotId,
       rootRecordId: tracking.rootRecordId,
-      observedCount: observed.length,
+      observedCount: observed.size,
       retainedCount: selected.length,
       orderBy: tracking.orderBy,
       pagesFetched: pages,
-      complete: !observationTruncated,
-      truncated: observationTruncated || selectionTruncated,
-      ...(observationTruncated && cursor
+      complete: !cursorFailed && !observationTruncated,
+      truncated: cursorFailed || observationTruncated || selectionTruncated,
+      ...(cursorFailed
+        ? {
+            truncationReason: "upstream_cursor_failure" as const,
+            ...(cursor ? { upstreamCursor: cursor } : {}),
+          }
+        : observationTruncated && cursor
         ? {
             truncationReason: "observation_limit" as const,
             upstreamCursor: cursor,
@@ -124,6 +131,7 @@ export const runConversationRefresh = async (
       ...(sortValue === undefined ? {} : { sortValue }),
     })),
   });
+  if (continuationError !== undefined) throw continuationError;
   const nextRunAt = nextReplyRun({
     publishedAt: tracking.publishedAt,
     now: collectedAt,
@@ -131,14 +139,14 @@ export const runConversationRefresh = async (
     ...(tracking.lastObservedReplies === undefined
       ? {}
       : { previousObservedReplies: tracking.lastObservedReplies }),
-    observedReplies: observed.length,
+    observedReplies: observed.size,
     ...(tracking.burstUntil === undefined
       ? {}
       : { burstUntil: tracking.burstUntil }),
   });
   const burstUntil = replyGrowthDetected(
     tracking.lastObservedReplies,
-    observed.length,
+    observed.size,
   )
     ? new Date(new Date(collectedAt).getTime() + 6 * 60 * 60 * 1000).toISOString()
     : tracking.burstUntil;
@@ -151,9 +159,9 @@ export const runConversationRefresh = async (
     ...trackingBase,
     status: nextRunAt ? "active" : "complete",
     ...(nextRunAt ? { nextRunAt } : {}),
-    lastObservedReplies: observed.length,
+    lastObservedReplies: observed.size,
     ...(burstUntil === undefined ? {} : { burstUntil }),
     updatedAt: collectedAt,
   });
-  return { observed: observed.length, retained: selected.length, pages };
+  return { observed: observed.size, retained: selected.length, pages };
 };

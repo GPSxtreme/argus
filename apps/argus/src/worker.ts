@@ -132,7 +132,27 @@ export const runTarget = async (
       if (isReply || isRepost) continue;
       const rootRecordId = recordIdentity("x", item.externalId);
       try {
-        if (await repository.getConversationTracking(rootRecordId)) continue;
+        const existing = await repository.getConversationTracking(rootRecordId);
+        if (existing) {
+          const observedReplies = item.engagement?.replies;
+          if (
+            existing.status === "complete" &&
+            observedReplies !== undefined &&
+            observedReplies > (existing.lastObservedReplies ?? 0)
+          ) {
+            const now = observedAt.toISOString();
+            const { nextRunAt: _nextRunAt, lastError: _lastError, ...base } = existing;
+            await repository.upsertConversationTracking({
+              ...base,
+              status: "active",
+              nextRunAt: now,
+              stopsAt: new Date(observedAt.getTime() + 24 * 60 * 60 * 1000).toISOString(),
+              updatedAt: now,
+            });
+            replyTrackingStarted += 1;
+          }
+          continue;
+        }
         const parsedPublishedAt = item.publishedAt
           ? new Date(item.publishedAt)
           : observedAt;
@@ -143,7 +163,10 @@ export const runTarget = async (
           new Date(publishedAt).getTime() +
             config.sources.x.replies.maxTrackingHours * 60 * 60 * 1000,
         ).toISOString();
-        if (stopsAt <= observedAt.toISOString()) continue;
+        const effectiveStopsAt =
+          stopsAt <= observedAt.toISOString()
+            ? observedAt.toISOString()
+            : stopsAt;
         await repository.upsertConversationTracking({
           rootRecordId,
           watchId: target.watchId,
@@ -153,7 +176,7 @@ export const runTarget = async (
           maxTrackingHours: config.sources.x.replies.maxTrackingHours,
           publishedAt,
           nextRunAt: observedAt.toISOString(),
-          stopsAt,
+          stopsAt: effectiveStopsAt,
           updatedAt: observedAt.toISOString(),
         });
         replyTrackingStarted += 1;

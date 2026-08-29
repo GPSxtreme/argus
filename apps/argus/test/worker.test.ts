@@ -11,6 +11,7 @@ import {
 
 const repositories: Awaited<ReturnType<typeof createSqliteRepository>>[] = [];
 afterEach(() => {
+  vi.useRealTimers();
   for (const repository of repositories.splice(0)) repository.close();
 });
 
@@ -223,6 +224,31 @@ describe("target worker", () => {
       }),
     ).resolves.toMatchObject({ inserted: 1, replyTrackingFailed: 1 });
     expect(await repository.getRecord(recordIdentity("x", "root"))).toBeDefined();
+  });
+
+  it("queues one terminal snapshot for an old first discovery", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-29T12:00:00.000Z"));
+    const repository = await createSqliteRepository({ filename: ":memory:" });
+    repositories.push(repository);
+    const config = validateConfig({ version: 2, storage: { adapter: "sqlite", url: ":memory:" }, sources: { x: { enabled: true, replies: { enabled: true, maxTrackingHours: 24 } } }, watches: [] });
+    const target: ScheduledTarget = { id: "movies:x:account:FilmUpdates", source: "x", watchId: "movies", schedule: "* * * * *", kind: "account", value: "FilmUpdates", keywords: [] };
+    await runTarget(target, config, repository, { kind: "x", capabilities: { polling: true, backfill: true, realtime: false }, validate: async () => ({ valid: true, errors: [] }), pull: async function* () { yield { externalId: "old", url: "https://x.com/FilmUpdates/status/old", text: "Old", publishedAt: "2026-08-27T00:00:00.000Z", raw: {} }; } });
+    expect(await repository.getConversationTracking(recordIdentity("x", "old"))).toMatchObject({ status: "active", nextRunAt: "2026-08-29T12:00:00.000Z", stopsAt: "2026-08-29T12:00:00.000Z" });
+  });
+
+  it("reactivates a completed root for 24 hours when reply count grows", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-29T12:00:00.000Z"));
+    const repository = await createSqliteRepository({ filename: ":memory:" });
+    repositories.push(repository);
+    const rootRecordId = recordIdentity("x", "reactivate");
+    await repository.upsertRecord({ id: rootRecordId, source: "x", externalId: "reactivate", targetId: "movies:x:account:FilmUpdates", watchIds: ["movies"], url: "https://x.com/FilmUpdates/status/reactivate", text: "Post", raw: {}, contentHash: "a".repeat(64), firstSeenAt: "2026-08-27T00:00:00.000Z", lastSeenAt: "2026-08-27T00:00:00.000Z" });
+    await repository.upsertConversationTracking({ rootRecordId, watchId: "movies", status: "complete", orderBy: "likes", maxPerPost: 50, maxTrackingHours: 24, publishedAt: "2026-08-27T00:00:00.000Z", stopsAt: "2026-08-28T00:00:00.000Z", lastObservedReplies: 10, updatedAt: "2026-08-28T00:00:00.000Z" });
+    const config = validateConfig({ version: 2, storage: { adapter: "sqlite", url: ":memory:" }, sources: { x: { enabled: true, replies: { enabled: true, maxTrackingHours: 24 } } }, watches: [] });
+    const target: ScheduledTarget = { id: "movies:x:account:FilmUpdates", source: "x", watchId: "movies", schedule: "* * * * *", kind: "account", value: "FilmUpdates", keywords: [] };
+    await runTarget(target, config, repository, { kind: "x", capabilities: { polling: true, backfill: true, realtime: false }, validate: async () => ({ valid: true, errors: [] }), pull: async function* () { yield { externalId: "reactivate", url: "https://x.com/FilmUpdates/status/reactivate", text: "Post", publishedAt: "2026-08-27T00:00:00.000Z", engagement: { replies: 11 }, raw: {} }; } });
+    expect(await repository.getConversationTracking(rootRecordId)).toMatchObject({ status: "active", nextRunAt: "2026-08-29T12:00:00.000Z", stopsAt: "2026-08-30T12:00:00.000Z", lastObservedReplies: 10 });
   });
 
   it("does not commit a diagnostic target cancelled while its adapter is in flight", async () => {

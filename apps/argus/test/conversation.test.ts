@@ -98,4 +98,33 @@ describe("X conversation refresh", () => {
     expect(conversation).toHaveBeenNthCalledWith(1, "root", undefined);
     expect(conversation).toHaveBeenNthCalledWith(2, "root", "next");
   });
+
+  it("takes the final snapshot at the tracking horizon", async () => {
+    const repository = await createSqliteRepository({ filename: ":memory:" });
+    repositories.push(repository);
+    const rootRecordId = recordIdentity("x", "final-root");
+    await repository.upsertRecord({ id: rootRecordId, source: "x", externalId: "final-root", targetId: "movies:x:account:FilmUpdates", watchIds: ["movies"], url: "https://x.com/FilmUpdates/status/final-root", text: "Final", raw: {}, contentHash: contentHash({ text: "Final" }), firstSeenAt: "2026-08-29T00:00:00.000Z", lastSeenAt: "2026-08-29T00:00:00.000Z" });
+    const tracking: ConversationTracking = { rootRecordId, watchId: "movies", status: "active", orderBy: "likes", maxPerPost: 50, maxTrackingHours: 24, publishedAt: "2026-08-29T00:00:00.000Z", nextRunAt: "2026-08-30T00:00:00.000Z", stopsAt: "2026-08-30T00:00:00.000Z", updatedAt: "2026-08-29T00:00:00.000Z" };
+    await repository.upsertConversationTracking(tracking);
+    const conversation = vi.fn().mockResolvedValue({ items: [] });
+
+    await expect(runConversationRefresh(validateConfig({ version: 2, storage: { adapter: "sqlite", url: ":memory:" }, sources: { x: { enabled: true } }, watches: [] }), repository, tracking, { client: { conversation }, now: () => tracking.stopsAt })).resolves.toEqual({ observed: 0, retained: 0, pages: 1 });
+    expect(conversation).toHaveBeenCalledOnce();
+    expect((await repository.queryConversationSnapshots(rootRecordId)).items).toHaveLength(1);
+    expect(await repository.getConversationTracking(rootRecordId)).toMatchObject({ status: "complete" });
+  });
+
+  it("counts distinct replies and persists partial provenance on cursor failure", async () => {
+    const repository = await createSqliteRepository({ filename: ":memory:" });
+    repositories.push(repository);
+    const rootRecordId = recordIdentity("x", "partial-root");
+    await repository.upsertRecord({ id: rootRecordId, source: "x", externalId: "partial-root", targetId: "movies:x:account:FilmUpdates", watchIds: ["movies"], url: "https://x.com/FilmUpdates/status/partial-root", text: "Partial", raw: {}, contentHash: contentHash({ text: "Partial" }), firstSeenAt: "2026-08-29T00:00:00.000Z", lastSeenAt: "2026-08-29T00:00:00.000Z" });
+    const tracking: ConversationTracking = { rootRecordId, watchId: "movies", status: "active", orderBy: "likes", maxPerPost: 50, maxTrackingHours: 168, publishedAt: "2026-08-29T00:00:00.000Z", nextRunAt: "2026-08-29T01:00:00.000Z", stopsAt: "2026-09-05T00:00:00.000Z", updatedAt: "2026-08-29T00:00:00.000Z" };
+    await repository.upsertConversationTracking(tracking);
+    const duplicate: SourceItem = { externalId: "reply", url: "https://x.com/a/status/reply", text: "reply", engagement: { likes: 1 }, raw: {} };
+    const conversation = vi.fn().mockResolvedValueOnce({ items: [duplicate, duplicate], cursor: "next" }).mockRejectedValueOnce(new Error("cursor expired"));
+
+    await expect(runConversationRefresh(validateConfig({ version: 2, storage: { adapter: "sqlite", url: ":memory:" }, sources: { x: { enabled: true } }, watches: [] }), repository, tracking, { client: { conversation }, now: () => "2026-08-29T02:00:00.000Z" })).rejects.toThrow("cursor expired");
+    expect((await repository.queryConversationSnapshots(rootRecordId)).items[0]).toMatchObject({ observedCount: 1, retainedCount: 1, pagesFetched: 1, complete: false, truncated: true, truncationReason: "upstream_cursor_failure", upstreamCursor: "next" });
+  });
 });
