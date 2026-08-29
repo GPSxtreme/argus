@@ -14,6 +14,7 @@ const requiredRoutes = [
   "/docs",
   "/docs/quick-start",
   "/docs/concepts",
+  "/docs/storage",
   "/docs/install",
   "/docs/configuration",
   "/docs/sources/x",
