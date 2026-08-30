@@ -6,6 +6,7 @@ import {
   sign,
 } from "node:crypto";
 import {
+  chmod,
   lstat,
   mkdir,
   mkdtemp,
@@ -171,8 +172,48 @@ exit 64
   await command(join(bin, "sync"), "exit 0");
   await command(
     join(bin, "sudo"),
-    `[ "\${ARGUS_FIXTURE_DOCKER_ROOT_ONLY:-0}" = 1 ] || exit 1
-if [ "\${1:-}" = -n ]; then shift; fi
+    `if [ "\${1:-}" = -n ]; then shift; fi
+if [ -n "\${ARGUS_FIXTURE_PRIVILEGED_DIR:-}" ]; then
+  case "\${1:-}" in
+    mktemp)
+      chmod 0755 "$ARGUS_FIXTURE_PRIVILEGED_DIR"
+      if argus_privileged_path=$("$@"); then
+        chmod 0555 "$ARGUS_FIXTURE_PRIVILEGED_DIR"
+        chmod 0000 "$argus_privileged_path"
+        printf '%s\n' "$argus_privileged_path"
+        exit 0
+      fi
+      chmod 0555 "$ARGUS_FIXTURE_PRIVILEGED_DIR"
+      exit 1
+      ;;
+    install)
+      argus_privileged_destination=
+      for argus_privileged_argument do
+        argus_privileged_destination=$argus_privileged_argument
+      done
+      chmod 0755 "$ARGUS_FIXTURE_PRIVILEGED_DIR"
+      if [ -e "$argus_privileged_destination" ]; then
+        chmod 0600 "$argus_privileged_destination"
+      fi
+      if "$@"; then
+        chmod 0555 "$ARGUS_FIXTURE_PRIVILEGED_DIR"
+        exit 0
+      fi
+      chmod 0555 "$ARGUS_FIXTURE_PRIVILEGED_DIR"
+      exit 1
+      ;;
+    mv|rm|rmdir|cp)
+      chmod 0755 "$ARGUS_FIXTURE_PRIVILEGED_DIR"
+      if "$@"; then
+        chmod 0555 "$ARGUS_FIXTURE_PRIVILEGED_DIR"
+        exit 0
+      fi
+      chmod 0555 "$ARGUS_FIXTURE_PRIVILEGED_DIR"
+      exit 1
+      ;;
+  esac
+fi
+[ "\${ARGUS_FIXTURE_DOCKER_ROOT_ONLY:-0}" = 1 ] || exit 1
 ARGUS_FIXTURE_UNDER_SUDO=1 exec "$@"`,
   );
   await command(
@@ -711,6 +752,26 @@ printf '%s\\n' x86_64`,
     ).rejects.toMatchObject({
       stderr: expect.stringContaining("signature is invalid"),
     });
+  });
+
+  it("installs from an unprivileged shell when the launcher directory requires sudo", async () => {
+    const fixture = await createFixture();
+    const wrapperSha = createHash("sha256")
+      .update(await readFile(fixture.wrapper))
+      .digest("hex");
+    const bytes = Buffer.from(JSON.stringify(manifest(wrapperSha)));
+    const privilegedDirectory = join(fixture.root, "install");
+    await chmod(privilegedDirectory, 0o555);
+
+    const result = await runInstaller(fixture, bytes, {
+      ARGUS_FIXTURE_PRIVILEGED_DIR: privilegedDirectory,
+    });
+
+    expect(result.stdout).toBe("argus onboard\n");
+    expect((await lstat(fixture.target)).mode & 0o777).toBe(0o755);
+    expect(await readFile(fixture.target)).toEqual(
+      await readFile(fixture.wrapper),
+    );
   });
 
   it("accepts opaque visible-ASCII GitHub tokens and rejects header injection", async () => {
