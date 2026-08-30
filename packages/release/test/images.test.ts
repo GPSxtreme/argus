@@ -18,8 +18,10 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 const repositoryRoot = resolve(import.meta.dirname, "../../..");
 const appDockerfilePath = join(repositoryRoot, "deploy/docker/Dockerfile");
 const cliDockerfilePath = join(repositoryRoot, "deploy/docker/Dockerfile.cli");
+const fxembedDockerfilePath = join(repositoryRoot, "deploy/docker/Dockerfile.fxembed");
 const appDockerfile = readFileSync(appDockerfilePath, "utf8");
 const cliDockerfile = readFileSync(cliDockerfilePath, "utf8");
+const fxembedDockerfile = readFileSync(fxembedDockerfilePath, "utf8");
 const rootManifest = JSON.parse(
   readFileSync(join(repositoryRoot, "package.json"), "utf8"),
 ) as {
@@ -169,6 +171,14 @@ describe("production image definitions", () => {
       /--filter @argus\/cli --prod deploy \/workspace\/deployed/u,
     );
     expect(cliDockerfile).not.toContain("deploy --legacy");
+  });
+
+  it("runs the pinned FxEmbed bundle as a non-root private Workers service", () => {
+    expect(fxembedDockerfile).toContain(pinnedNodeBase);
+    expect(fxembedDockerfile).toContain("USER node");
+    expect(fxembedDockerfile).toContain('"--port", "8787"');
+    expect(fxembedDockerfile).toContain('"--compatibility-date", "2026-04-11"');
+    expect(fxembedDockerfile).not.toContain("latest");
   });
 
   it("embeds the stable update manifest separately from the immutable onboarding manifest", () => {

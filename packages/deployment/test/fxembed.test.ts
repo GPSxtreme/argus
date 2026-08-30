@@ -284,7 +284,7 @@ describe("managed FxEmbed", () => {
     await expect(
       client.inspectWorker(accountId, ARGUS_FXEMBED_WORKER_NAME),
     ).resolves.toEqual({
-      endpoint: "https://argus-fxembed.argus-test.workers.dev",
+      endpoint: "https://argus-fxembed.argus-test.workers.dev/api",
       workersDevEnabled: false,
     });
     expect(requests).toEqual([
@@ -400,7 +400,7 @@ describe("managed FxEmbed", () => {
 
     await expect(
       client.enableWorkersDev(accountId, ARGUS_FXEMBED_WORKER_NAME, token),
-    ).resolves.toBe("https://argus-fxembed.argus-test.workers.dev");
+    ).resolves.toBe("https://argus-fxembed.argus-test.workers.dev/api");
     expect(calls).toEqual([
       {
         url: `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/argus-fxembed/subdomain`,

@@ -9,7 +9,7 @@ Argus protects the verified deployment path and limits the authority of its serv
 
 The installer embeds an Ed25519 public trust root. It downloads `manifest.json` and `manifest.sig`, verifies the signature and manifest shape before trusting it, then verifies the wrapper SHA-256. A malformed manifest, invalid signature, or wrapper hash mismatch stops before replacement.
 
-Onboarding and update use the verified signed manifest to select digest-pinned Argus, PostgreSQL, and SearXNG images. Update also requires the persisted signed release context to match the currently deployed release. These checks establish that the CLI uses the signed release material it verified; they do not validate arbitrary images or releases an operator deploys outside the CLI.
+Onboarding and update use the verified signed manifest to select digest-pinned Argus, PostgreSQL, SearXNG, and FxEmbed images. Update also requires the persisted signed release context to match the currently deployed release. These checks establish that the CLI uses the signed release material it verified; they do not validate arbitrary images or releases an operator deploys outside the CLI.
 
 ## Secrets and credentials
 
@@ -17,7 +17,12 @@ Onboarding and update use the verified signed manifest to select digest-pinned A
 
 The CLI redacts known secret values from JSON and human output, redacts configured API and OpenRouter values, and removes URL userinfo in `argus config show`. Deployment errors redact registered secret values. This is output protection, not a guarantee that an operator's shell history, reverse proxy, external log collector, or third-party service never receives a secret.
 
-Managed FxEmbed needs a Cloudflare API token and account ID. Grant the token least privilege: access only the intended Cloudflare account and the Worker operations it needs. The client keeps that token in memory and sends it only as an Authorization header; diagnostic errors intentionally omit Cloudflare response bodies. Remove unused GHCR Docker credentials from `/opt/argus/.docker/config.json` when private image access is no longer needed.
+VPS-hosted FxEmbed needs no Cloudflare credential and exposes no host port. It
+still makes outbound requests to X and inherits FxEmbed/X availability and rate
+limits. Cloudflare-hosted FxEmbed needs an API token and account ID; use least privilege
+and grant access only to the intended account and Worker operations. Remove unused
+GHCR Docker credentials from `/opt/argus/.docker/config.json` when private image
+access is no longer needed.
 
 ## API exposure and authentication
 

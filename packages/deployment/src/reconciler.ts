@@ -17,8 +17,9 @@ export interface DesiredDeployment {
   apiPort: number;
   storage: "sqlite" | "postgres";
   searxng: boolean;
+  fxembed: boolean;
   configHash: string;
-  images: { argus: ManifestImage; postgres: ManifestImage; searxng: ManifestImage };
+  images: { argus: ManifestImage; postgres: ManifestImage; searxng: ManifestImage; fxembed: ManifestImage };
 }
 
 export interface DeploymentContext {
@@ -77,6 +78,7 @@ const requiredServices = (desired: DesiredDeployment): Array<keyof DesiredDeploy
   const services: Array<keyof DesiredDeployment["images"]> = ["argus"];
   if (desired.storage === "postgres") services.push("postgres");
   if (desired.searxng) services.push("searxng");
+  if (desired.fxembed) services.push("fxembed");
   return services;
 };
 
@@ -92,6 +94,7 @@ const composeEnvironment = (desired: DesiredDeployment): Record<string, string> 
   ARGUS_IMAGE: imageReference(desired.images.argus),
   POSTGRES_IMAGE: imageReference(desired.images.postgres),
   SEARXNG_IMAGE: imageReference(desired.images.searxng),
+  FXEMBED_IMAGE: imageReference(desired.images.fxembed),
 });
 
 const splitImageReference = (image: string): ManifestImage => {
@@ -109,11 +112,13 @@ const desiredFromState = (state: DeploymentStateV1 | undefined): DesiredDeployme
     apiPort: compose.apiPort,
     storage: compose.storage,
     searxng: compose.searxng,
+    fxembed: compose.fxembed,
     configHash: state.configHash,
     images: {
       argus: splitImageReference(compose.images.argus),
       postgres: splitImageReference(compose.images.postgres),
       searxng: splitImageReference(compose.images.searxng),
+      fxembed: splitImageReference(compose.images.fxembed),
     },
   };
 };
@@ -218,7 +223,7 @@ export const planDeployment = (actual: ActualDeployment, desired: DesiredDeploym
     }
   }
   for (const service of Object.keys(state?.services ?? {})) {
-    if (service !== "argus" && service !== "postgres" && service !== "searxng") continue;
+    if (service !== "argus" && service !== "postgres" && service !== "searxng" && service !== "fxembed") continue;
     if (!expected.has(service)) changes.push(change(service, "remove", `Remove unselected ${service} service.`));
   }
   if (state && state.configHash !== desired.configHash && !changes.some((entry) => entry.component === "argus")) {
@@ -256,10 +261,12 @@ export const applyDeployment = async (plan: LifecyclePlan, context: DeploymentCo
       apiPort: plan.desired.apiPort,
       storage: plan.desired.storage,
       searxng: plan.desired.searxng,
+      fxembed: plan.desired.fxembed,
       images: {
         argus: imageReference(plan.desired.images.argus),
         postgres: imageReference(plan.desired.images.postgres),
         searxng: imageReference(plan.desired.images.searxng),
+        fxembed: imageReference(plan.desired.images.fxembed),
       },
     },
     updatedAt: new Date().toISOString(),

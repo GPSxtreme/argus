@@ -1,0 +1,26 @@
+# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+
+FROM node:24-bookworm-slim@sha256:235600a8101ab264e117b1768e925532262668dc9b581ef1dd7d96ced463b8e7 AS dependencies
+
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --ignore-scripts
+
+FROM node:24-bookworm-slim@sha256:235600a8101ab264e117b1768e925532262668dc9b581ef1dd7d96ced463b8e7 AS runtime
+
+ARG ARGUS_VERSION=0.0.0-dev
+ARG ARGUS_REVISION=unknown
+LABEL org.opencontainers.image.source="https://github.com/gpsxtreme/argus" \
+      org.opencontainers.image.version="$ARGUS_VERSION" \
+      org.opencontainers.image.revision="$ARGUS_REVISION" \
+      org.opencontainers.image.licenses="MIT"
+
+WORKDIR /app
+COPY --chown=node:node --from=dependencies /app/node_modules ./node_modules
+COPY --chown=node:node dist/worker.js ./worker.js
+COPY --chown=node:node LICENSE.md ./licenses/FXEMBED-LICENSE.md
+RUN chown node:node /app
+
+USER node
+EXPOSE 8787
+CMD ["./node_modules/.bin/wrangler", "dev", "/app/worker.js", "--local", "--ip", "0.0.0.0", "--port", "8787", "--compatibility-date", "2026-04-11"]

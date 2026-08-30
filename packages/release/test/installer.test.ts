@@ -80,6 +80,10 @@ const manifest = (
       reference: `docker.io/library/postgres@sha256:${digest}`,
       digest: `sha256:${digest}`,
     },
+    fxembed: {
+      reference: `ghcr.io/gpsxtreme/argus-fxembed@sha256:${digest}`,
+      digest: `sha256:${digest}`,
+    },
   },
   assets: {
     fxembed: {

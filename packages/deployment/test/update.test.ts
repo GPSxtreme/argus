@@ -32,7 +32,7 @@ const release = (version = "2.0.0", minimumStateSchema = 1, marker = "a"): Verif
       schemaVersion: 1,
       version,
       publishedAt: "2026-08-01T00:00:00.000Z",
-      images: { app: image(marker), cli: image("b"), searxng: image("c"), postgres: image("d") },
+      images: { app: image(marker), cli: image("b"), searxng: image("c"), postgres: image("d"), fxembed: image("e") },
       assets: {
         fxembed: { url: "https://example.test/fx.js", sha256: "e".repeat(64), compatibilityDate: "2026-08-01" },
         wrapper: { url: "https://example.test/argus", sha256: "f".repeat(64) },
@@ -144,7 +144,8 @@ const rootWithState = async ({
       apiPort: 8788,
       storage,
       searxng,
-      images: { argus: image("f").reference, postgres: image("d").reference, searxng: image("c").reference },
+      fxembed: false,
+      images: { argus: image("f").reference, postgres: image("d").reference, searxng: image("c").reference, fxembed: image("e").reference },
     },
     updatedAt: "2026-08-01T00:00:00.000Z",
   });
@@ -164,6 +165,7 @@ describe("safe update state machine", () => {
       argus: image("a").reference,
       postgres: image("d").reference,
       searxng: image("c").reference,
+      fxembed: image("e").reference,
     });
     expect(updated.services).toMatchObject({
       argus: { image: image("a").reference, healthy: true },
@@ -178,6 +180,7 @@ describe("safe update state machine", () => {
       argus: image("f").reference,
       postgres: image("d").reference,
       searxng: image("c").reference,
+      fxembed: image("e").reference,
     });
     expect(rolledBack.services).toMatchObject({
       argus: { image: image("f").reference, healthy: true },
@@ -761,6 +764,7 @@ describe("safe update state machine", () => {
       cli: image("6"),
       postgres: image("7"),
       searxng: image("8"),
+      fxembed: image("9"),
     };
     persisted.rollbackRelease.manifest.assets.fxembed = {
       url: "https://attacker.test/fx.js",

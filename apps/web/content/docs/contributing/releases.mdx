@@ -11,9 +11,9 @@ built and verified.
 
 ## Signed release contents
 
-The workflow builds and pushes digest-pinned Linux AMD64 and ARM64 application
-and management images, builds the pinned FxEmbed worker, renders the wrapper,
-and creates `manifest.json` and `manifest.sig` with the Ed25519 release key.
+The workflow builds and pushes digest-pinned Linux AMD64 and ARM64 application,
+management, and VPS FxEmbed images; builds the pinned Cloudflare FxEmbed worker;
+renders the wrapper; and creates `manifest.json` and `manifest.sig` with the Ed25519 release key.
 It verifies the manifest signature and shell syntax before publishing the
 immutable GitHub release with the installer, wrapper, manifest, public key,
 and FxEmbed assets.

@@ -23,7 +23,7 @@ summaries are derived artifacts; ingestion and storage do not depend on an LLM.
 | Storage | SQLite for a single all-in-one runtime, or PostgreSQL for shared multi-role deployments. |
 | Scheduling and query | Cron-derived target jobs, leased workers, retries and checkpoints, plus authenticated deterministic record and artifact queries. |
 | Optional intelligence | OpenRouter-backed sourced summaries stored separately as artifacts. |
-| Deployment | Signed release installation on a supported VPS Docker host, with Argus-managed Docker Compose, optional managed SearXNG, and managed FxEmbed on Cloudflare. |
+| Deployment | Signed release installation on a supported VPS Docker host, with Argus-managed Docker Compose and private, optional SearXNG and FxEmbed services. |
 | Runtime boundaries | API, scheduler, worker, and processor responsibilities can run together; SQLite requires the combined role while PostgreSQL supports separated roles. |
 
 ## Product boundary

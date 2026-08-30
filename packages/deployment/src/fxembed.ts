@@ -211,7 +211,7 @@ export class CloudflareWorkersApiClient implements CloudflareWorkersClient {
       ...(worker?.bundleHash === undefined
         ? {}
         : { bundleHash: worker.bundleHash }),
-      endpoint: `https://${name}.${account.subdomain}.workers.dev`,
+      endpoint: `https://${name}.${account.subdomain}.workers.dev/api`,
       workersDevEnabled,
     };
   }
@@ -309,7 +309,7 @@ export class CloudflareWorkersApiClient implements CloudflareWorkersClient {
         "Cloudflare returned an invalid workers.dev account subdomain.",
       );
     }
-    return `https://${name}.${account.subdomain}.workers.dev`;
+    return `https://${name}.${account.subdomain}.workers.dev/api`;
   }
 
   private async request(

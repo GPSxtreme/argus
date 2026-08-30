@@ -235,16 +235,18 @@ export const collectOnboarding = async (
     fxembed = (await prompt.select({
       message: "FxEmbed",
       options: [
-        { value: "managed", label: "Managed on Cloudflare", hint: "recommended" },
+        { value: "vps", label: "Run on this VPS", hint: "recommended" },
+        { value: "cloudflare", label: "Deploy to Cloudflare" },
         { value: "external", label: "External endpoint" },
+        { value: "disabled", label: "Disable X" },
       ],
-      initialValue: "managed",
-    })) as "managed" | "external";
-    if (fxembed === "managed") {
+      initialValue: "vps",
+    })) as OnboardingAnswers["managed"]["fxembed"];
+    if (fxembed === "cloudflare") {
       cloudflareAccountId = await prompt.text({
         message: "Cloudflare account id",
       });
-    } else {
+    } else if (fxembed === "external") {
       fxembedEndpoint = await prompt.text({
         message: "External FxEmbed endpoint",
       });
@@ -328,7 +330,7 @@ export const collectOnboarding = async (
       message: "PostgreSQL password",
     });
   }
-  if (fxembed === "managed") {
+  if (fxembed === "cloudflare") {
     secrets.CLOUDFLARE_API_TOKEN = await prompt.secret({
       message: "Cloudflare API token",
     });
@@ -399,7 +401,7 @@ export const collectRequiredSecrets = async (
       message: "PostgreSQL password",
     });
   }
-  if (answers.managed.fxembed === "managed") {
+  if (answers.managed.fxembed === "cloudflare") {
     secrets.CLOUDFLARE_API_TOKEN = await prompt.secret({
       message: "Cloudflare API token",
     });

@@ -2,6 +2,7 @@ export interface ComposeInput {
   version: string;
   storage: "sqlite" | "postgres";
   searxng: boolean;
+  fxembed?: boolean;
 }
 
 const argusService = `  argus:
@@ -46,11 +47,21 @@ const searxngService = `  searxng:
     restart: unless-stopped
 `;
 
+const fxembedService = `  fxembed:
+    image: \${FXEMBED_IMAGE}
+    environment:
+      NODE_ENV: production
+      WRANGLER_SEND_METRICS: "false"
+    networks: [argus-private, argus-egress]
+    restart: unless-stopped
+`;
+
 /** Renders only Compose interpolation variables; image values are supplied from a verified manifest. */
-export const renderCompose = ({ storage, searxng }: ComposeInput): string => {
+export const renderCompose = ({ storage, searxng, fxembed = false }: ComposeInput): string => {
   const services = [argusService];
   if (storage === "postgres") services.push(postgresService);
   if (searxng) services.push(searxngService);
+  if (fxembed) services.push(fxembedService);
   const volumes = ["  argus-data:"];
   if (storage === "postgres") volumes.push("  postgres-data:");
 

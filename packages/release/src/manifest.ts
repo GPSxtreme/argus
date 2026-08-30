@@ -122,6 +122,7 @@ const releaseManifestV1Schema = z
         cli: imageSchema,
         searxng: imageSchema,
         postgres: imageSchema,
+        fxembed: imageSchema,
       })
       .strict(),
     assets: z
@@ -160,6 +161,7 @@ export interface ReleaseManifestV1 {
     cli: { reference: string; digest: `sha256:${string}` };
     searxng: { reference: string; digest: `sha256:${string}` };
     postgres: { reference: string; digest: `sha256:${string}` };
+    fxembed: { reference: string; digest: `sha256:${string}` };
   };
   assets: {
     fxembed: { url: string; sha256: string; compatibilityDate: string };
@@ -210,6 +212,10 @@ export function serializeReleaseManifestCanonical(
         postgres: {
           reference: value.images.postgres.reference,
           digest: value.images.postgres.digest,
+        },
+        fxembed: {
+          reference: value.images.fxembed.reference,
+          digest: value.images.fxembed.digest,
         },
       },
       assets: {

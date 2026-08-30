@@ -20,7 +20,7 @@ MC4CAQAwBQYDK2VwBCIEIGJqC73Ezwmnx3FFQ5W1czmiNwXmLFn2Xso+6xXKPXKf
 -----END PRIVATE KEY-----`;
 const fixtureDigest = (character: string): string => character.repeat(64);
 const usage =
-  "Usage: create-manifest.ts --fixture | --version VERSION --source-date-epoch EPOCH --image NAME=REFERENCE (four times) --fxembed PATH --fxembed-license PATH --fxembed-provenance PATH --fxembed-compatibility-date YYYY-MM-DD --wrapper PATH --release-base-url HTTPS_URL --output-dir PATH [--signing-key-file PATH]";
+  "Usage: create-manifest.ts --fixture | --version VERSION --source-date-epoch EPOCH --image NAME=REFERENCE (five times) --fxembed PATH --fxembed-license PATH --fxembed-provenance PATH --fxembed-compatibility-date YYYY-MM-DD --wrapper PATH --release-base-url HTTPS_URL --output-dir PATH [--signing-key-file PATH]";
 
 interface Arguments {
   version: string;
@@ -51,7 +51,7 @@ const parseImage = (value: string): ReleaseImageInput => {
   const reference = value.slice(separator + 1);
   if (
     separator < 1 ||
-    !["app", "cli", "searxng", "postgres"].includes(name) ||
+    !["app", "cli", "searxng", "postgres", "fxembed"].includes(name) ||
     reference.length === 0
   ) {
     throw new TypeError(usage);
@@ -83,6 +83,7 @@ const fixtureArguments = async (): Promise<Arguments> => {
       { name: "cli", reference: `ghcr.io/gpsxtreme/argus-cli@sha256:${fixtureDigest("b")}` },
       { name: "searxng", reference: `docker.io/searxng/searxng@sha256:${fixtureDigest("c")}` },
       { name: "postgres", reference: `docker.io/library/postgres@sha256:${fixtureDigest("d")}` },
+      { name: "fxembed", reference: `ghcr.io/gpsxtreme/argus-fxembed@sha256:${fixtureDigest("e")}` },
     ],
     fxembedPath,
     fxembedCompatibilityDate: "2026-04-11",

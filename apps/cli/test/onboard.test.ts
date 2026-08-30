@@ -100,7 +100,7 @@ describe("onboarding wizard", () => {
       .filter((call) => call.kind === "secret")
       .map((call) => call.message);
     expect(secretMessages).toContain("Argus API token");
-    expect(secretMessages).toContain("Cloudflare API token");
+    expect(secretMessages).not.toContain("Cloudflare API token");
     expect(
       harness.calls.some(
         (call) =>
@@ -108,6 +108,13 @@ describe("onboarding wizard", () => {
           (call.message.includes("token") || call.message.includes("password")),
       ),
     ).toBe(false);
+  });
+
+  it("defaults X collection to FxEmbed on the same VPS", async () => {
+    const result = await collectOnboarding(promptHarness(["x"]).prompt);
+
+    expect(result.answers.managed.fxembed).toBe("vps");
+    expect(result.secrets.CLOUDFLARE_API_TOKEN).toBeUndefined();
   });
 
   it("recommends the standard seven-day X reply profile", async () => {
@@ -821,6 +828,7 @@ watches: []
       argus: `ghcr.io/argus/app@sha256:${"b".repeat(64)}`,
       postgres: `docker.io/library/postgres@sha256:${"c".repeat(64)}`,
       searxng: `docker.io/searxng/searxng@sha256:${"d".repeat(64)}`,
+      fxembed: `ghcr.io/gpsxtreme/argus-fxembed@sha256:${"f".repeat(64)}`,
     },
     fxembed: {
       bundleSha256: "e".repeat(64),
@@ -877,6 +885,7 @@ watches: []
           apiPort: 8788,
           storage: "sqlite",
           searxng: true,
+          fxembed: false,
           images: verifiedRelease.images,
         },
         updatedAt: "2026-08-10T00:00:00.000Z",

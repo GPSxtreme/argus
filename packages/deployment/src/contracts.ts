@@ -19,7 +19,7 @@ export interface OnboardingAnswers {
   };
   managed: {
     searxng: "disabled" | "managed" | "external";
-    fxembed: "disabled" | "managed" | "external";
+    fxembed: "disabled" | "vps" | "cloudflare" | "external";
   };
   xReplies: {
     enabled: boolean;
@@ -56,7 +56,8 @@ export interface DeploymentStateV1 {
     apiPort: number;
     storage: "sqlite" | "postgres";
     searxng: boolean;
-    images: { argus: string; postgres: string; searxng: string };
+    fxembed: boolean;
+    images: { argus: string; postgres: string; searxng: string; fxembed: string };
   };
   fxembed?: {
     accountId: string;
@@ -145,7 +146,7 @@ export const onboardingAnswersSchema = z
     managed: z
       .object({
         searxng: z.enum(["disabled", "managed", "external"]),
-        fxembed: z.enum(["disabled", "managed", "external"]),
+        fxembed: z.enum(["disabled", "vps", "cloudflare", "external"]),
       })
       .strict(),
     xReplies: z
@@ -193,11 +194,11 @@ export const onboardingAnswersSchema = z
   })
   .strict()
   .superRefine((answers, context) => {
-    if (answers.managed.fxembed === "managed" && !answers.cloudflare?.accountId) {
+    if (answers.managed.fxembed === "cloudflare" && !answers.cloudflare?.accountId) {
       context.addIssue({
         code: "custom",
         path: ["cloudflare", "accountId"],
-        message: "Managed fxembed requires a Cloudflare account id",
+        message: "Cloudflare-hosted FxEmbed requires a Cloudflare account id",
       });
     }
     if (answers.managed.searxng === "external" && !answers.external?.searxngEndpoint) {
@@ -232,11 +233,13 @@ export const deploymentStateSchema = z
         apiPort: z.number().int().positive().max(65_535),
         storage: z.enum(["sqlite", "postgres"]),
         searxng: z.boolean(),
+        fxembed: z.boolean(),
         images: z
           .object({
             argus: pinnedImageReferenceSchema,
             postgres: pinnedImageReferenceSchema,
             searxng: pinnedImageReferenceSchema,
+            fxembed: pinnedImageReferenceSchema,
           })
           .strict(),
       })

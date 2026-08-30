@@ -68,6 +68,29 @@ describe("renderCompose", () => {
     expect(parsed.networks["argus-egress"]).toEqual({});
   });
 
+  it("runs FxEmbed privately on the VPS with egress and no published port", () => {
+    const parsed = parse(
+      renderCompose({
+        version: "0.2.0",
+        storage: "sqlite",
+        searxng: false,
+        fxembed: true,
+      }),
+    ) as {
+      services: Record<
+        string,
+        { image?: string; networks?: string[]; ports?: unknown[] }
+      >;
+    };
+
+    expect(parsed.services.fxembed).toMatchObject({
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: Compose expands this verified image variable.
+      image: "${FXEMBED_IMAGE}",
+      networks: ["argus-private", "argus-egress"],
+    });
+    expect(parsed.services.fxembed?.ports).toBeUndefined();
+  });
+
   it("delivers only the dedicated secret file to managed SearXNG", () => {
     const parsed = parse(
       renderCompose({ version: "0.2.0", storage: "postgres", searxng: true }),
@@ -99,6 +122,7 @@ describe("renderCompose", () => {
             version: "0.2.0",
             storage: "postgres",
             searxng: true,
+            fxembed: true,
           }),
         ),
         writeFile(join(root, "secrets.env"), "POSTGRES_PASSWORD=test\n"),
@@ -122,6 +146,8 @@ describe("renderCompose", () => {
                 `example.invalid/postgres@sha256:${"b".repeat(64)}`,
               SEARXNG_IMAGE:
                 `example.invalid/searxng@sha256:${"c".repeat(64)}`,
+              FXEMBED_IMAGE:
+                `example.invalid/fxembed@sha256:${"d".repeat(64)}`,
             },
           },
         ),
@@ -139,6 +165,9 @@ describe("renderCompose", () => {
       expect(Object.keys(parsed.services.postgres?.networks ?? {})).toEqual([
         "argus-private",
       ]);
+      expect(Object.keys(parsed.services.fxembed?.networks ?? {}).sort()).toEqual(
+        ["argus-egress", "argus-private"],
+      );
       expect(parsed.networks["argus-private"]?.internal).toBe(true);
       expect(parsed.networks["argus-egress"]?.internal).not.toBe(true);
     },

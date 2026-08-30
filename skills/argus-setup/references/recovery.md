@@ -8,7 +8,7 @@ For an unhealthy status or failed command:
    includes `logsCommand`, use it exactly; otherwise use `argus logs <component> --json`.
 4. If recovery needs a targeted managed repair, inspect `argus repair <component>
    --dry-run --json`, explain the plan, and request approval before the CLI
-   mutates host or Cloudflare state.
+   mutates host state or an explicitly selected Cloudflare deployment.
 5. Run the approved repair through the CLI, then rerun `argus doctor --json`.
 6. Report any remaining failure with its component, code, message, and returned
    recovery. Do not improvise a direct infrastructure command.

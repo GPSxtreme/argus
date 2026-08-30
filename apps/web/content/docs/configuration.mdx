@@ -28,7 +28,7 @@ storage:
 sources:
   x:
     enabled: true
-    endpoint: https://fxembed.example.com/api
+    endpoint: http://fxembed:8787
     replies:
       enabled: true
       maxPerPost: 50
@@ -78,7 +78,8 @@ contracts.
 
 ## X reply tracking
 
-`sources.x.endpoint` is the operator-selected FxEmbed `/api` base. Reply
+`sources.x.endpoint` is the selected FxEmbed origin; VPS onboarding writes
+`http://fxembed:8787`. Reply
 tracking is opt-in in hand-written YAML. The onboarding wizard recommends the
 Standard profile.
 

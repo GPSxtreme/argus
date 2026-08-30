@@ -27,12 +27,14 @@ The instance root is `/opt/argus`. The CLI owns its generated Compose file and s
 
 Every managed Compose deployment has these networks:
 
-- `argus-private` is internal. The Argus service, PostgreSQL when selected, and managed SearXNG use it.
-- `argus-egress` lets Argus reach configured public sources; managed SearXNG also uses it for search.
+- `argus-private` is internal. Argus, PostgreSQL when selected, managed
+  SearXNG, and VPS-hosted FxEmbed use it.
+- `argus-egress` lets source-facing services reach the public Internet. Argus,
+  managed SearXNG, and VPS-hosted FxEmbed use it.
 
 The `argus` service mounts `/opt/argus/argus.yaml` read-only and the persistent `argus-data` volume at `/app/data`. It reads `/opt/argus/secrets.env` as its environment file. Docker publishes the selected API port, default `8788`, from the host to the container. Put a firewall or reverse proxy in front of a publicly reachable host port; setting a loopback API host is not the same thing as removing Docker's published port.
 
-SQLite is stored through `argus-data`; there is no separate database container. Selecting PostgreSQL adds a `postgres` service and the persistent `postgres-data` volume. Selecting managed SearXNG adds a `searxng` service with the CLI-owned `/opt/argus/searxng/settings.yml`; SearXNG has no host port of its own.
+SQLite is stored through `argus-data`; there is no separate database container. Selecting PostgreSQL adds a `postgres` service and the persistent `postgres-data` volume. Selecting managed SearXNG adds a `searxng` service with the CLI-owned `/opt/argus/searxng/settings.yml`. Selecting VPS FxEmbed adds the signed, digest-pinned `fxembed` service. Neither service publishes a host port.
 
 `state.json` records the verified deployment and pinned image references. `release-context.json` keeps the signed release material used to identify a rollback release. `backups/` and `update-state.json` are update recovery state. They are operational state, not application configuration; preserve them and do not hand-edit them.
 
@@ -40,7 +42,12 @@ SQLite is stored through `argus-data`; there is no separate database container. 
 
 Managed SearXNG is available only for Web query targets. Argus checks it with a bounded JSON search and can recreate only this managed service with `argus repair searxng`. An external SearXNG endpoint is outside Argus's control: Argus can check it, but it will not repair or change it.
 
-FxEmbed is a Cloudflare Worker, not a VPS container. In managed mode, onboarding deploys the pinned worker bundle into the supplied Cloudflare account; in external mode it records the endpoint. Both endpoints remain a dependency of X ingestion, but only the managed Cloudflare Worker is deployed during onboarding. Argus never repairs an external FxEmbed endpoint.
+VPS-hosted FxEmbed is the default for X. Argus runs the pinned Worker bundle
+through its local Workers runtime at `http://fxembed:8787`, reachable only
+inside Compose. It participates in lifecycle, status, logs, doctor, targeted
+repair, signed update, and rollback. Cloudflare-hosted and external FxEmbed
+remain advanced alternatives; Argus cannot repair an external endpoint or
+Cloudflare account configuration.
 
 ## Advanced PostgreSQL roles
 
@@ -70,4 +77,4 @@ For PostgreSQL, take regular `pg_dump`/`pg_restore` backups or provider snapshot
 
 ## Next step
 
-Read [operations](/docs/operations) for inspect/apply/verify sequences and [security](/docs/security) before exposing the API or granting Cloudflare credentials.
+Read [operations](/docs/operations) for inspect/apply/verify sequences and [security](/docs/security) before exposing the API or granting optional Cloudflare credentials.

@@ -35,6 +35,7 @@ const input = (version = "1.2.3", cliDigest = "b") => ({
     image("cli", "ghcr.io/gpsxtreme/argus-cli", cliDigest),
     image("searxng", "docker.io/searxng/searxng", "c"),
     image("postgres", "docker.io/library/postgres", "d"),
+    image("fxembed", "ghcr.io/gpsxtreme/argus-fxembed", "e"),
   ],
   fxembed: {
     bytes: Buffer.from("export default { fetch() {} };\n"),

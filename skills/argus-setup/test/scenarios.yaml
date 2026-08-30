@@ -10,10 +10,10 @@
       "expectedFinalHealth": "healthy"
     },
     {
-      "name": "x-setup-hidden-cloudflare-prompt",
+      "name": "x-setup-private-vps-fxembed",
       "request": "Enable X collection without an existing endpoint.",
       "allowedCliCalls": ["argus --help", "argus status --json", "argus config schema --json", "argus onboard --from answers.yaml --json", "argus doctor --json"],
-      "trace": ["argus --help", "argus status --json", "argus config schema --json", "hidden Cloudflare credential prompt", "argus onboard --from answers.yaml --json", "argus doctor --json"],
+      "trace": ["argus --help", "argus status --json", "argus config schema --json", "select VPS-hosted FxEmbed", "argus onboard --from answers.yaml --json", "argus doctor --json"],
       "forbiddenSecretStrings": ["CLOUDFLARE_API_TOKEN=", "OPENROUTER_API_KEY="],
       "expectedFinalHealth": "healthy"
     },

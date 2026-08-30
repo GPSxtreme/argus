@@ -16,7 +16,7 @@ const answers: OnboardingAnswers = {
     apiHost: "0.0.0.0",
     apiPort: 8788,
   },
-  managed: { searxng: "managed", fxembed: "managed" },
+  managed: { searxng: "managed", fxembed: "cloudflare" },
   xReplies: {
     enabled: true,
     maxPerPost: 50,

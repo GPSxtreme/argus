@@ -108,6 +108,7 @@ export interface VerifiedOnboardingRelease {
     argus: `${string}@sha256:${string}`;
     postgres: `${string}@sha256:${string}`;
     searxng: `${string}@sha256:${string}`;
+    fxembed: `${string}@sha256:${string}`;
   };
   fxembed?: {
     bundleSha256: string;
@@ -412,12 +413,12 @@ export const onboardingJsonSchema = (): Record<string, unknown> => {
   return {
     ...base,
     allOf: [
-      conditional(managedEquals("fxembed", "managed"), {
-          required: ["cloudflare"],
-          properties: {
-            cloudflare: { required: ["accountId"] },
-          },
-        }),
+      conditional(managedEquals("fxembed", "cloudflare"), {
+        required: ["cloudflare"],
+        properties: {
+          cloudflare: { required: ["accountId"] },
+        },
+      }),
       conditional(managedEquals("searxng", "external"), {
           required: ["external"],
           properties: {
@@ -865,14 +866,14 @@ export const createProgram = (dependencies: CliDependencies): Command => {
   mutationOptions(
     program
       .command("repair")
-      .argument("<service>", "argus, postgres, or searxng")
+      .argument("<service>", "argus, postgres, searxng, or fxembed")
       .description("Perform a targeted managed-service repair"),
   ).action(async (service: string, options: MutationOptions) => {
     await execute(dependencies, options, async () => {
-      if (!["argus", "postgres", "searxng"].includes(service)) {
+      if (!["argus", "postgres", "searxng", "fxembed"].includes(service)) {
         throw new DeploymentError(
           "REPAIR_SERVICE_INVALID",
-          "Repair supports argus, postgres, or searxng only.",
+          "Repair supports argus, postgres, searxng, or fxembed only.",
         );
       }
       const plan = await dependencies.deployment.inspectRepair(service);
@@ -1289,9 +1290,11 @@ const createDeploymentAdapter = (
         fxembed:
           !config.sources.x.enabled
             ? ("disabled" as const)
-            : state?.fxembed !== undefined
-              ? ("managed" as const)
-              : ("external" as const),
+            : state?.compose?.fxembed
+              ? ("vps" as const)
+              : state?.fxembed !== undefined
+                ? ("cloudflare" as const)
+                : ("external" as const),
       },
       sources: {
         x: config.sources.x.enabled,
@@ -1354,11 +1357,11 @@ const createDeploymentAdapter = (
     async logs(service, options) {
       if (
         service !== undefined &&
-        !["argus", "postgres", "searxng"].includes(service)
+        !["argus", "postgres", "searxng", "fxembed"].includes(service)
       ) {
         throw new DeploymentError(
           "LOG_SERVICE_INVALID",
-          "Logs supports argus, postgres, or searxng only.",
+          "Logs supports argus, postgres, searxng, or fxembed only.",
         );
       }
       const result = await executor.run(
@@ -1403,7 +1406,7 @@ const createDeploymentAdapter = (
     },
     async applyRepair(service) {
       return repairService(
-        service as "argus" | "postgres" | "searxng",
+        service as "argus" | "postgres" | "searxng" | "fxembed",
         await doctorContext(),
       );
     },

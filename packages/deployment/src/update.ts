@@ -350,7 +350,8 @@ const releaseMatchesCurrent = (
     release.manifest.version === state.argusVersion &&
     release.manifest.images.app.reference === compose.images.argus &&
     release.manifest.images.postgres.reference === compose.images.postgres &&
-    release.manifest.images.searxng.reference === compose.images.searxng
+    release.manifest.images.searxng.reference === compose.images.searxng &&
+    release.manifest.images.fxembed.reference === compose.images.fxembed
   );
 };
 
@@ -372,12 +373,14 @@ const environmentFor = (state: DeploymentStateV1, release: VerifiedReleaseManife
   ARGUS_IMAGE: release.manifest.images.app.reference,
   POSTGRES_IMAGE: release.manifest.images.postgres.reference,
   SEARXNG_IMAGE: release.manifest.images.searxng.reference,
+  FXEMBED_IMAGE: release.manifest.images.fxembed.reference,
 });
 
 const releaseServiceImages = (release: VerifiedReleaseManifest) => ({
   argus: release.manifest.images.app.reference,
   postgres: release.manifest.images.postgres.reference,
   searxng: release.manifest.images.searxng.reference,
+  fxembed: release.manifest.images.fxembed.reference,
 });
 
 const stateForRelease = (state: DeploymentStateV1, release: VerifiedReleaseManifest): DeploymentStateV1 => {

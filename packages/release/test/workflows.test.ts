@@ -133,10 +133,12 @@ const runCliMenuExpect = (
           apiPort: 8788,
           storage: "sqlite",
           searxng: false,
+          fxembed: false,
           images: {
             argus: `ghcr.io/gpsxtreme/argus@sha256:${digest}`,
             postgres: `docker.io/library/postgres@sha256:${digest}`,
             searxng: `docker.io/searxng/searxng@sha256:${digest}`,
+            fxembed: `ghcr.io/gpsxtreme/argus-fxembed@sha256:${digest}`,
           },
         },
         updatedAt: "2026-08-26T00:00:00.000Z",
@@ -689,6 +691,7 @@ describe("GitHub workflow toolchain", () => {
     const release = workflow.jobs.release;
     const postgres = release?.env?.POSTGRES_IMAGE;
     const searxng = release?.env?.SEARXNG_IMAGE;
+    const fxembed = release?.env?.FXEMBED_IMAGE;
     const steps = release?.steps ?? [];
     const reservation = steps.find(
       (step) => step.name === "Reserve immutable GitHub Release",
@@ -703,6 +706,11 @@ describe("GitHub workflow toolchain", () => {
     expect(searxng).toMatch(
       /^docker\.io\/searxng\/searxng@sha256:[a-f0-9]{64}$/u,
     );
+    expect(fxembed).toBe("ghcr.io/gpsxtreme/argus-fxembed");
+    expect(steps.some((step) => step.name === "Build and push FxEmbed image")).toBe(true);
+    const manifest = steps.find((step) => step.name === "Build and verify signed assets");
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: This is literal GitHub Actions shell content.
+    expect(manifest?.run).toContain('--image "fxembed=${FXEMBED_IMAGE}@${{ steps.fxembed-image.outputs.digest }}"');
     expect(steps.some((step) => step.name === "Resolve upstream image indexes")).toBe(
       false,
     );

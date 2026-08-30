@@ -6,7 +6,46 @@ import {
 } from "../src/index.js";
 
 describe("deployment contracts", () => {
-  it("rejects managed X without a Cloudflare account id", () => {
+  it("runs X on the VPS without requiring Cloudflare credentials", () => {
+    expect(
+      onboardingAnswersSchema.parse({
+        version: 2,
+        deployment: {
+          provider: "vps-docker",
+          root: "/opt/argus",
+          storage: "sqlite",
+          apiHost: "0.0.0.0",
+          apiPort: 8788,
+        },
+        managed: { searxng: "disabled", fxembed: "vps" },
+        xReplies: { enabled: false, maxPerPost: 50, maxTrackingHours: 168, orderBy: "likes" },
+        watches: [],
+        intelligence: { enabled: false, model: "openai/gpt-4.1-mini" },
+      }),
+    ).toMatchObject({ managed: { fxembed: "vps" } });
+  });
+
+  it("rejects Cloudflare-hosted X without a Cloudflare account id", () => {
+    expect(() =>
+      onboardingAnswersSchema.parse({
+        version: 2,
+        deployment: {
+          provider: "vps-docker",
+          root: "/opt/argus",
+          storage: "sqlite",
+          apiHost: "0.0.0.0",
+          apiPort: 8788,
+        },
+        managed: { searxng: "disabled", fxembed: "cloudflare" },
+        xReplies: { enabled: false, maxPerPost: 50, maxTrackingHours: 168, orderBy: "likes" },
+        cloudflare: {},
+        watches: [],
+        intelligence: { enabled: false, model: "openai/gpt-4.1-mini" },
+      }),
+    ).toThrow();
+  });
+
+  it("rejects the obsolete managed FxEmbed mode", () => {
     expect(() =>
       onboardingAnswersSchema.parse({
         version: 2,
@@ -19,7 +58,6 @@ describe("deployment contracts", () => {
         },
         managed: { searxng: "disabled", fxembed: "managed" },
         xReplies: { enabled: false, maxPerPost: 50, maxTrackingHours: 168, orderBy: "likes" },
-        cloudflare: {},
         watches: [],
         intelligence: { enabled: false, model: "openai/gpt-4.1-mini" },
       }),

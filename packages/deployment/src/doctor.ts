@@ -244,7 +244,7 @@ export interface DoctorContext {
   storage: "sqlite" | "postgres";
   managed: {
     searxng: "disabled" | "managed" | "external";
-    fxembed: "disabled" | "managed" | "external";
+    fxembed: "disabled" | "vps" | "cloudflare" | "external";
   };
   sources: Partial<Record<Source, boolean>>;
   diagnosticTargetIds?: Partial<Record<Source, string>>;
@@ -264,7 +264,7 @@ const logs: Record<Component, string> = {
   postgres: "docker compose -p argus logs postgres",
   storage: "docker compose -p argus logs argus",
   searxng: "docker compose -p argus logs searxng",
-  fxembed: "docker compose -p argus logs argus",
+  fxembed: "docker compose -p argus logs fxembed",
   telegram: "docker compose -p argus logs argus",
   web: "docker compose -p argus logs argus",
   x: "docker compose -p argus logs argus",
@@ -276,7 +276,7 @@ const recovery: Record<Component, string> = {
   postgres: "Inspect the listed PostgreSQL service logs, correct the service failure, and retry the diagnostic.",
   storage: "Inspect the listed storage service logs, correct the storage failure, and retry the diagnostic.",
   searxng: "Inspect the listed SearXNG service logs, correct the service failure, and retry the diagnostic.",
-  fxembed: "Inspect the Cloudflare Worker deployment and endpoint, then redeploy FxEmbed manually.",
+  fxembed: "Inspect the FxEmbed service or external endpoint, then run 'argus repair fxembed' when it is VPS-managed.",
   telegram: "Inspect the configured Telegram target and Argus source logs, then retry the diagnostic.",
   web: "Inspect the configured Web target and Argus source logs, then retry the diagnostic.",
   x: "Inspect the configured X target and Argus source logs, then retry the diagnostic.",
@@ -897,7 +897,7 @@ const serviceRecordHealthy = (
 
 /** Performs only verified, targeted managed repairs; it never changes user configuration. */
 export const repairService = async (
-  service: "argus" | "postgres" | "searxng",
+  service: "argus" | "postgres" | "searxng" | "fxembed",
   context: DoctorContext,
 ): Promise<DiagnosticReport> => {
   if (service === "searxng") {
@@ -936,6 +936,20 @@ export const repairService = async (
           "POSTGRES_NOT_SELECTED",
           "PostgreSQL is not selected for this deployment.",
           "Select PostgreSQL storage before requesting a PostgreSQL repair.",
+        ),
+      ],
+    };
+  }
+  if (service === "fxembed" && context.managed.fxembed !== "vps") {
+    return {
+      contractVersion: 1,
+      healthy: false,
+      checks: [
+        unhealthy(
+          "fxembed",
+          "FXEMBED_NOT_VPS_MANAGED",
+          "FxEmbed is not managed on this VPS.",
+          "Choose VPS-hosted FxEmbed before requesting a managed repair.",
         ),
       ],
     };

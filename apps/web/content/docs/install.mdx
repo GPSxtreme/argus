@@ -88,15 +88,15 @@ The answer groups appear in this order:
   channel names, or Web URLs, feeds, and queries.
 - **SearXNG** appears only when at least one Web search query is entered. Choose
   a managed service or an external endpoint.
-- **FxEmbed** appears only when X is selected. Choose managed Cloudflare FxEmbed
-  and provide the non-secret Cloudflare account ID, or provide an external
-  FxEmbed endpoint.
+- **FxEmbed** appears only when X is selected. The default runs FxEmbed on the
+  same VPS. It stays on Argus's private Compose network and publishes no host
+  port. Cloudflare deployment and an external endpoint are advanced choices.
 - **Intelligence** always appears as the OpenRouter summaries choice. When
   enabled, it asks for the model; when disabled, no OpenRouter secret is needed.
 - **Keywords** always appear and become watch classification metadata.
 - **Secrets** are hidden prompts: an Argus API token always; a PostgreSQL
-  password for PostgreSQL storage; a Cloudflare API token for managed FxEmbed;
-  and an OpenRouter API key for enabled intelligence.
+  password for PostgreSQL storage; a Cloudflare API token only when Cloudflare
+  FxEmbed is explicitly selected; and an OpenRouter API key for intelligence.
 
 Telegram is limited to public channels. Do not enter private conversations or
 private channels. Managed SearXNG is meaningful only for Web query targets;

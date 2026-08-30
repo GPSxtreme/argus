@@ -37,7 +37,7 @@ argus logs --raw
 argus doctor
 ```
 
-`status --json` returns `{ state: "running" | "degraded", services: { ... } }`. `state` is `running` only when every selected service is running and not unhealthy; otherwise it is `degraded`. Each service value is Docker health when present, otherwise Docker state. The human summary uses the same public state and service values. Human `logs` removes container prefixes and noisy runtime metadata; use `logs --raw` for exact bounded Docker Compose output. `logs` accepts only `argus`, `postgres`, or `searxng`; its tail must be a positive integer no larger than 10,000 and is time-bounded. An invalid tail is `LOG_TAIL_INVALID`; an unsupported service is `LOG_SERVICE_INVALID`.
+`status --json` returns `{ state: "running" | "degraded", services: { ... } }`. `state` is `running` only when every selected service is running and not unhealthy; otherwise it is `degraded`. Each service value is Docker health when present, otherwise Docker state. The human summary uses the same public state and service values. Human `logs` removes container prefixes and noisy runtime metadata; use `logs --raw` for exact bounded Docker Compose output. `logs` accepts `argus`, `postgres`, `searxng`, or `fxembed`; its tail must be a positive integer no larger than 10,000 and is time-bounded. An invalid tail is `LOG_TAIL_INVALID`; an unsupported service is `LOG_SERVICE_INVALID`.
 
 `doctor` runs independent bounded checks for Docker, the authenticated Argus API, selected storage, SearXNG, FxEmbed, and enabled source smoke targets. A check is `healthy`, `unhealthy`, or `skipped`; the complete report is healthy only when no check is unhealthy. It supplies an error code, bounded log command, and recovery text when available. Source smoke checks create an isolated temporary diagnostic watch, poll it within a deadline, then remove it; they do not use or alter normal watch records.
 
@@ -63,7 +63,9 @@ The name must be an uppercase secret-like environment name or the command return
 
 ## Targeted repair
 
-Repair is limited to managed `argus`, `postgres`, and `searxng`; any other name returns `REPAIR_SERVICE_INVALID`. Inspect the exact service before a mutation, then verify it through the doctor report:
+Repair is limited to managed `argus`, `postgres`, `searxng`, and VPS-hosted
+`fxembed`; any other name returns `REPAIR_SERVICE_INVALID`. Inspect the exact
+service before a mutation, then verify it through the doctor report:
 
 ```bash
 argus repair argus --dry-run --json
@@ -74,9 +76,12 @@ argus repair postgres --yes --json
 
 argus repair searxng --dry-run --json
 argus repair searxng --yes --json
+
+argus repair fxembed --dry-run --json
+argus repair fxembed --yes --json
 ```
 
-PostgreSQL repair is unavailable on a SQLite deployment (`POSTGRES_NOT_SELECTED`). SearXNG repair is unavailable for disabled or external SearXNG (`SEARXNG_NOT_MANAGED`). Managed SearXNG repair rewrites only its owned settings, validates Compose, force-recreates SearXNG, and performs up to three bounded JSON-search health checks. A repair that cannot end with a healthy report returns `REPAIR_VERIFY_FAILED`. There is no CLI repair for external SearXNG, external FxEmbed, or Cloudflare account configuration.
+PostgreSQL repair is unavailable on a SQLite deployment (`POSTGRES_NOT_SELECTED`). SearXNG repair is unavailable for disabled or external SearXNG (`SEARXNG_NOT_MANAGED`). FxEmbed repair is unavailable unless it is VPS-managed (`FXEMBED_NOT_VPS_MANAGED`). Managed SearXNG repair rewrites only its owned settings; VPS FxEmbed repair restarts only that service. A repair that cannot end with a healthy report returns `REPAIR_VERIFY_FAILED`. There is no CLI repair for external services or Cloudflare account configuration.
 
 ## Update and rollback
 

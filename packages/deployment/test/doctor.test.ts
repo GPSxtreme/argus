@@ -106,10 +106,12 @@ const persistComposeInputs = async (root: string): Promise<void> => {
       apiPort: 8788,
       storage: "sqlite",
       searxng: true,
+      fxembed: false,
       images: {
         argus: `ghcr.io/gpsxtreme/argus@sha256:${"a".repeat(64)}`,
         postgres: `docker.io/library/postgres@sha256:${"c".repeat(64)}`,
         searxng: `docker.io/searxng/searxng@sha256:${"b".repeat(64)}`,
+        fxembed: `ghcr.io/gpsxtreme/argus-fxembed@sha256:${"d".repeat(64)}`,
       },
     },
     updatedAt: "2026-08-01T00:00:00.000Z",
@@ -221,7 +223,7 @@ describe("deployment doctor", () => {
     expect(JSON.stringify(report)).not.toContain("runtime-secret");
   });
 
-  it.each(["managed", "external"] as const)(
+  it.each(["vps", "cloudflare", "external"] as const)(
     "maps a single X smoke to FxEmbed-backed %s diagnostics",
     async (fxembed) => {
       const api: DoctorArgusApi = {
@@ -262,7 +264,7 @@ describe("deployment doctor", () => {
     const report = await runDoctor(
       context({
         api,
-        managed: { searxng: "disabled", fxembed: "managed" },
+        managed: { searxng: "disabled", fxembed: "cloudflare" },
         sources: { x: true },
         diagnosticTargetIds: { x: "configured-x-target" },
       }),
@@ -482,10 +484,12 @@ describe("deployment doctor", () => {
         apiPort: 8788,
         storage: "postgres",
         searxng: false,
+        fxembed: false,
         images: {
           argus: `ghcr.io/gpsxtreme/argus@sha256:${"a".repeat(64)}`,
           postgres: `docker.io/library/postgres@sha256:${"b".repeat(64)}`,
           searxng: `docker.io/searxng/searxng@sha256:${"c".repeat(64)}`,
+          fxembed: `ghcr.io/gpsxtreme/argus-fxembed@sha256:${"d".repeat(64)}`,
         },
       },
       updatedAt: "2026-08-01T00:00:00.000Z",
@@ -530,10 +534,12 @@ describe("deployment doctor", () => {
         apiPort: 8788,
         storage: "sqlite",
         searxng: false,
+        fxembed: false,
         images: {
           argus: `ghcr.io/gpsxtreme/argus@sha256:${"a".repeat(64)}`,
           postgres: `docker.io/library/postgres@sha256:${"b".repeat(64)}`,
           searxng: `docker.io/searxng/searxng@sha256:${"c".repeat(64)}`,
+          fxembed: `ghcr.io/gpsxtreme/argus-fxembed@sha256:${"d".repeat(64)}`,
         },
       },
       updatedAt: "2026-08-01T00:00:00.000Z",
@@ -878,10 +884,12 @@ describe("deployment doctor", () => {
         apiPort: 8788,
         storage: "sqlite",
         searxng: false,
+        fxembed: false,
         images: {
           argus: `ghcr.io/gpsxtreme/argus@sha256:${"a".repeat(64)}`,
           postgres: `docker.io/library/postgres@sha256:${"b".repeat(64)}`,
           searxng: `docker.io/searxng/searxng@sha256:${"c".repeat(64)}`,
+          fxembed: `ghcr.io/gpsxtreme/argus-fxembed@sha256:${"d".repeat(64)}`,
         },
       },
       updatedAt: "2026-08-01T00:00:00.000Z",
@@ -910,6 +918,7 @@ describe("deployment doctor", () => {
   it.each([
     ["argus", "sqlite"],
     ["postgres", "postgres"],
+    ["fxembed", "sqlite"],
   ] as const)(
     "accepts a running %s repair when Compose declares no healthcheck",
     async (service, storage) => {
@@ -925,7 +934,9 @@ describe("deployment doctor", () => {
             image:
               service === "argus"
                 ? `ghcr.io/gpsxtreme/argus@sha256:${"a".repeat(64)}`
-                : `docker.io/library/postgres@sha256:${"b".repeat(64)}`,
+                : service === "postgres"
+                  ? `docker.io/library/postgres@sha256:${"b".repeat(64)}`
+                  : `ghcr.io/gpsxtreme/argus-fxembed@sha256:${"d".repeat(64)}`,
             healthy: true,
           },
         },
@@ -934,10 +945,12 @@ describe("deployment doctor", () => {
           apiPort: 8788,
           storage,
           searxng: false,
+          fxembed: service === "fxembed",
           images: {
             argus: `ghcr.io/gpsxtreme/argus@sha256:${"a".repeat(64)}`,
             postgres: `docker.io/library/postgres@sha256:${"b".repeat(64)}`,
             searxng: `docker.io/searxng/searxng@sha256:${"c".repeat(64)}`,
+            fxembed: `ghcr.io/gpsxtreme/argus-fxembed@sha256:${"d".repeat(64)}`,
           },
         },
         updatedAt: "2026-08-01T00:00:00.000Z",
@@ -948,6 +961,10 @@ describe("deployment doctor", () => {
         context({
           root,
           storage,
+          managed: {
+            searxng: "disabled",
+            fxembed: service === "fxembed" ? "vps" : "disabled",
+          },
           executor: {
             run: async (_file, args) =>
               args.includes("ps")
@@ -991,10 +1008,12 @@ describe("deployment doctor", () => {
         apiPort: 8788,
         storage: "sqlite",
         searxng: false,
+        fxembed: false,
         images: {
           argus: `ghcr.io/gpsxtreme/argus@sha256:${"a".repeat(64)}`,
           postgres: `docker.io/library/postgres@sha256:${"b".repeat(64)}`,
           searxng: `docker.io/searxng/searxng@sha256:${"c".repeat(64)}`,
+          fxembed: `ghcr.io/gpsxtreme/argus-fxembed@sha256:${"d".repeat(64)}`,
         },
       },
       updatedAt: "2026-08-01T00:00:00.000Z",
@@ -1042,10 +1061,12 @@ describe("deployment doctor", () => {
         apiPort: 8788,
         storage: "sqlite",
         searxng: false,
+        fxembed: false,
         images: {
           argus: `ghcr.io/gpsxtreme/argus@sha256:${"a".repeat(64)}`,
           postgres: `docker.io/library/postgres@sha256:${"b".repeat(64)}`,
           searxng: `docker.io/searxng/searxng@sha256:${"c".repeat(64)}`,
+          fxembed: `ghcr.io/gpsxtreme/argus-fxembed@sha256:${"d".repeat(64)}`,
         },
       },
       updatedAt: "2026-08-01T00:00:00.000Z",
@@ -1090,7 +1111,7 @@ describe("deployment doctor", () => {
   it("only advertises implemented repair commands", async () => {
     const report = await runDoctor(
       context({
-        managed: { searxng: "managed", fxembed: "managed" },
+        managed: { searxng: "managed", fxembed: "cloudflare" },
         searxngEndpoint: "https://search.test",
         fetcher: async () => new Response(null, { status: 503 }),
         sources: { telegram: true, web: true, x: true },

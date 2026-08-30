@@ -236,7 +236,7 @@ interface ReleasePlan {
     fxembed: string;
   };
   fxembed: {
-    mode: "disabled" | "external" | "managed";
+    mode: "disabled" | "external" | "vps" | "cloudflare";
     currentBundleHash?: string;
     workersDevEnabled?: boolean;
   };
@@ -1078,6 +1078,7 @@ const verifiedRelease = (
     argus: manifest.images.app.reference as `${string}@sha256:${string}`,
     postgres: manifest.images.postgres.reference as `${string}@sha256:${string}`,
     searxng: manifest.images.searxng.reference as `${string}@sha256:${string}`,
+    fxembed: manifest.images.fxembed.reference as `${string}@sha256:${string}`,
   },
   fxembed: {
     bundleSha256: manifest.assets.fxembed.sha256,
@@ -1212,12 +1213,19 @@ export const createProductionOnboardingIntegration = ({
         fxembedPlan: { mode: "disabled" },
       };
     }
+    if (answers.managed.fxembed === "vps") {
+      return {
+        searxng,
+        fxembed: "http://fxembed:8787",
+        fxembedPlan: { mode: "vps" },
+      };
+    }
     const accountId = answers.cloudflare?.accountId;
     const token = secrets.CLOUDFLARE_API_TOKEN;
     if (accountId === undefined || token === undefined) {
       throw new DeploymentError(
         "CLOUDFLARE_CREDENTIALS_REQUIRED",
-        "Managed FxEmbed requires the Cloudflare account id and API token.",
+        "Cloudflare-hosted FxEmbed requires the Cloudflare account id and API token.",
       );
     }
     const client = cloudflareClientFactory(token);
@@ -1235,7 +1243,7 @@ export const createProductionOnboardingIntegration = ({
       searxng,
       fxembed: inspected.endpoint,
       fxembedPlan: {
-        mode: "managed",
+        mode: "cloudflare",
         ...(inspected.bundleHash === undefined
           ? {}
           : { currentBundleHash: inspected.bundleHash }),
@@ -1273,6 +1281,7 @@ export const createProductionOnboardingIntegration = ({
         version: fetched.release.version,
         storage: answers.deployment.storage,
         searxng: answers.managed.searxng === "managed",
+        fxembed: answers.managed.fxembed === "vps",
       }),
       searxng:
         answers.managed.searxng === "managed"
@@ -1284,11 +1293,13 @@ export const createProductionOnboardingIntegration = ({
       apiPort: answers.deployment.apiPort,
       storage: answers.deployment.storage,
       searxng: answers.managed.searxng === "managed",
+      fxembed: answers.managed.fxembed === "vps",
       configHash,
       images: {
         argus: { reference: fetched.release.images.argus },
         postgres: { reference: fetched.release.images.postgres },
         searxng: { reference: fetched.release.images.searxng },
+        fxembed: { reference: fetched.release.images.fxembed },
       },
     };
     const actual = await inspectDeployment({ root, executor, desired });
@@ -1363,13 +1374,13 @@ export const createProductionOnboardingIntegration = ({
       let fxembedReceipt:
         | { endpoint: string; bundleHash: string; changed: boolean }
         | undefined;
-      if (input.answers.managed.fxembed === "managed") {
+      if (input.answers.managed.fxembed === "cloudflare") {
         const accountId = input.answers.cloudflare?.accountId;
         const token = input.secrets.CLOUDFLARE_API_TOKEN;
         if (accountId === undefined || token === undefined) {
           throw new DeploymentError(
             "CLOUDFLARE_CREDENTIALS_REQUIRED",
-            "Managed FxEmbed requires the Cloudflare account id and API token.",
+            "Cloudflare-hosted FxEmbed requires the Cloudflare account id and API token.",
           );
         }
         fxembedReceipt = await reconcileFxEmbed({
@@ -1410,6 +1421,7 @@ export const createProductionOnboardingIntegration = ({
             version: exact.release.version,
             storage: input.answers.deployment.storage,
             searxng: input.answers.managed.searxng === "managed",
+            fxembed: input.answers.managed.fxembed === "vps",
           }),
         ),
         0o644,

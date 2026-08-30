@@ -17,7 +17,8 @@ OpenRouter summaries remain outside the ingestion path.
 
 ## Capabilities
 
-- X account and search ingestion through your FxEmbed endpoint
+- X account and search ingestion through private same-VPS FxEmbed by default,
+  with Cloudflare and external endpoints available
 - public Telegram announcement, URL, RSS/Atom, and SearXNG-backed Web sources
 - scheduled watches, leases, retries, deduplication, revisions, and checkpoints
 - SQLite for a one-process deployment or PostgreSQL for separated runtime roles

@@ -1,6 +1,6 @@
 ---
 title: X
-description: Ingest X accounts and searches through your own FxEmbed API endpoint.
+description: Ingest X accounts and searches through VPS-hosted or operator-selected FxEmbed.
 ---
 
 v2 stores canonical X records, public media pointers, reply/quote/repost
@@ -24,11 +24,17 @@ These bounded FxEmbed reads are transient and never ingested automatically.
 
 ## What it collects
 
-Argus collects public X posts from configured accounts and search queries. It calls the operator-owned FxEmbed Worker endpoint; it does not use an arbitrary public FxTwitter/FxEmbed service.
+Argus collects public X posts from configured accounts and search queries. The
+recommended onboarding path runs FxEmbed privately on the same VPS; Cloudflare
+and external endpoints are advanced alternatives. Argus does not silently use
+an arbitrary public FxTwitter service.
 
 ## Prerequisites
 
-Deploy and operate an FxEmbed Worker, then obtain its API base URL ending in `/api`. Keep any Worker deployment credentials in the onboarding secret flow, not in Argus YAML.
+Select X during `argus onboard`. The default deploys the signed FxEmbed image
+on the private Compose network and configures `http://fxembed:8787`. If you
+choose Cloudflare or external mode, supply that deployment's origin. The base
+URL is the origin; Argus appends `/2/...` API paths itself.
 
 ## Configure the source
 
@@ -36,10 +42,10 @@ Deploy and operate an FxEmbed Worker, then obtain its API base URL ending in `/a
 sources:
   x:
     enabled: true
-    endpoint: https://fxembed.example.com/api
+    endpoint: http://fxembed:8787
 ```
 
-`endpoint` must be an absolute URL. Argus appends account and search paths beneath this `/api` base.
+`endpoint` must be an absolute URL. Argus appends account and search paths beneath this base.
 
 ## Configure watches
 
@@ -72,6 +78,6 @@ Only public data returned by your FxEmbed API is collected. Requests use a 20-se
 
 ## Troubleshooting
 
-- Confirm the URL ends in `/api`; a Worker origin without that realm produces wrong request paths.
+- For VPS mode, confirm the URL is exactly `http://fxembed:8787`; for an external service, use its API origin without a trailing `/2` path.
 - Confirm the source is enabled and the watch uses non-empty account or query values.
-- Inspect `argus logs argus` for the FxEmbed HTTP status and run `argus doctor --json` for the configured target.
+- Inspect `argus logs fxembed` and `argus logs argus`, then run `argus doctor --json` for the configured target.

@@ -86,11 +86,13 @@ const desired: DesiredDeployment = {
   apiPort: 8788,
   storage: "sqlite",
   searxng: true,
+  fxembed: false,
   configHash: "config-v1",
   images: {
     argus: { reference: `ghcr.io/gpsxtreme/argus@sha256:${"a".repeat(64)}` },
     searxng: { reference: `docker.io/searxng/searxng@sha256:${"b".repeat(64)}` },
     postgres: { reference: `docker.io/library/postgres@sha256:${"c".repeat(64)}` },
+    fxembed: { reference: `ghcr.io/gpsxtreme/argus-fxembed@sha256:${"d".repeat(64)}` },
   },
 };
 
@@ -245,10 +247,12 @@ describe("deployment reconciliation", () => {
       version: "0.2.0",
       storage: "sqlite",
       searxng: true,
+      fxembed: false,
       images: {
         argus: `ghcr.io/gpsxtreme/argus@sha256:${"a".repeat(64)}`,
         postgres: `docker.io/library/postgres@sha256:${"c".repeat(64)}`,
         searxng: `docker.io/searxng/searxng@sha256:${"b".repeat(64)}`,
+        fxembed: `ghcr.io/gpsxtreme/argus-fxembed@sha256:${"d".repeat(64)}`,
       },
     });
     expect(await readFile(join(context.root, "state.json"), "utf8")).not.toContain("secret");

@@ -22,6 +22,7 @@ jobs:
       REGISTRY: ghcr.io
       APP_IMAGE: ghcr.io/gpsxtreme/argus
       CLI_IMAGE: ghcr.io/gpsxtreme/argus-cli
+      FXEMBED_IMAGE: ghcr.io/gpsxtreme/argus-fxembed
       POSTGRES_IMAGE: docker.io/library/postgres@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
       SEARXNG_IMAGE: docker.io/searxng/searxng@sha256:ec536bcd1e83577aad4cc07f7ecb9a30858a9a905d2d57c8796abc83f872a036
       FXEMBED_REVISION: f088a632e56e5cb8084f87d55f74a24d1fcda6f6
@@ -30,7 +31,7 @@ jobs:
       FXEMBED_COMPATIBILITY_DATE: "2026-04-11"
       FXEMBED_PATCH: scripts/release/fxembed-reproducible.patch
       FXEMBED_PATCH_SHA256: cdbb1a5351286f19d3486d4921026bb751f939cd6e7b8aabba29bb2549609e1e
-      FXEMBED_OUTPUT_SHA256: 1a9a52d5c49747cbcd2aec5c3aa593cffc02358f5fb01b2dc5542921d0012260
+      FXEMBED_OUTPUT_SHA256: 58dc94b3e659c1338166ea38e29863c270bb549625ac8df8e463702c4fa25b2b
       NODE_VERSION: "24.16.0"
       NPM_VERSION: "11.13.0"
       PNPM_VERSION: "10.33.0"
@@ -178,12 +179,25 @@ jobs:
             test "$(npm --version)" = "${NPM_VERSION}"
             npm ci --ignore-scripts
             npm run build:atmosphere
-            npm run build-local
+            API_HOST_LIST=fxembed npm run build-local
           )
           install -m 0644 dist/fxembed-source/dist/worker.js dist/release/fxembed.js
           printf '%s  %s\n' "$FXEMBED_OUTPUT_SHA256" dist/release/fxembed.js | sha256sum --check --strict
           install -m 0644 dist/fxembed-source/LICENSE.md dist/release/FXEMBED-LICENSE.md
           install -m 0644 scripts/release/fxembed-provenance.json dist/release/fxembed-provenance.json
+
+      - name: Build and push FxEmbed image
+        id: fxembed-image
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: dist/fxembed-source
+          file: ${{ github.workspace }}/deploy/docker/Dockerfile.fxembed
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.FXEMBED_IMAGE }}:${{ steps.release.outputs.version }}
+          build-args: |
+            ARGUS_VERSION=${{ steps.release.outputs.version }}
+            ARGUS_REVISION=${{ github.sha }}
 
       - name: Render digest-pinned host wrapper
         run: |
@@ -201,6 +215,7 @@ jobs:
             --image "cli=${CLI_IMAGE}@${{ steps.cli.outputs.digest }}" \
             --image "postgres=${POSTGRES_IMAGE}" \
             --image "searxng=${SEARXNG_IMAGE}" \
+            --image "fxembed=${FXEMBED_IMAGE}@${{ steps.fxembed-image.outputs.digest }}" \
             --fxembed dist/release/fxembed.js \
             --fxembed-license dist/release/FXEMBED-LICENSE.md \
             --fxembed-provenance dist/release/fxembed-provenance.json \

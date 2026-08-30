@@ -339,6 +339,7 @@ const releaseFixture = ({
       { name: "cli", reference: `ghcr.io/gpsxtreme/argus-cli@sha256:${digest(cliMarker)}` },
       { name: "searxng", reference: `docker.io/searxng/searxng@sha256:${digest("c")}` },
       { name: "postgres", reference: `docker.io/library/postgres@sha256:${digest("d")}` },
+      { name: "fxembed", reference: `ghcr.io/gpsxtreme/argus-fxembed@sha256:${digest("e")}` },
     ],
     fxembed: {
       bytes: fxembed,
@@ -374,10 +375,12 @@ const saveManagedState = async (
       apiPort: 8788,
       storage: "sqlite",
       searxng: false,
+      fxembed: false,
       images: {
         argus: images.app.reference,
         postgres: images.postgres.reference,
         searxng: images.searxng.reference,
+        fxembed: images.fxembed.reference,
       },
     },
     updatedAt: "2026-08-01T00:00:00.000Z",
@@ -572,6 +575,50 @@ describe("production onboarding integration", () => {
 
     await integration.inspect({ answers, secrets: {} });
     expect(authorizations).toEqual([null, null, null]);
+  });
+
+  it("plans VPS-hosted FxEmbed without touching Cloudflare", async () => {
+    const root = await mkdtemp(join(tmpdir(), "argus-vps-fxembed-"));
+    const fixture = releaseFixture();
+    const cloudflareClientFactory = vi.fn();
+    const integration = createProductionOnboardingIntegration({
+      root,
+      executor: new DeploymentExecutor(),
+      manifestUrl: "https://release.example/manifest.json",
+      publicKeyPem: fixture.publicKeyPem,
+      cloudflareClientFactory,
+      fetcher: async (input) => {
+        const url = String(input);
+        const bytes = url.endsWith("manifest.sig")
+          ? fixture.signature
+          : url.endsWith("fxembed.js")
+            ? fixture.fxembed
+            : fixture.manifestBytes;
+        return new Response(Uint8Array.from(bytes).buffer);
+      },
+    });
+
+    const inspection = await integration.inspect({
+      answers: {
+        ...answers,
+        managed: { searxng: "disabled", fxembed: "vps" },
+      },
+      secrets: { ARGUS_API_TOKEN: "fixture-token" },
+    });
+
+    expect(inspection.plan).toMatchObject({
+      endpoints: { fxembed: "http://fxembed:8787" },
+      fxembed: { mode: "vps" },
+      desired: {
+        fxembed: true,
+        images: {
+          fxembed: {
+            reference: `ghcr.io/gpsxtreme/argus-fxembed@sha256:${digest("e")}`,
+          },
+        },
+      },
+    });
+    expect(cloudflareClientFactory).not.toHaveBeenCalled();
   });
 
   it("authenticates a trusted private release asset discovered by the public update channel", async () => {
@@ -1215,6 +1262,10 @@ describe("production onboarding integration", () => {
       searxng: {
         reference: `docker.io/searxng/searxng@sha256:${digest("4")}`,
         digest: `sha256:${digest("4")}`,
+      },
+      fxembed: {
+        reference: `ghcr.io/gpsxtreme/argus-fxembed@sha256:${digest("5")}`,
+        digest: `sha256:${digest("5")}`,
       },
     };
     forgedUpdateState.rollbackRelease.manifest.assets.fxembed = {

@@ -37,6 +37,10 @@ const validManifest = {
       reference: `docker.io/library/postgres@sha256:${sha("d")}`,
       digest: `sha256:${sha("d")}`,
     },
+    fxembed: {
+      reference: `ghcr.io/gpsxtreme/argus-fxembed@sha256:${sha("5")}`,
+      digest: `sha256:${sha("5")}`,
+    },
   },
   assets: {
     fxembed: {

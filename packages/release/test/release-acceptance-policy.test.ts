@@ -64,6 +64,7 @@ const createReleaseFixture = ({
       image("cli", "ghcr.io/gpsxtreme/argus-cli", "b"),
       image("searxng", "docker.io/searxng/searxng", "c"),
       image("postgres", "docker.io/library/postgres", "d"),
+      image("fxembed", "ghcr.io/gpsxtreme/argus-fxembed", "e"),
     ],
     fxembed: {
       bytes: Buffer.from("export default {};\n"),

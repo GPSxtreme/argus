@@ -45,7 +45,11 @@ workflow also runs Lighthouse CI and rejects tracked `.env`, `state.json`,
 
 ## Tier 3: controlled live integrations
 
-The managed FxEmbed live smoke is deliberately disabled by default. Run it only
+The ordinary release tests validate the private FxEmbed image definition and
+Compose topology. The signed release workflow then builds the image for AMD64
+and ARM64 from the same pinned worker bundle used by the Cloudflare artifact.
+
+The Cloudflare FxEmbed live smoke is deliberately disabled by default. Run it only
 against a dedicated Cloudflare test account, with all four variables supplied
 outside the repository:
 

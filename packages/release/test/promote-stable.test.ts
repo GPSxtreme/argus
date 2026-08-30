@@ -87,6 +87,7 @@ const createFixtureRelease = async (
       image("cli", "ghcr.io/gpsxtreme/argus-cli", "b"),
       image("searxng", "docker.io/searxng/searxng", "c"),
       image("postgres", "docker.io/library/postgres", "d"),
+      image("fxembed", "ghcr.io/gpsxtreme/argus-fxembed", "e"),
     ],
     fxembed: {
       bytes: fxembed,

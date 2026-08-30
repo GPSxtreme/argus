@@ -11,7 +11,7 @@ import {
   serializeReleaseManifestCanonical,
 } from "./manifest.js";
 
-export type ReleaseImageName = "app" | "cli" | "searxng" | "postgres";
+export type ReleaseImageName = "app" | "cli" | "searxng" | "postgres" | "fxembed";
 
 export interface ReleaseImageInput {
   name: ReleaseImageName;
@@ -44,7 +44,7 @@ export interface BuiltReleaseArtifacts {
   publicKeyPem: string;
 }
 
-const imageNames = ["app", "cli", "searxng", "postgres"] as const;
+const imageNames = ["app", "cli", "searxng", "postgres", "fxembed"] as const;
 
 const digestOf = (reference: string): `sha256:${string}` =>
   reference.slice(reference.lastIndexOf("@") + 1) as `sha256:${string}`;
@@ -106,6 +106,7 @@ const releaseImages = (
     cli: entry("cli"),
     searxng: entry("searxng"),
     postgres: entry("postgres"),
+    fxembed: entry("fxembed"),
   };
 };
 

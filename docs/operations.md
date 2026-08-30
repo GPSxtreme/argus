@@ -11,8 +11,9 @@ curl -fsSL https://argus.gpsxtre.me/install.sh |
 argus onboard
 ```
 
-`argus onboard` asks which sources and storage to enable, whether SearXNG and
-FxEmbed are managed or external, what to watch, and which schedules to use.
+`argus onboard` asks which sources and storage to enable, whether SearXNG is
+managed or external, where FxEmbed should run, what to watch, and which
+schedules to use.
 The resulting instance lives in `/opt/argus`:
 
 - `argus.yaml` is the generated application configuration.
@@ -51,10 +52,10 @@ query watches and is checked with a bounded JSON search. It does not publish
 another host port. To use an existing SearXNG, choose `external` and give its
 HTTPS endpoint; Argus will not manage or repair that service.
 
-FxEmbed is a Cloudflare Worker rather than a VPS container. Managed mode
-deploys the pinned worker bundle to the supplied Cloudflare account. External
-mode records an existing endpoint. Disabled mode leaves X ingestion
-unavailable while Telegram and Web continue to run.
+FxEmbed runs as a private VPS container by default. It uses the signed,
+digest-pinned release image, has outbound access, and publishes no host port.
+Cloudflare and external modes remain optional. Disabled mode leaves X
+ingestion unavailable while Telegram and Web continue to run.
 
 SQLite is the low-friction single-VPS default. PostgreSQL is available when
 the instance needs separate runtime roles or external database operations.
@@ -73,6 +74,7 @@ argus doctor --json
 argus repair argus --json --yes
 argus repair postgres --json --yes
 argus repair searxng --json --yes
+argus repair fxembed --json --yes
 argus update --json --yes
 argus update --rollback --json --yes
 ```
@@ -109,11 +111,10 @@ so worker crashes are retried without Redis or Kafka.
 
 ### X
 
-Deploy the upstream FxEmbed Worker into a Cloudflare account you control.
-Configure its X credentials according to that project, then set
-`sources.x.endpoint` to the API realm, for example
-`https://api.fx.example.com` or `http://localhost:8787/api` during local
-development. Argus calls the profile-status and search endpoints.
+Use the VPS-hosted FxEmbed selected by onboarding, or operate a Cloudflare or
+external endpoint. The VPS endpoint is `http://fxembed:8787` inside Compose.
+Argus calls `/2/...` profile-status, search, and conversation endpoints below
+that origin.
 
 ### Telegram
 
