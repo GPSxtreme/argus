@@ -274,7 +274,10 @@ export const createApp = ({ config, repository, diagnosticResolver, primitiveFet
     const state = await repository.getDiagnosticWatch(targetId);
     if (!state) return context.json({ error: "diagnostic watch not found" }, 404);
     return context.json({
-      items: await repository.queryDiagnosticRecords(targetId),
+      items: (await repository.queryDiagnosticRecords(targetId)).map((record) => ({
+        ...record,
+        targetId,
+      })),
     });
   });
 

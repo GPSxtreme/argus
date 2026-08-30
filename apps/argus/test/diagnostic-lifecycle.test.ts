@@ -132,7 +132,13 @@ describe("diagnostic watch lifecycle", () => {
       `/v1/diagnostics/smoke-watches/${diagnostic.id}/records`,
       { headers: auth },
     );
-    expect((await diagnosticResponse.json()).items).toHaveLength(1);
+    expect((await diagnosticResponse.json()).items).toEqual([
+      expect.objectContaining({
+        source: "web",
+        targetId: diagnostic.targetId,
+        url: "https://example.com/releases",
+      }),
+    ]);
     expect(await repository.getCheckpoint(diagnostic.targetId)).toMatchObject({
       lastId: "diagnostic-1",
     });
