@@ -128,7 +128,7 @@ describe("Argus documentation", () => {
     expect(readme).not.toContain('ARGUS_GITHUB_TOKEN="<GitHub token with read access>"');
     expect(readme).toContain("https://argus.gpsxtre.me/docs/quick-start");
     expect(readme).toContain("https://argus.gpsxtre.me/docs/contributing");
-    expect(readme).toContain("https://github.com/GPSxtreme/argus/releases/tag/v0.2.4");
+    expect(readme).toContain("https://github.com/GPSxtreme/argus/releases/tag/v0.2.5");
   });
 
   it("gives each document a title and description", () => {
