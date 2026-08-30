@@ -840,13 +840,7 @@ argus_copy_as_owner "$argus_tmp/management.state" "$argus_state_tmp" 0644 ||
 sync -f "$argus_state_tmp" ||
   argus_die "could not durably sync temporary management state"
 
-if [ "$argus_existing_exact" -eq 0 ]; then
-  argus_target_tmp=$(argus_make_temp_as_owner "$argus_target_dir" '.argus.tmp.XXXXXX') ||
-    argus_die "could not create temporary Argus wrapper"
-  argus_wrapper_test_tmp=$argus_target_tmp
-else
-  argus_wrapper_test_tmp="$argus_tmp/argus-validation"
-fi
+argus_wrapper_test_tmp="$argus_tmp/argus-validation"
 sed "s|argus_state='$argus_state_path'|argus_state='$argus_state_tmp'|" "$argus_tmp/argus" > "$argus_wrapper_test_tmp" ||
   argus_die "could not prepare temporary Argus wrapper validation"
 cmp -s "$argus_tmp/argus" "$argus_wrapper_test_tmp" &&
@@ -857,15 +851,16 @@ argus_temp_version=$(argus_run_wrapper_version "$argus_wrapper_test_tmp") ||
   argus_die "new Argus wrapper failed its version check; existing installation was preserved"
 [ "$argus_temp_version" = "$argus_version" ] ||
   argus_die "new Argus wrapper reported version $argus_temp_version, expected $argus_version; existing installation was preserved"
-if [ "$argus_wrapper_test_tmp" = "$argus_target_tmp" ]; then
+rm -f -- "$argus_wrapper_test_tmp"
+argus_wrapper_test_tmp=
+if [ "$argus_existing_exact" -eq 0 ]; then
+  argus_target_tmp=$(argus_make_temp_as_owner "$argus_target_dir" '.argus.tmp.XXXXXX') ||
+    argus_die "could not create temporary Argus wrapper"
   argus_copy_as_owner "$argus_tmp/argus" "$argus_target_tmp" 0755 ||
     argus_die "could not write temporary Argus wrapper"
   sync -f "$argus_target_tmp" ||
     argus_die "could not durably sync temporary Argus wrapper"
-else
-  rm -f -- "$argus_wrapper_test_tmp"
 fi
-argus_wrapper_test_tmp=
 
 if [ -e "$argus_state_path" ] &&
   [ ! -L "$argus_state_path" ] &&
