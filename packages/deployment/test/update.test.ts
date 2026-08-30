@@ -120,9 +120,11 @@ const rollbackContext = async (): Promise<Uint8Array> =>
   Buffer.from("verified signed release context");
 
 const rootWithState = async ({
+  fxembed = false,
   searxng = false,
   storage = "sqlite",
 }: {
+  fxembed?: boolean;
   searxng?: boolean;
   storage?: "sqlite" | "postgres";
 } = {}) => {
@@ -137,6 +139,9 @@ const rootWithState = async ({
       argus: { image: image("f").reference, healthy: true },
       postgres: { image: image("e").reference, healthy: true },
       searxng: { image: image("b").reference, healthy: true },
+      ...(fxembed
+        ? { fxembed: { image: image("e").reference, healthy: true } }
+        : {}),
       auxiliary: { image: image("e").reference, healthy: false },
     },
     compose: {
@@ -144,7 +149,7 @@ const rootWithState = async ({
       apiPort: 8788,
       storage,
       searxng,
-      fxembed: false,
+      fxembed,
       images: { argus: image("f").reference, postgres: image("d").reference, searxng: image("c").reference, fxembed: image("e").reference },
     },
     updatedAt: "2026-08-01T00:00:00.000Z",
@@ -153,6 +158,28 @@ const rootWithState = async ({
 };
 
 describe("safe update state machine", () => {
+  it("plans and verifies VPS FxEmbed during updates", async () => {
+    const root = await rootWithState({ fxembed: true });
+    const plan = await planUpdate({
+      root,
+      release: release(),
+      rollbackRelease: release("1.0.0", 1, "f"),
+      executor: executor(),
+    });
+
+    expect(plan.changes.map((change) => change.component)).toContain(
+      "fxembed",
+    );
+    await expect(
+      applyUpdate({
+        root,
+        plan,
+        executor: executor(),
+        getRollbackContext: rollbackContext,
+      }),
+    ).rejects.toMatchObject({ code: "UPDATE_HEALTHCHECK_FAILED" });
+  });
+
   it("synchronizes managed service images to signed releases through update and rollback", async () => {
     const root = await rootWithState();
     const rollbackRelease = release("1.0.0", 1, "f");

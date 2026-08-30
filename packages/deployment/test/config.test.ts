@@ -117,6 +117,42 @@ api:
     expect(rendered.searxngSecrets).toBeUndefined();
   });
 
+  it("removes X source and watch inputs when onboarding disables X", async () => {
+    const root = await mkdtemp(join(tmpdir(), "argus-disabled-x-config-"));
+    roots.push(root);
+    const rendered = renderInstanceConfig(
+      {
+        ...answers,
+        managed: { searxng: "disabled", fxembed: "disabled" },
+        watches: [
+          {
+            id: "mixed-watch",
+            enabled: true,
+            schedule: "*/5 * * * *",
+            x: { accounts: ["argus"], queries: ["release"] },
+            telegram: { channels: ["argus_news"] },
+            web: { urls: [], feeds: [], queries: [] },
+            keywords: [],
+          },
+        ],
+      },
+      {
+        searxng: "http://searxng.invalid",
+        fxembed: "https://fxembed.invalid",
+        apiToken: "api-secret",
+      },
+    );
+    const path = join(root, "argus.yaml");
+    await writeFile(path, rendered.yaml);
+
+    const loaded = await loadConfig(path, rendered.secretEnvironment);
+    expect(loaded.sources.x.enabled).toBe(false);
+    expect(loaded.watches[0]?.inputs.x).toBeUndefined();
+    expect(loaded.watches[0]?.inputs.telegram?.channels).toEqual([
+      "argus_news",
+    ]);
+  });
+
   it("faithfully renders Postgres, watches, processors, and required secrets", () => {
     const rendered = renderInstanceConfig(
       {

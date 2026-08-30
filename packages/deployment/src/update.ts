@@ -35,7 +35,7 @@ export interface UpdatePlan {
   contractVersion: 1;
   currentVersion: string;
   targetVersion: string;
-  changes: Array<{ component: "argus" | "postgres" | "searxng"; action: "update"; summary: string }>;
+  changes: Array<{ component: "argus" | "postgres" | "searxng" | "fxembed"; action: "update"; summary: string }>;
   noop: boolean;
   previousState: DeploymentStateV1;
   release: VerifiedReleaseManifest;
@@ -435,7 +435,12 @@ const health = async (
     state: serviceState,
     ...(serviceHealth === undefined ? {} : { health: serviceHealth }),
   }));
-  const required = ["argus", ...(state.compose?.storage === "postgres" ? ["postgres"] : []), ...(state.compose?.searxng ? ["searxng"] : [])];
+  const required = [
+    "argus",
+    ...(state.compose?.storage === "postgres" ? ["postgres"] : []),
+    ...(state.compose?.searxng ? ["searxng"] : []),
+    ...(state.compose?.fxembed ? ["fxembed"] : []),
+  ];
   const healthy = required.every((name) =>
     services.some((service) => service.name === name && service.state === "running" && service.health !== "unhealthy"),
   );
@@ -458,9 +463,10 @@ export const planUpdate = async ({ root, release, rollbackRelease }: PlanUpdateI
   assertCompatible(state, rollbackRelease);
   assertRollbackMatchesCurrent(state, rollbackRelease);
   const noop = releaseMatchesCurrent(state, release);
-  const services: Array<"argus" | "postgres" | "searxng"> = ["argus"];
+  const services: Array<"argus" | "postgres" | "searxng" | "fxembed"> = ["argus"];
   if (compose.storage === "postgres") services.push("postgres");
   if (compose.searxng) services.push("searxng");
+  if (compose.fxembed) services.push("fxembed");
   const changes = noop
     ? []
     : services.map((component) => ({

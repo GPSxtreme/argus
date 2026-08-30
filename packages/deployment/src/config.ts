@@ -51,9 +51,11 @@ export const renderInstanceConfig = (
   const telegramEnabled = answers.watches.some(
     (watch) => watch.telegram.channels.length > 0,
   );
-  const xEnabled = answers.watches.some(
-    (watch) => watch.x.accounts.length > 0 || watch.x.queries.length > 0,
-  );
+  const xEnabled =
+    answers.managed.fxembed !== "disabled" &&
+    answers.watches.some(
+      (watch) => watch.x.accounts.length > 0 || watch.x.queries.length > 0,
+    );
   const webEnabled = answers.watches.some(
     (watch) =>
       watch.web.urls.length > 0 ||
@@ -102,8 +104,9 @@ export const renderInstanceConfig = (
             enabled: watch.enabled,
             schedule: watch.schedule,
             inputs: {
-              ...(watch.x.accounts.length === 0 &&
-              watch.x.queries.length === 0
+              ...(!xEnabled ||
+              (watch.x.accounts.length === 0 &&
+                watch.x.queries.length === 0)
                 ? {}
                 : { x: watch.x }),
               ...(watch.telegram.channels.length === 0

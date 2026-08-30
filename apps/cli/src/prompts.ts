@@ -253,7 +253,7 @@ export const collectOnboarding = async (
     }
   }
 
-  const xRepliesEnabled = enabled.has("x")
+  const xRepliesEnabled = fxembed !== "disabled"
     ? await prompt.confirm({
         message: "Track replies to X posts?",
         initialValue: true,

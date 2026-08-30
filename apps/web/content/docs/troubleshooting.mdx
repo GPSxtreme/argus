@@ -75,9 +75,9 @@ at an empty SQLite file or PostgreSQL database and ingest fresh data.
 
 ### FxEmbed or X ingestion fails
 
-**Inspect:** `argus doctor --json`, `argus logs fxembed --tail 200 --json`, and `argus logs argus --tail 200 --json`.
+**Inspect:** Always run `argus doctor --json` and `argus logs argus --tail 200 --json`. For VPS-hosted FxEmbed, also run `argus logs fxembed --tail 200 --json`; that service log does not exist for Cloudflare or external mode.
 
-**Meaning:** `FXEMBED_HEALTHCHECK_FAILED` means the configured FxEmbed endpoint did not accept its health request; an X `SOURCE_SMOKE_FAILED` or `SOURCE_SMOKE_TIMEOUT` means the isolated X diagnostic did not ingest its configured target.
+**Meaning:** `FXEMBED_X_SMOKE_FAILED` means FxEmbed could not pass the X source smoke check. `FXEMBED_DIAGNOSTIC_SKIPPED` means X had no diagnostic target, and `FXEMBED_DISABLED` confirms X is disabled. An X `SOURCE_SMOKE_FAILED` or `SOURCE_SMOKE_TIMEOUT` means the isolated X diagnostic did not ingest its configured target.
 
 **Recover:** For VPS-hosted FxEmbed, inspect `argus repair fxembed --dry-run --json`, apply `argus repair fxembed --yes --json`, then rerun doctor. For Cloudflare or an external endpoint, repair it under that service's controls; Argus does not mutate those deployments.
 
