@@ -30,7 +30,7 @@ describe("Argus landing page", () => {
   });
 
   it("links documentation, source, license, and the current version without third-party embeds", () => {
-    for (const label of ["Docs", "Source", "License", "v0.2.1"]) {
+    for (const label of ["Docs", "Source", "License", "v0.2.4"]) {
       expect(html).toContain(label);
     }
     expect(html).not.toMatch(/<script[^>]+(?:analytics|chat|video)/iu);
