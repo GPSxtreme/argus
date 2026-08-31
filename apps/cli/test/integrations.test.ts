@@ -673,6 +673,55 @@ describe("production onboarding integration", () => {
     ]);
   });
 
+  it("recognizes the current CLI release before an instance is onboarded", async () => {
+    const root = await mkdtemp(join(tmpdir(), "argus-update-before-onboard-"));
+    const fixture = releaseFixture({ version: "0.2.5" });
+    const updateIntegration = createProductionUpdateIntegration({
+      root,
+      manifestUrl: "https://release.example/manifest.json",
+      publicKeyPem: fixture.publicKeyPem,
+      fetcher: async (input) => {
+        const url = String(input);
+        const bytes = url.endsWith("manifest.sig")
+          ? fixture.signature
+          : url.endsWith("manifest.json")
+            ? fixture.manifestBytes
+            : fixture.fxembed;
+        return new Response(Uint8Array.from(bytes).buffer);
+      },
+    });
+    let executorCalls = 0;
+    const dependencies = createNodeCliDependencies({
+      root,
+      executor: {
+        async run() {
+          executorCalls += 1;
+          return { exitCode: 0, stdout: "", stderr: "" };
+        },
+      },
+      prompt: {
+        async confirm() { return true; },
+        async select() { return ""; },
+        async multiselect() { return []; },
+        async text() { return ""; },
+        async secret() { return ""; },
+      },
+      io: { stdout() {}, stderr() {} },
+      updateIntegration,
+      version: "0.2.5",
+    });
+
+    await expect(dependencies.deployment.inspectUpdate?.()).resolves.toEqual({
+      contractVersion: 1,
+      currentVersion: "0.2.5",
+      targetVersion: "0.2.5",
+      changes: [],
+      noop: true,
+      instanceConfigured: false,
+    });
+    expect(executorCalls).toBe(0);
+  });
+
   it.each([
     ["invalid JSON", "{", "not-a-secret"],
     [

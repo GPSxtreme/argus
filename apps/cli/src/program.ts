@@ -938,22 +938,34 @@ export const createProgram = (dependencies: CliDependencies): Command => {
         );
       }
       const plan = await dependencies.deployment.inspectUpdate();
+      const inspected = plan as {
+        instanceConfigured?: unknown;
+        noop?: unknown;
+      };
+      if (inspected.noop === true && inspected.instanceConfigured === false) {
+        return { data: { plan }, human: renderHumanPlan(plan) };
+      }
       if (options.dryRun) {
         return { data: { plan }, human: renderHumanPlan(plan) };
       }
-      await confirmMutation(
-        dependencies,
-        dependencies.prompt,
-        options,
-        "Update Argus using the inspected signed release plan?",
-        plan,
-      );
+      if (inspected.noop !== true) {
+        await confirmMutation(
+          dependencies,
+          dependencies.prompt,
+          options,
+          "Update Argus using the inspected signed release plan?",
+          plan,
+        );
+      }
       const applied = await dependencies.deployment.applyUpdate(plan);
       const health = await dependencies.deployment.verifyUpdate(applied);
       const result = applied as { version?: unknown };
       return {
         data: { version: result.version, health },
-        human: `Argus ${String(result.version ?? "update")} completed and was verified.`,
+        human:
+          inspected.noop === true
+            ? renderHumanPlan(plan)
+            : `Argus ${String(result.version ?? "update")} completed and was verified.`,
       };
     });
   });
@@ -1248,6 +1260,7 @@ const createDeploymentAdapter = (
   executor: CommandExecutor,
   onboardingIntegration?: ProductionOnboardingIntegration,
   updateIntegration?: ProductionUpdateIntegration,
+  cliVersion = resolveCliBuildVersion(),
 ): DeploymentCliAdapter => {
   const context = { root, executor };
   const doctorContext = async () => {
@@ -1429,10 +1442,34 @@ const createDeploymentAdapter = (
           { recovery: "Install Argus through the signed release channel, then retry the update." },
         );
       }
-      const [release, currentReleaseInspection] = await Promise.all([
+      const [release, state] = await Promise.all([
         updateIntegration.fetchUpdateRelease(),
-        updateIntegration.inspectCurrentRelease(),
+        loadDeploymentState(root),
       ]);
+      if (state === undefined) {
+        const currentVersion = cliVersion.replace(/^v/u, "");
+        const targetVersion = release.manifest.version;
+        if (currentVersion !== targetVersion) {
+          throw new DeploymentError(
+            "UPDATE_INSTANCE_NOT_ONBOARDED",
+            `Argus CLI ${currentVersion} is installed and stable ${targetVersion} is available, but no instance is onboarded.`,
+            {
+              recovery:
+                "Rerun the signed installer to refresh the CLI, then run 'argus onboard'.",
+            },
+          );
+        }
+        return {
+          contractVersion: 1,
+          currentVersion,
+          targetVersion,
+          changes: [],
+          noop: true,
+          instanceConfigured: false,
+        };
+      }
+      const currentReleaseInspection =
+        await updateIntegration.inspectCurrentRelease();
       return {
         ...(await planUpdate({
           root,
@@ -1631,7 +1668,13 @@ export const createNodeCliDependencies = ({
   version: version ?? resolveCliBuildVersion(),
   prompt,
   io,
-  deployment: createDeploymentAdapter(root, executor, onboardingIntegration, updateIntegration),
+  deployment: createDeploymentAdapter(
+    root,
+    executor,
+    onboardingIntegration,
+    updateIntegration,
+    version ?? resolveCliBuildVersion(),
+  ),
   files: {
     readText: (path) => readFile(path, "utf8"),
     stat: async (path) => ({ mode: (await stat(path)).mode }),

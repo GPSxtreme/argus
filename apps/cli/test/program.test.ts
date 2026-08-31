@@ -291,6 +291,72 @@ describe("CLI JSON contract", () => {
     });
   });
 
+  it("reports an installed but not onboarded CLI as current without applying an update", async () => {
+    let applied = false;
+    const harness = createHarness();
+    Object.assign(harness.dependencies.deployment as object, {
+      async inspectUpdate() {
+        return {
+          contractVersion: 1,
+          currentVersion: "0.2.5",
+          targetVersion: "0.2.5",
+          changes: [],
+          noop: true,
+          instanceConfigured: false,
+        };
+      },
+      async applyUpdate() {
+        applied = true;
+        throw new Error("a missing instance must not enter the update pipeline");
+      },
+      async verifyUpdate() {
+        throw new Error("a missing instance has nothing to verify");
+      },
+    });
+
+    await run(["update"], harness.dependencies);
+
+    expect(applied).toBe(false);
+    expect(harness.output()).toEqual({
+      stdout:
+        "Argus is already up to date (v0.2.5). No instance is onboarded yet; run 'argus onboard' to create one.\n",
+      stderr: "",
+    });
+  });
+
+  it("reports an onboarded no-op update without asking for confirmation", async () => {
+    let applied = false;
+    const harness = createHarness();
+    harness.dependencies.prompt.confirm = async () => {
+      throw new Error("an already-current release must not ask for confirmation");
+    };
+    Object.assign(harness.dependencies.deployment as object, {
+      async inspectUpdate() {
+        return {
+          currentVersion: "0.2.5",
+          targetVersion: "0.2.5",
+          changes: [],
+          noop: true,
+        };
+      },
+      async applyUpdate() {
+        applied = true;
+        return { version: "0.2.5", health: { healthy: true, checks: [] } };
+      },
+      async verifyUpdate() {
+        return { healthy: true, checks: [] };
+      },
+    });
+
+    await run(["update"], harness.dependencies);
+
+    expect(applied).toBe(true);
+    expect(harness.output()).toEqual({
+      stdout: "Already up to date (v0.2.5).\n",
+      stderr: "",
+    });
+  });
+
   it("requires --yes before exposing a verified rollback through JSON", async () => {
     let applied = false;
     const harness = createHarness();

@@ -132,7 +132,15 @@ export const renderHumanPlan = (plan: unknown): string => {
   const target = text(value.targetVersion);
   if (value.noop === true) {
     const version = target ?? current;
-    return version ? `Already up to date (${version}).` : "Nothing to change.";
+    const displayed = version
+      ? version.startsWith("v")
+        ? version
+        : `v${version}`
+      : undefined;
+    if (value.instanceConfigured === false && version) {
+      return `Argus is already up to date (${displayed}). No instance is onboarded yet; run 'argus onboard' to create one.`;
+    }
+    return displayed ? `Already up to date (${displayed}).` : "Nothing to change.";
   }
 
   const deployment = record(value.deployment);
