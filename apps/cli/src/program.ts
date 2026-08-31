@@ -342,7 +342,7 @@ const confirmMutation = async (
     `${renderHumanPlan(redactValue(plan, secrets))}\n`,
   );
   if (!(await prompt.confirm({ message, initialValue: false }))) {
-    throw confirmationRequired();
+    throw new DeploymentError("PROMPT_CANCELLED", "Argus was cancelled.");
   }
 };
 
@@ -379,6 +379,24 @@ const execute = async (
       secrets,
     );
   }
+};
+
+const editDistance = (left: string, right: string): number => {
+  const row = Array.from({ length: right.length + 1 }, (_, index) => index);
+  for (let i = 1; i <= left.length; i += 1) {
+    let previous = row[0] as number;
+    row[0] = i;
+    for (let j = 1; j <= right.length; j += 1) {
+      const current = row[j] as number;
+      row[j] = Math.min(
+        current + 1,
+        (row[j - 1] as number) + 1,
+        previous + (left[i - 1] === right[j - 1] ? 0 : 1),
+      );
+      previous = current;
+    }
+  }
+  return row[right.length] as number;
 };
 
 const commonOptions = (command: Command): Command =>
@@ -641,6 +659,7 @@ const registerSecrets = (
 
 export const createProgram = (dependencies: CliDependencies): Command => {
   let capturedOutput = "";
+  let capturedErrorOutput = "";
   const program = new Command()
     .name("argus")
     .description("Self-hosted data layer for X, Telegram, and the Web")
@@ -652,8 +671,9 @@ export const createProgram = (dependencies: CliDependencies): Command => {
       writeOut(value) {
         capturedOutput += value;
       },
-      writeErr() {
+      writeErr(value) {
         // Parser errors are rendered through the stable boundary below.
+        capturedErrorOutput += value;
       },
     });
   program.hook("preAction", (_root, action) => {
@@ -1005,6 +1025,7 @@ export const createProgram = (dependencies: CliDependencies): Command => {
         ]
       : argumentsList;
     capturedOutput = "";
+    capturedErrorOutput = "";
     try {
       return await commanderParseAsync(normalized, parseOptions);
     } catch (error) {
@@ -1026,12 +1047,43 @@ export const createProgram = (dependencies: CliDependencies): Command => {
         );
         return program;
       }
+      let parserDetail = capturedErrorOutput
+        .split("\n")
+        .filter(
+          (line) =>
+            line.startsWith("error:") || line.startsWith("(Did you mean"),
+        )
+        .map((line) => line.replace(/^error:\s*/u, ""))
+        .join(" ")
+        .trim();
+      // The root command's default action makes Commander report typo'd
+      // subcommands as excess arguments; rewrite those as unknown commands.
+      const knownCommands = program.commands.map((entry) => entry.name());
+      const operand = normalized
+        .slice(2)
+        .find((entry) => !entry.startsWith("-"));
+      if (
+        error instanceof CommanderError &&
+        error.code === "commander.excessArguments" &&
+        operand !== undefined &&
+        !knownCommands.includes(operand)
+      ) {
+        const suggestion = knownCommands.find(
+          (name) => editDistance(name, operand) <= 2,
+        );
+        parserDetail = `unknown command '${operand}'${
+          suggestion === undefined ? "" : ` (did you mean '${suggestion}'?)`
+        }`;
+      }
       const stable =
         error instanceof DeploymentError
           ? error
           : new DeploymentError(
               "CLI_USAGE_ERROR",
-              "The command arguments are invalid.",
+              // The JSON contract message stays byte-stable; only humans get parser detail.
+              json || parserDetail === ""
+                ? "The command arguments are invalid."
+                : `The command arguments are invalid: ${parserDetail}`,
               { recovery: "Run 'argus --help' to inspect valid commands." },
             );
       throw writeFailure(dependencies.io, json, stable, secrets);

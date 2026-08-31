@@ -558,4 +558,43 @@ describe("CLI JSON contract", () => {
       "Try: Run argus repair argus.",
     );
   });
+
+  it("names the unknown command for humans while keeping the JSON message stable", async () => {
+    const harness = createHarness();
+
+    await expect(
+      createProgram(harness.dependencies).parseAsync([
+        "node",
+        "argus",
+        "updte",
+      ]),
+    ).rejects.toMatchObject({ exitCode: 1 });
+    expect(harness.output().stderr).toContain("unknown command 'updte'");
+    expect(harness.output().stderr).toContain("did you mean 'update'?");
+
+    const jsonHarness = createHarness();
+    await expect(
+      createProgram(jsonHarness.dependencies).parseAsync([
+        "node",
+        "argus",
+        "updte",
+        "--json",
+      ]),
+    ).rejects.toMatchObject({ exitCode: 1 });
+    expect(JSON.parse(jsonHarness.output().stdout)).toMatchObject({
+      ok: false,
+      error: { code: "CLI_USAGE_ERROR", message: "The command arguments are invalid." },
+    });
+  });
+
+  it("treats a declined confirmation as a cancellation, not a usage error", async () => {
+    const harness = createHarness();
+    harness.dependencies.prompt.confirm = async () => false;
+
+    await expect(
+      createProgram(harness.dependencies).parseAsync(["node", "argus", "start"]),
+    ).rejects.toMatchObject({ exitCode: 130 });
+    expect(harness.output().stderr).toContain("Argus was cancelled.");
+    expect(harness.output().stderr).not.toContain("--yes");
+  });
 });

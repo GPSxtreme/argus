@@ -78,4 +78,20 @@ describe("CLI failure output", () => {
         "Code: LOG_TAIL_INVALID\n",
     );
   });
+
+  it("surfaces the redacted underlying cause of unexpected failures", async () => {
+    const test = harness();
+
+    writeFailure(
+      test.io,
+      false,
+      new Error("ENOENT: no such file, open '/opt/argus/token-abc.json'"),
+      ["token-abc"],
+    );
+
+    expect(test.output().stderr).toContain(
+      "Error: The Argus command failed: ENOENT: no such file, open '/opt/argus/[REDACTED].json'",
+    );
+    expect(test.output().stderr).toContain("Code: COMMAND_FAILED");
+  });
 });

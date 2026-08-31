@@ -1016,7 +1016,17 @@ export const createProductionUpdateIntegration = ({
   };
 
   const inspectCurrent = async (): Promise<VerifiedCurrentReleaseInspection> => {
-    const current = await loadSignedContext(join(root, releaseContextFile));
+    let current: LoadedSignedContext;
+    try {
+      current = await loadSignedContext(join(root, releaseContextFile));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      throw new DeploymentError(
+        "UPDATE_STATE_UNAVAILABLE",
+        "No signed release context was found for this Argus instance.",
+        { recovery: "Run 'argus onboard' to establish the managed instance first." },
+      );
+    }
     const stagedPath = join(root, pendingReleaseContextFile);
     try {
       const staged = await loadSignedContext(stagedPath);

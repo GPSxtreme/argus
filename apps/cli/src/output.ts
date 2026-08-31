@@ -93,9 +93,12 @@ const stableError = (
         : { recovery: replaceSecrets(serialized.recovery, secrets) }),
     };
   }
+  const cause = error instanceof Error && error.message ? error.message : "";
   return {
     code: "COMMAND_FAILED",
-    message: "The Argus command failed.",
+    message: cause
+      ? replaceSecrets(`The Argus command failed: ${cause}`, secrets)
+      : "The Argus command failed.",
     recovery: "Retry the command or run 'argus doctor' for safe diagnostics.",
   };
 };
