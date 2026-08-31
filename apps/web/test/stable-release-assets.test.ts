@@ -10,17 +10,17 @@ const stableAsset = (name: "install.sh" | "manifest.json" | "manifest.sig") =>
   resolve(process.cwd(), "apps/web/public/releases/stable", name);
 
 describe("stable release artifacts", () => {
-  it("preserves the v0.2.5 signed release bytes exactly", async () => {
+  it("preserves the v0.2.6 signed release bytes exactly", async () => {
     const [manifest, signature] = await Promise.all([
       readFile(stableAsset("manifest.json")),
       readFile(stableAsset("manifest.sig")),
     ]);
 
     expect(createHash("sha256").update(manifest).digest("hex")).toBe(
-      "20a4793658bff750bbc739e064221ac105d7aa5a488f2ec3c0d38f03327aaa40",
+      "35d9eeb8da1799ed75a06b41dbf756f977b795be5c473ed770ba6a6e009b74d1",
     );
     expect(signature).toEqual(
-      Buffer.from("hcQBHNXAcrp7b2rxhPKM5PcT/Xx22k5z559dHwHvwVJOTrjDdxSGT5URkwkcsdCxKO1FhntKAzCjWVLwbqYWDg==", "base64"),
+      Buffer.from("KE+Hv88Jv1ebjPiiY6hHn+9TsvrTudWqhXkobb1Sb+m0BAu4tPQogLqeVpKe1DrSDhYfKJA0qIFV5IYWBTX/DA==", "base64"),
     );
     expect(signature).toHaveLength(64);
     expect(verify(null, manifest, releasePublicKey, signature)).toBe(true);
@@ -32,7 +32,7 @@ describe("stable release artifacts", () => {
 
     expect(
       createHash("sha256").update(bytes).digest("hex"),
-    ).toBe("5734c764bc87d4804aae5c027a60da3d154ea1954ef322fbb58ef11d383afde5");
+    ).toBe("e7c41a3ab9396e331e18bac50ba8f66971d9a7a5b29b8b3de57866b89bf37a1b");
     expect(installer).toContain(canonicalManifestUrl);
     expect(installer).toContain(releasePublicKey);
   });
